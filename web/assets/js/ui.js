@@ -745,6 +745,7 @@ const UI = {
                     'quote_message_received': { icon: 'bi-chat-quote', label: '引用消息', color: 'info' },
                     'quote_text_message_received': { icon: 'bi-blockquote-left', label: '文本引用', color: 'info' },
                     'quote_image_message_received': { icon: 'bi-card-image', label: '图片引用', color: 'warning' },
+                    'quote_video_message_received': { icon: 'bi-camera-video-fill', label: '视频引用', color: 'danger' },
                     'friend_request_received': { icon: 'bi-person-plus', label: '好友请求', color: 'danger' },
                     'system_startup': { icon: 'bi-power', label: '系统启动', color: 'secondary' },
                     'system_shutdown': { icon: 'bi-power', label: '系统关闭', color: 'dark' },
@@ -1828,7 +1829,7 @@ const UI = {
                         </div>
                         <div class="chat-memory-custom" data-memory-custom>
                             <div class="chat-policy-field-grid two">
-                                <label class="chat-policy-toggle-field"><span>证据复核</span><span class="chat-toggle-control"><small>低可信内容进入待复核区</small><input class="form-check-input" type="checkbox" name="memory_verification_enabled" ${memoryValue('memory_verification_enabled', true) ? 'checked' : ''}></span></label>
+                                <label class="chat-policy-toggle-field"><span>证据复核</span><span class="chat-toggle-control"><small>低可信内容自动隔离，不产生人工任务</small><input class="form-check-input" type="checkbox" name="memory_verification_enabled" ${memoryValue('memory_verification_enabled', true) ? 'checked' : ''}></span></label>
                                 <label class="chat-policy-toggle-field"><span>人物记忆</span><span class="chat-toggle-control"><small>维护人物事实与关系</small><input class="form-check-input" type="checkbox" name="memory_person_enabled" ${memoryValue('memory_person_enabled', true) ? 'checked' : ''}></span></label>
                             </div>
                             <div class="chat-policy-field-grid two chat-memory-fields">
@@ -2031,7 +2032,14 @@ const UI = {
 
     serializeChatPolicyForm(form) {
         if (!form) return '';
-        const values = [...form.querySelectorAll('input[name], select[name], textarea[name]')].map(control => ({
+        const values = [...form.querySelectorAll([
+            'input[name]',
+            'select[name]',
+            'textarea[name]',
+            '.chat-policy-plugin-toggle',
+            '.chat-policy-plugin-mention',
+            '.chat-policy-plugin-push'
+        ].join(', '))].map(control => ({
             name: control.name,
             type: control.type,
             value: control.value,

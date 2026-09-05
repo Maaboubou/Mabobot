@@ -211,14 +211,19 @@ def find_top_level_controls(
     name: str | None = None,
     pid: int | None = None,
     max_results: int = 50,
+    diagnostics: dict | None = None,
 ) -> list:
-    """查找桌面根节点下匹配的顶层控件。"""
+    """查找顶层控件；可选 diagnostics 保留原本被跳过的 UIA 错误。"""
     auto_mod = _require_uia()
     root = auto_mod.GetRootControl()
     result: list[Any] = []
+    if diagnostics is not None:
+        diagnostics.update(property_errors=0, pid_mismatches=0, enumeration_error=False, last_error=None)
     try:
         children = root.GetChildren()
-    except Exception:
+    except Exception as exc:
+        if diagnostics is not None:
+            diagnostics.update(enumeration_error=True, last_error=f"{type(exc).__name__}: {exc}"[:240])
         return result
     for current in children:
         try:
@@ -227,8 +232,13 @@ def find_top_level_controls(
             if name is not None and current.Name != name:
                 continue
             if pid is not None and int(current.ProcessId or 0) != pid:
+                if diagnostics is not None:
+                    diagnostics["pid_mismatches"] += 1
                 continue
-        except Exception:
+        except Exception as exc:
+            if diagnostics is not None:
+                diagnostics["property_errors"] += 1
+                diagnostics["last_error"] = f"{type(exc).__name__}: {exc}"[:240]
             continue
         result.append(current)
         if len(result) >= max_results:

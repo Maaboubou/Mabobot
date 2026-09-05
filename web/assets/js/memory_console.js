@@ -517,8 +517,8 @@
         renderMemoryEventSummary(item) {
             const state = item.is_invalidated ? '已作废'
                 : item.superseded_by_event_id ? '已替代'
-                    : item.verification_status === 'quarantined' ? '待复核' : '有效';
-            const tone = state === '有效' ? 'success' : state === '待复核' ? 'warning' : 'secondary';
+                    : item.verification_status === 'quarantined' ? '自动隔离' : '有效';
+            const tone = state === '有效' ? 'success' : state === '自动隔离' ? 'warning' : 'secondary';
             return `
                 <article class="memory-row-card">
                     <button class="memory-row-main" type="button" onclick="App.openMemoryEventDetail(${Number(item.id)})">
@@ -748,7 +748,7 @@
             const reason = row?.querySelector('[name="review_reason"]')?.value?.trim() || '';
             if (!state?.userId) return;
             if (reason.length < 2) {
-                UI.showError('请先填写至少 2 个字的复核原因');
+                UI.showError('请先填写至少 2 个字的纠正原因');
                 row?.querySelector('[name="review_reason"]')?.focus();
                 return;
             }
@@ -870,16 +870,16 @@
                 const reviewNotice = `<div class="memory-review-notice">
                     <i class="bi bi-shield-lock"></i>
                     <div><strong>这里是隔离区，不是必须清空的任务列表。</strong>
-                    <span>未处理的内容会一直保持隔离，不参与 AI 回答或人物画像；证据明确时通过，内容错误或不应记忆时拒绝，无法确认可以暂不处理。</span></div>
+                    <span>未处理的内容会一直保持隔离，不会参与 AI 回答或人物画像。只有发现自动判断错误时，才需要使用下方入口进行纠正；日常无需处理。</span></div>
                 </div>`;
                 container.innerHTML = reviewNotice + ((!events.length && !observations.length)
-                    ? '<div class="memory-empty-state"><i class="bi bi-shield-check"></i><span>目前没有待复核内容</span></div>'
+                    ? '<div class="memory-empty-state"><i class="bi bi-shield-check"></i><span>目前没有自动隔离内容</span></div>'
                     : `<div class="memory-review-columns">
-                        <section><h5>待复核记忆 <span>${Number(data.events?.total || 0)}</span></h5>
-                            ${events.map(item => `<div class="memory-review-row"><button class="btn btn-link p-0 text-start" onclick="App.openMemoryEventDetail(${Number(item.id)})"><strong>${this.escapeHtml(item.title || '')}</strong></button><span>${this.escapeHtml(item.verification_note || '需要人工确认')}</span><input class="form-control form-control-sm" name="event_review_reason" maxlength="1000" placeholder="复核原因（必填）"><div class="d-flex gap-2"><button class="btn btn-sm btn-success" onclick="App.reviewMemoryEvent(${Number(item.id)}, 'approve', this)">通过</button><button class="btn btn-sm btn-outline-danger" onclick="App.reviewMemoryEvent(${Number(item.id)}, 'reject', this)">拒绝</button></div></div>`).join('') || '<p class="text-muted">暂无</p>'}
+                        <section><h5>自动隔离记忆 <span>${Number(data.events?.total || 0)}</span></h5>
+                            ${events.map(item => `<div class="memory-review-row"><button class="btn btn-link p-0 text-start" onclick="App.openMemoryEventDetail(${Number(item.id)})"><strong>${this.escapeHtml(item.title || '')}</strong></button><span>${this.escapeHtml(item.verification_note || '系统已自动排除')}</span><input class="form-control form-control-sm" name="event_review_reason" maxlength="1000" placeholder="纠正原因（必填）"><div class="d-flex gap-2"><button class="btn btn-sm btn-success" onclick="App.reviewMemoryEvent(${Number(item.id)}, 'approve', this)">纠正为有效</button><button class="btn btn-sm btn-outline-danger" onclick="App.reviewMemoryEvent(${Number(item.id)}, 'reject', this)">确认排除</button></div></div>`).join('') || '<p class="text-muted">暂无</p>'}
                         </section>
-                        <section><h5>待复核人物证据 <span>${Number(data.observations?.total || 0)}</span></h5>
-                            ${observations.map(item => `<div class="memory-review-row"><strong>${this.escapeHtml(item.person_name || '未知人物')}</strong><span>${this.escapeHtml(item.statement || '')}</span><input class="form-control form-control-sm" name="review_reason" maxlength="1000" placeholder="复核原因（必填）"><div class="d-flex gap-2"><button class="btn btn-sm btn-success" onclick="App.reviewMemoryObservation(${Number(item.person_id)}, ${Number(item.id)}, 'active', this)">确认</button><button class="btn btn-sm btn-outline-danger" onclick="App.reviewMemoryObservation(${Number(item.person_id)}, ${Number(item.id)}, 'rejected', this)">拒绝</button></div></div>`).join('') || '<p class="text-muted">暂无</p>'}
+                        <section><h5>自动隔离人物证据 <span>${Number(data.observations?.total || 0)}</span></h5>
+                            ${observations.map(item => `<div class="memory-review-row"><strong>${this.escapeHtml(item.person_name || '未知人物')}</strong><span>${this.escapeHtml(item.statement || '')}</span><input class="form-control form-control-sm" name="review_reason" maxlength="1000" placeholder="纠正原因（必填）"><div class="d-flex gap-2"><button class="btn btn-sm btn-success" onclick="App.reviewMemoryObservation(${Number(item.person_id)}, ${Number(item.id)}, 'active', this)">纠正为有效</button><button class="btn btn-sm btn-outline-danger" onclick="App.reviewMemoryObservation(${Number(item.person_id)}, ${Number(item.id)}, 'rejected', this)">确认排除</button></div></div>`).join('') || '<p class="text-muted">暂无</p>'}
                         </section>
                     </div>`);
                 if (pagination) {
@@ -890,7 +890,7 @@
                     );
                 }
             } catch (error) {
-                container.innerHTML = `<div class="alert alert-danger">读取待复核内容失败：${this.escapeHtml(error.message)}</div>`;
+                container.innerHTML = `<div class="alert alert-danger">读取自动隔离内容失败：${this.escapeHtml(error.message)}</div>`;
             }
         },
 
@@ -900,13 +900,13 @@
             const reason = row?.querySelector('[name="event_review_reason"]')?.value?.trim() || '';
             if (!state?.userId) return;
             if (reason.length < 2) {
-                UI.showError('请先填写至少 2 个字的复核原因');
+                UI.showError('请先填写至少 2 个字的纠正原因');
                 row?.querySelector('[name="event_review_reason"]')?.focus();
                 return;
             }
             try {
                 await API.memory.reviewEvent(state.userId, eventId, { decision, reason });
-                UI.showSuccess(decision === 'approve' ? '事件记忆已通过复核' : '事件记忆已拒绝');
+                UI.showSuccess(decision === 'approve' ? '事件记忆已纠正为有效' : '已确认排除该事件记忆');
                 this.invalidateMemorySections(['overview', 'events', 'reviews', 'changes']);
                 await this.loadMemoryLibraryReviews(state.reviewPage || 1);
             } catch (error) {

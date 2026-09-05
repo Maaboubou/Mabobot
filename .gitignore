@@ -54,3 +54,6 @@ Thumbs.db
 /app/plugins/summary_plus/package-lock.json
 /app/plugins/summary_plus/package.json
 /msc_state.json
+
+# Local agent skills are not release assets.
+/.hermes/skills/

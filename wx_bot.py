@@ -15,7 +15,7 @@ import uuid
 from datetime import datetime
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
-from mabowx import MediaFileMismatchError, MediaIdentityError, WeChat
+from mabowx import MediaFileMismatchError, MediaIdentityError, WeChat, media_download_trace
 import comtypes
 import sys
 import os
@@ -761,7 +761,8 @@ logging.basicConfig(
 
 # 配置第三方库日志级别，减少噪音
 logging.getLogger("werkzeug").setLevel(logging.WARNING)  # Flask访问日志只记录警告以上
-logging.getLogger("mabowx").setLevel(logging.INFO)
+# mabowx 的控制台 handler 自行过滤 INFO；logger 保留 DEBUG 才能写入诊断文件。
+logging.getLogger("mabowx").setLevel(logging.DEBUG)
 logging.getLogger("requests").setLevel(logging.WARNING)  # requests库只记录警告
 logging.getLogger("urllib3").setLevel(logging.WARNING)  # urllib3库只记录警告
 
@@ -1364,6 +1365,8 @@ def message_callback(msg, chat):
         # 处理图片消息 - 缓存消息对象以供后续下载
         has_quote_image = False
         quote_image_path = None
+        has_quote_video = False
+        quote_video_path = None
         message_id = None
         normalized_quote_content = getattr(msg, 'quote_content', '')
 
@@ -1380,6 +1383,10 @@ def message_callback(msg, chat):
                 if quote_content_stripped == '图片' and '[图片]' not in str(quote_content):
                     logger.info("🧩 引用图片标记归一化: '图片' -> '[图片]'")
                 normalized_quote_content = "[图片]"
+            elif ('[视频]' in quote_content) or (quote_content_stripped == '视频'):
+                logger.info("🎬 检测到引用视频，暂不下载（等待助手按需请求）")
+                has_quote_video = True
+                normalized_quote_content = "[视频]"
             else:
                 normalized_quote_content = quote_content
                 quoted_file = _resolve_quoted_file(
@@ -1405,6 +1412,9 @@ def message_callback(msg, chat):
             # 缓存消息对象以供后续按需下载
             message_id = cache_message_for_later(chat_name, msg, prefix="quote_image")
             logger.debug(f"🔄 缓存引用图片消息: {chat_name}:{message_id}")
+        elif msg.type == "quote" and has_quote_video:
+            message_id = cache_message_for_later(chat_name, msg, prefix="quote_video")
+            logger.info("🎬 缓存引用视频消息: %s:%s", chat_name, message_id)
         
         # 序列化消息内容
         # 如果成功解析出URL，则将mtype标记为link，便于主应用识别为链接事件
@@ -1417,6 +1427,8 @@ def message_callback(msg, chat):
         if msg.type == "image":
             final_message_id = message_id
         elif has_quote_image:
+            final_message_id = message_id
+        elif has_quote_video:
             final_message_id = message_id
         elif msg.type == "file" and inbound_file:
             final_message_id = inbound_file.get("file_id")
@@ -1449,6 +1461,8 @@ def message_callback(msg, chat):
             "quote_nickname": quote_nickname or None,  # 被引用消息发送者的群内显示名
             "quote_content": normalized_quote_content,  # 添加引用内容字段（已做引用图片标记归一化）
             "has_quote_image": has_quote_image,  # 标记是否有引用图片需要按需下载
+            "quote_video_path": quote_video_path,
+            "has_quote_video": has_quote_video,
             "file_id": inbound_file.get("file_id"),
             "file_name": inbound_file.get("original_filename"),
             "file_path": inbound_file.get("saved_path"),
@@ -2006,10 +2020,12 @@ def download_image_message():
         return jsonify({"status": "error", "message": "Message not found in cache"}), 404
 
     cache_key = ("image", chat_name, message_id)
+    request_id = uuid.uuid4().hex
 
     def _download_once() -> str:
-        logger.info("Downloading image message once: %s:%s type=%s", chat_name, message_id, type(msg))
-        file_path = msg.download()
+        logger.info("Downloading image message once: %s:%s type=%s request_id=%s", chat_name, message_id, type(msg), request_id)
+        with media_download_trace(msg, request_id=request_id, chat=chat_name, message_id=message_id):
+            file_path = msg.download()
         logger.info("Download completed, result: %s", file_path)
         if isinstance(file_path, dict):
             raise RuntimeError(str(file_path.get("message") or file_path))
@@ -2076,10 +2092,11 @@ def download_image_message():
         return response
     except Exception as e:
         logger.error(
-            "图片下载发生未预期错误: chat=%r message_id=%s error=%s",
+            "图片下载发生未预期错误: chat=%r message_id=%s error=%s request_id=%s",
             chat_name,
             message_id,
             e,
+            request_id,
             exc_info=True,
         )
         return jsonify({
@@ -2238,19 +2255,23 @@ def is_online():
         "message": "Online status served from the connection supervisor cache",
     })
 
-@app.route('/api/download_quote_image_on_demand', methods=['POST'])
-def download_quote_image_on_demand():
-    """按需下载引用图片"""
+def _download_quote_media_on_demand(media_kind: str):
+    """按不可变消息 ID 下载引用图片或视频。"""
     if not wx:
         return jsonify({"status": "error", "message": "WeChat not connected"}), 503
-    
-    data = request.json
+
+    data = request.get_json(silent=True) or {}
     chat_name = data.get('chat_name')
     message_id = data.get('message_id')
-    
+    try:
+        requested_timeout = int(data.get("timeout") or (120 if media_kind == "video" else 30))
+    except (TypeError, ValueError):
+        requested_timeout = 120 if media_kind == "video" else 30
+    operation_timeout = max(5, min(120, requested_timeout))
+
     if not chat_name or not message_id:
         return jsonify({"status": "error", "message": "Missing 'chat_name' or 'message_id'"}), 400
-    
+
     # 从缓存中查找消息对象
     msg = _get_cached_message(chat_name, message_id)
     if msg is None:
@@ -2259,40 +2280,59 @@ def download_quote_image_on_demand():
             "message": f"Message not found in cache: {chat_name}:{message_id}"
         }), 404
 
-    cache_key = ("quote_image", chat_name, message_id)
+    cache_key = (f"quote_{media_kind}", chat_name, message_id)
 
     def _download_quote_once() -> str:
-        logger.info("🖼️ 按需下载引用图片（单次）: %s:%s", chat_name, message_id)
-        image_path = msg.download_quote_image()
-        normalized_path = str(image_path or "")
+        logger.info("🎬 按需下载引用%s（单次）: %s:%s", media_kind, chat_name, message_id)
+        download = getattr(msg, "download_quote_media", None)
+        if not callable(download):
+            # 兼容重启前创建、仍只有旧方法名的消息对象。
+            download = getattr(msg, "download_quote_image", None)
+        if not callable(download):
+            raise RuntimeError("Current mabowx message does not support quoted media download")
+        media_path = download(timeout=operation_timeout)
+        normalized_path = str(media_path or "")
         if not normalized_path:
-            raise RuntimeError("Failed to download quote image")
+            raise RuntimeError(f"Failed to download quoted {media_kind}")
         if not os.path.exists(normalized_path):
-            raise FileNotFoundError(f"Downloaded quote image does not exist: {normalized_path}")
-        _log_image_download_audit("quote_image", chat_name, message_id, normalized_path, msg=msg)
+            raise FileNotFoundError(f"Downloaded quoted media does not exist: {normalized_path}")
+        _log_image_download_audit(f"quote_{media_kind}", chat_name, message_id, normalized_path, msg=msg)
         return normalized_path
 
     try:
-        image_path = media_download_deduplicator.run(
+        media_path = media_download_deduplicator.run(
             cache_key,
             _download_quote_once,
             cache_validator=lambda value: os.path.exists(str(value)),
         )
-        logger.info("🖼️ 按需下载成功: %s", image_path)
+        logger.info("🎬 引用%s按需下载成功: %s", media_kind, media_path)
         return jsonify({
             "status": "success",
-            "file_path": image_path,
-            "message": "Quote image downloaded successfully"
+            "file_path": media_path,
+            "media_type": media_kind,
+            "message": f"Quoted {media_kind} downloaded successfully",
         })
     except TimeoutError as e:
-        logger.warning("引用图片下载仍在进行: %s:%s", chat_name, message_id)
+        logger.warning("引用%s下载仍在进行: %s:%s", media_kind, chat_name, message_id)
         response = jsonify({"status": "busy", "message": str(e)})
         response.status_code = 503
         response.headers["Retry-After"] = "5"
         return response
     except Exception as e:
-        logger.error("按需下载引用图片失败: %s", e)
+        logger.error("按需下载引用%s失败: %s", media_kind, e)
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/download_quote_image_on_demand', methods=['POST'])
+def download_quote_image_on_demand():
+    """按需下载引用图片（保留旧接口）。"""
+    return _download_quote_media_on_demand("image")
+
+
+@app.route('/api/download_quote_video_on_demand', methods=['POST'])
+def download_quote_video_on_demand():
+    """按需打开微信预览并下载被引用的视频。"""
+    return _download_quote_media_on_demand("video")
 
 @app.route('/api/restart_wechat', methods=['POST'])
 def restart_wechat():

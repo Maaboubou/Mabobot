@@ -13,6 +13,7 @@ __all__ = [
     "WxResponse",
     "MediaIdentityError",
     "MediaFileMismatchError",
+    "media_download_trace",
     "__version__",
 ]
 
@@ -22,6 +23,7 @@ _LAZY_ATTRIBUTES = {
     "LoginWnd": (".api.wechat", "LoginWnd"),
     "MediaIdentityError": (".msgs.identity", "MediaIdentityError"),
     "MediaFileMismatchError": (".msgs.identity", "MediaFileMismatchError"),
+    "media_download_trace": (".msgs.media_diagnostics", "media_download_trace"),
 }
 
 _LAZY_SUBMODULES = {

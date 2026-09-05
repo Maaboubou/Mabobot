@@ -605,14 +605,34 @@ class WeChatManager:
             self.logger.error(f"❌ Failed to call resolve_link_url API: {e}")
             return None
 
-    def download_quote_image(self, chat_name: str, message_id: str = None) -> Optional[str]:
-        """按需下载引用图片（带重试机制）"""
+    def _download_quote_media(
+        self,
+        chat_name: str,
+        message_id: Optional[str],
+        *,
+        media_kind: str,
+    ) -> Optional[str]:
+        """请求 wx_bot 下载与引用消息精确绑定的媒体。"""
+        is_video = media_kind == "video"
+        media_label = "视频" if is_video else "图片"
+        endpoint = (
+            "/api/download_quote_video_on_demand"
+            if is_video
+            else "/api/download_quote_image_on_demand"
+        )
         # wx_bot 会合并相同 message_id 的并发请求。首次超时留足正常 UI
         # 下载时间，避免 5~10 秒的短超时制造仍在后台执行的重复请求。
-        retry_configs = [
-            {"attempt": 1, "timeout": 30, "description": "首次尝试"},
-            {"attempt": 2, "timeout": 90, "description": "第二次重试"},
-        ]
+        retry_configs = (
+            [
+                {"attempt": 1, "timeout": 45, "description": "首次尝试"},
+                {"attempt": 2, "timeout": 135, "description": "第二次重试"},
+            ]
+            if is_video
+            else [
+                {"attempt": 1, "timeout": 30, "description": "首次尝试"},
+                {"attempt": 2, "timeout": 90, "description": "第二次重试"},
+            ]
+        )
 
         last_exception = None
 
@@ -622,11 +642,22 @@ class WeChatManager:
             description = config["description"]
 
             try:
-                self.logger.info(f"🖼️ {description} - 下载引用图片 (消息ID: {message_id}, 超时: {timeout}秒)")
+                self.logger.info(
+                    "%s %s - 下载引用%s (消息ID: %s, 超时: %s秒)",
+                    "🎬" if is_video else "🖼️",
+                    description,
+                    media_label,
+                    message_id,
+                    timeout,
+                )
 
                 response = self._http.post(
-                    f"{WX_BOT_URL}/api/download_quote_image_on_demand",
-                    json={"chat_name": chat_name, "message_id": message_id},
+                    f"{WX_BOT_URL}{endpoint}",
+                    json={
+                        "chat_name": chat_name,
+                        "message_id": message_id,
+                        "timeout": 120 if is_video else 30,
+                    },
                     timeout=timeout
                 )
                 response.raise_for_status()
@@ -635,7 +666,7 @@ class WeChatManager:
                 if data.get("status") == "success":
                     file_path = data.get("file_path")
                     if file_path:
-                        self.logger.info(f"✅ 成功下载引用图片 (第{attempt}次尝试): {file_path}")
+                        self.logger.info(f"✅ 成功下载引用{media_label} (第{attempt}次尝试): {file_path}")
                         return file_path
                     else:
                         self.logger.error(f"❌ 第{attempt}次尝试失败: API未返回文件路径")
@@ -672,10 +703,26 @@ class WeChatManager:
                     time.sleep(1)
 
         # 所有重试都失败了
-        self.logger.error(f"❌ 引用图片下载失败 - 消息ID: {message_id}，已尝试{len(retry_configs)}次")
+        self.logger.error(f"❌ 引用{media_label}下载失败 - 消息ID: {message_id}，已尝试{len(retry_configs)}次")
         if last_exception:
             self.logger.error(f"最后一次错误: {last_exception}")
         return None
+
+    def download_quote_image(self, chat_name: str, message_id: str = None) -> Optional[str]:
+        """按需下载引用图片（带重试机制）。"""
+        return self._download_quote_media(
+            chat_name,
+            message_id,
+            media_kind="image",
+        )
+
+    def download_quote_video(self, chat_name: str, message_id: str = None) -> Optional[str]:
+        """按需打开微信预览并下载引用视频。"""
+        return self._download_quote_media(
+            chat_name,
+            message_id,
+            media_kind="video",
+        )
 
     def download_image_message(self, chat_name: str, message_id: str) -> Optional[str]:
         """下载指定消息ID的图片消息（带重试机制）"""

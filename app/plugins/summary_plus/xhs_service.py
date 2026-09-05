@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import requests
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 from app.utils.subprocess_utils import hidden_process_kwargs
 
@@ -361,13 +361,75 @@ class XiaohongshuMixin:
                 selected[key] = (score, url)
         return [url for _score, url in selected.values()]
 
-    def _process_xhs_image_urls(self, image_urls: List[str], uid: str) -> Optional[str]:
+    def _xhs_note_description(self, note: dict) -> str:
+        for key in ("description", "desc"):
+            value = note.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
+    def _xhs_text_font(self, size: int, *, bold: bool = False):
+        windows_fonts = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+        filename = "msyhbd.ttc" if bold else "msyh.ttc"
+        candidates = [
+            os.path.join(windows_fonts, filename),
+            f"/mnt/c/Windows/Fonts/{filename}",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+            "/System/Library/Fonts/PingFang.ttc",
+        ]
+        for path in candidates:
+            try:
+                return ImageFont.truetype(path, size)
+            except OSError:
+                continue
+        raise RuntimeError("小红书正文制图需要中文字体（微软雅黑、Noto Sans CJK 或文泉驿）")
+
+    def _xhs_render_description(self, description: str, author: str, output_path: str):
+        """Render the approved 1000px body card for the end of a long image."""
+        text = re.sub(r"#([^#]+?)\[话题\]#", r"#\1 ", description).strip()
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        font = self._xhs_text_font(36)
+        bold = self._xhs_text_font(46, bold=True)
+        small = self._xhs_text_font(26)
+        lines = []
+        for paragraph in text.split("\n"):
+            line = ""
+            for char in paragraph:
+                if line and font.getlength(line + char) > 876:
+                    if char in "，。！？；：、）】》”’":
+                        lines.append(line + char)
+                        line = ""
+                    else:
+                        lines.append(line)
+                        line = char
+                else:
+                    line += char
+            lines.append(line)
+        with Image.new("RGB", (1000, 220 + len(lines) * 62), "white") as card:
+            draw = ImageDraw.Draw(card)
+            draw.line((48, 0, 952, 0), fill="#dddddd", width=2)
+            draw.text((48, 32), "笔记正文", font=bold, fill="#222222")
+            # Keep the author on one line even when upstream metadata is unusually long.
+            author = " ".join(author.split())
+            while author and small.getlength(author) > 876:
+                author = author[:-2] + "…"
+            draw.text((48, 102), author, font=small, fill="#888888")
+            for index, line in enumerate(lines):
+                draw.text((48, 166 + index * 62), line, font=font, fill="#292929")
+            card.save(output_path, "PNG")
+
+    def _process_xhs_image_urls(
+        self, image_urls: List[str], uid: str, *, note: Optional[dict] = None,
+    ) -> Optional[str]:
         image_urls = image_urls[:self.xhs_max_images]
         if not image_urls:
             return None
 
+        note = note or {}
+        description = self._xhs_note_description(note)
         tmp_dir = self._temp_dir("images")
-        if len(image_urls) == 1:
+        if len(image_urls) == 1 and not description:
             raw_path = os.path.join(tmp_dir, f"temp_{uid}_ytdlp_raw")
             output_path = os.path.join(tmp_dir, f"xhs_img_{uid}.jpg")
             try:
@@ -378,7 +440,7 @@ class XiaohongshuMixin:
                 self._remove_path_quietly(raw_path)
 
         self.logger.info(
-            "检测到小红书多图（%s 张），准备合并为长图",
+            "检测到小红书图文（%s 张），准备合并为长图",
             len(image_urls),
         )
         temp_files: List[str] = []
@@ -394,6 +456,14 @@ class XiaohongshuMixin:
                 converted_images.append(jpg_path)
             if not converted_images:
                 return None
+            if description:
+                body_path = os.path.join(tmp_dir, f"temp_{uid}_description.png")
+                temp_files.append(body_path)
+                user = note.get("user")
+                user = user if isinstance(user, dict) else {}
+                author = str(user.get("nickname") or user.get("name") or note.get("uploader") or note.get("creator") or "")
+                self._xhs_render_description(description, author, body_path)
+                converted_images.append(body_path)
             output_path = os.path.join(tmp_dir, f"xhs_long_img_{uid}.jpg")
             self._merge_images_vertically(converted_images, output_path)
             return output_path
@@ -524,7 +594,7 @@ class XiaohongshuMixin:
                         "🖼️ 小红书 yt-dlp 识别到 %s 张去重后的正文图片",
                         len(image_urls),
                     )
-                    image_path = self._process_xhs_image_urls(image_urls, uid)
+                    image_path = self._process_xhs_image_urls(image_urls, uid, note=info)
                     if image_path:
                         self.logger.info("✅ 小红书 yt-dlp 图片处理成功: %s", image_path)
                         return True, image_path
@@ -1192,7 +1262,7 @@ class XiaohongshuMixin:
                 if not image_urls:
                     self.logger.warning("⚠️ %s 小红书笔记未找到图片原图 URL", source)
                     return False, None
-                image_path = self._process_xhs_image_urls(image_urls, uid)
+                image_path = self._process_xhs_image_urls(image_urls, uid, note=note)
                 return (True, image_path) if image_path else (False, None)
 
             self.logger.info(

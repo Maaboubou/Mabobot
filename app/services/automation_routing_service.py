@@ -19,6 +19,7 @@ MESSAGE_EVENT_META: Dict[EventType, Dict[str, str]] = {
     EventType.QUOTE_MESSAGE_RECEIVED: {"label": "通用引用", "icon": "bi-reply"},
     EventType.QUOTE_TEXT_MESSAGE_RECEIVED: {"label": "引用文本", "icon": "bi-chat-quote"},
     EventType.QUOTE_IMAGE_MESSAGE_RECEIVED: {"label": "引用图片", "icon": "bi-images"},
+    EventType.QUOTE_VIDEO_MESSAGE_RECEIVED: {"label": "引用视频", "icon": "bi-camera-video-fill"},
     EventType.EMOTION_MESSAGE_RECEIVED: {"label": "表情消息", "icon": "bi-emoji-smile"},
     EventType.VOICE_MESSAGE_RECEIVED: {"label": "语音消息", "icon": "bi-mic"},
     EventType.VIDEO_MESSAGE_RECEIVED: {"label": "视频消息", "icon": "bi-camera-video"},

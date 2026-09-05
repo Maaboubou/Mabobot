@@ -38,6 +38,10 @@ class AssistantRuntime:
         handler = self.handler
         return handler.handle_quote_image_message(event) if handler is not None else False
 
+    def _handle_quote_video(self, event: Event):
+        handler = self.handler
+        return handler.handle_quote_video_message(event) if handler is not None else False
+
     def start(self, event_bus: EventBus) -> bool:
         with self._lock:
             if self._handler is not None:
@@ -53,6 +57,7 @@ class AssistantRuntime:
             subscriptions = (
                 (EventType.TEXT_MESSAGE_RECEIVED, self._handle_text, "text"),
                 (EventType.QUOTE_IMAGE_MESSAGE_RECEIVED, self._handle_quote_image, "quote-image"),
+                (EventType.QUOTE_VIDEO_MESSAGE_RECEIVED, self._handle_quote_video, "quote-video"),
                 (EventType.QUOTE_TEXT_MESSAGE_RECEIVED, self._handle_text, "quote-text"),
                 (EventType.CHATBOT_FOLLOWUP_APPROVED, self._handle_text, "followup-approved"),
             )

@@ -47,6 +47,7 @@ class EventType(str, Enum):
     QUOTE_MESSAGE_RECEIVED = "quote_message_received"  # 保留原有的通用引用事件
     QUOTE_TEXT_MESSAGE_RECEIVED = "quote_text_message_received"  # 新增：引用文字消息
     QUOTE_IMAGE_MESSAGE_RECEIVED = "quote_image_message_received"  # 新增：引用图片消息
+    QUOTE_VIDEO_MESSAGE_RECEIVED = "quote_video_message_received"
     EMOTION_MESSAGE_RECEIVED = "emotion_message_received"
     VOICE_MESSAGE_RECEIVED = "voice_message_received"
     VIDEO_MESSAGE_RECEIVED = "video_message_received"
@@ -295,6 +296,7 @@ class EventBus:
             EventType.QUOTE_MESSAGE_RECEIVED,
             EventType.QUOTE_TEXT_MESSAGE_RECEIVED,
             EventType.QUOTE_IMAGE_MESSAGE_RECEIVED,
+            EventType.QUOTE_VIDEO_MESSAGE_RECEIVED,
             EventType.EMOTION_MESSAGE_RECEIVED,
             EventType.VOICE_MESSAGE_RECEIVED,
             EventType.VIDEO_MESSAGE_RECEIVED,

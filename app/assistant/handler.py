@@ -8,6 +8,7 @@ import os
 import time
 import logging
 import threading
+import tempfile
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
@@ -48,6 +49,7 @@ from app.utils.bot_mentions import (
     strip_bot_mentions,
 )
 from app.utils.plugin_config import get_config
+from app.utils.video_frames import extract_evenly_spaced_frames
 
 
 logger = logging.getLogger(__name__)
@@ -276,6 +278,18 @@ class AssistantHandler:
             thread_name_prefix="ChatBot-Followup",
         )
         self._followup_closed = False
+
+        # Resume durable person extraction/projection queues even when a quiet
+        # chat does not receive another message.  Normal event and stage due
+        # thresholds are unchanged and still enforced by ChatMemoryService.
+        self.memory_service.start_automatic_maintenance(
+            self.chat_log_manager.get_chat_list,
+            self._get_chat_memory_config,
+            poll_minutes=max(
+                1,
+                int(getattr(self, "memory_automation_poll_minutes", 15) or 15),
+            ),
+        )
 
         logger.info(
             "Assistant 初始化完成 - bot_name=%s codex_persistent=%s effort=%s search=%s",
@@ -1702,18 +1716,23 @@ class AssistantHandler:
         )
 
 
+    def handle_quote_video_message(self, event: Event):
+        """处理引用视频；视觉问答与引用图片共用隔离流程。"""
+        return self.handle_quote_image_message(event)
+
     def handle_quote_image_message(self, event: Event):
-        """处理引用图片消息事件 (Unified Flow)"""
+        """处理引用图片或视频消息事件 (Unified Flow)。"""
         try:
-            logger.info("🤖 Assistant received quote image message event")
             start_time = time.time()
-            logger.info(f"🔍 开始处理quote_image消息")
 
             content = event.data.get("message", "")
             chat_name = event.data.get("chat_name", "")
             sender = event.data.get("sender", "")
             chat_type = event.data.get("chat_type", "private")
             quote_content = event.data.get("quote_content", "")
+            is_video_quote = bool(event.data.get("has_quote_video")) or "[视频]" in str(quote_content)
+            media_label = "视频" if is_video_quote else "图片"
+            logger.info("🤖 Assistant received quoted %s event", media_label)
 
             if self._is_sender_ignored(chat_name, sender):
                 logger.info(f"🤖 Ignored blacklisted quote sender: chat={chat_name}, sender={sender}")
@@ -1739,12 +1758,19 @@ class AssistantHandler:
             proactive_processing_acquired = False
             logger.info(f"✅ is_mention initialized to False")
 
-            # 1. 验证是否为图片引用
+            # 1. 验证是否为对应的媒体引用
             # 如果是通过兜底检测转发来的，跳过验证（我们已经通过正则确认了）
-            logger.info(f"🔍 Quote validation: quote_content='{quote_content}', has_quote_image={event.data.get('has_quote_image', False)}")
-            if "[图片]" not in quote_content:
+            expected_marker = "[视频]" if is_video_quote else "[图片]"
+            expected_flag = "has_quote_video" if is_video_quote else "has_quote_image"
+            logger.info(
+                "🔍 Quote validation: media=%s quote_content=%r flag=%s",
+                media_label,
+                quote_content,
+                bool(event.data.get(expected_flag)),
+            )
+            if expected_marker not in str(quote_content):
                 # 检查是否为误识别消息转发（has_quote_image会被我们设置为True）
-                if not event.data.get("has_quote_image", False):
+                if not event.data.get(expected_flag, False):
                     logger.warning(f"🤖 Quote content verification failed. Content: {quote_content[:100]}...")
                     return False
                 else:
@@ -1797,7 +1823,7 @@ class AssistantHandler:
                     return False
 
                 judge_context = self._get_judge_context_messages(chat_name, 20)
-                temp_last_msg = {"sender": sender, "content": f"{content} [引用了一张图片]"}
+                temp_last_msg = {"sender": sender, "content": f"{content} [引用了一个{media_label}]"}
 
                 if not self._consult_judge(judge_context + [temp_last_msg], role_name, judge_name):
                     self._set_judge_cooldown(chat_name, judge_name, state['msg_count'], judge_timing)
@@ -1816,11 +1842,22 @@ class AssistantHandler:
 
             # 4. 执行处理
             try:
-                # 4.1 下载/处理图片
-                image_base64 = self._process_quoted_image(event.data, wx_manager)
-                if not image_base64:
+                # 4.1 下载引用媒体。视频只在本地解码为四张抽帧。
+                if is_video_quote:
+                    visual_inputs = self._process_quoted_video_frames(event.data, wx_manager)
+                else:
+                    image_base64 = self._process_quoted_image(event.data, wx_manager)
+                    visual_inputs = [
+                        {
+                            "base64": image_base64,
+                            "position_percent": None,
+                            "timestamp_seconds": None,
+                        }
+                    ] if image_base64 else []
+                if not visual_inputs:
                     logger.warning(
-                        "🤖 引用图片不可用，本次保持微信静默: chat=%s message_id=%s",
+                        "🤖 引用%s不可用，本次保持微信静默: chat=%s message_id=%s",
+                        media_label,
                         chat_name,
                         event.data.get("message_id", ""),
                     )
@@ -1840,15 +1877,21 @@ class AssistantHandler:
                 chat_supports_vision = True
                 image_description = ""
 
-                quote_image_content = self._build_quote_image_augmented_content(
-                    content,
-                    image_description=image_description,
-                    image_available=chat_supports_vision,
-                )
+                if is_video_quote:
+                    quote_visual_content = self._build_quote_video_augmented_content(
+                        content,
+                        visual_inputs,
+                    )
+                else:
+                    quote_visual_content = self._build_quote_image_augmented_content(
+                        content,
+                        image_description=image_description,
+                        image_available=chat_supports_vision,
+                    )
                 memory_context, memory_stats = self.memory_service.build_retrieval_context(
                     chat_name,
                     sender=sender,
-                    content=quote_image_content,
+                    content=quote_visual_content,
                     recent_messages=context_msgs,
                     config=memory_config,
                 )
@@ -1859,10 +1902,10 @@ class AssistantHandler:
                     context_msgs,
                     "",
                     sender,
-                    quote_image_content,
+                    quote_visual_content,
                     role_name,
                     memory_config,
-                    input_image_count=1 if chat_supports_vision else 0,
+                    input_image_count=len(visual_inputs) if chat_supports_vision else 0,
                     memory_context=memory_context,
                 )
                 logger.info(
@@ -1873,9 +1916,9 @@ class AssistantHandler:
                     memory_stats.get("tokens", 0),
                 )
                 if chat_supports_vision:
-                    messages = self._attach_image_to_latest_user_message(
+                    messages = self._attach_images_to_latest_user_message(
                         messages,
-                        image_base64,
+                        [str(item.get("base64") or "") for item in visual_inputs],
                     )
 
                 # 4.6 将最终 Prompt 核验后的记忆审计随调用写入 LLM Records
@@ -1891,6 +1934,7 @@ class AssistantHandler:
                     _mabobot_attachment_capture=response_attachments,
                     _mabobot_allow_image_input=chat_supports_vision,
                     _mabobot_memory_trace=verified_memory_trace,
+                    _mabobot_web_search_mode="live" if is_video_quote else None,
                 )
                 if response_attachments:
                     response = self._strip_internal_action_markers(response)
@@ -1913,10 +1957,10 @@ class AssistantHandler:
                         if response_attachments:
                             sent_response = self._send_response_attachments(wx_manager, chat_name, response_attachments)
                         if not sent_response:
-                            logger.error(f"🤖 Failed to send quote image attachment(s) to {chat_name}")
+                            logger.error("🤖 Failed to send quoted-media attachment(s) to %s", chat_name)
                             return False
                         self._finalize_anchored_context(chat_name, response)
-                        logger.info(f"🤖 Sent quote image response to {chat_name}")
+                        logger.info("🤖 Sent quoted-%s response to %s", media_label, chat_name)
 
                         # 记录 E2E 响应时间
                         duration = time.time() - start_time
@@ -1936,16 +1980,17 @@ class AssistantHandler:
             return False
 
         except Exception as e:
-            logger.error(f"🤖 ChatBot处理图片消息失败: {e}")
+            logger.error("🤖 ChatBot 处理引用媒体失败: %s", e, exc_info=True)
             return False
 
     @staticmethod
     def _strip_quote_image_prompt_annotation(text: str) -> str:
-        """移除只属于单轮引用图片请求的内部提示注释。"""
+        """移除只属于单轮引用视觉请求的内部提示注释。"""
         cleaned = str(text or "")
         markers = (
             "\n\n【当前引用图片】",
             "\n\n【重要】当前用户正在询问本条消息引用的图片。",
+            "\n\n【当前引用视频】",
         )
         for marker in markers:
             if marker in cleaned:
@@ -2008,36 +2053,51 @@ class AssistantHandler:
         image_base64: str,
     ) -> List[Dict]:
         """仅在隔离副本的最新用户消息上附加当前图片。"""
-        if not messages or not image_base64:
+        return cls._attach_images_to_latest_user_message(
+            messages,
+            [image_base64] if image_base64 else [],
+        )
+
+    @classmethod
+    def _attach_images_to_latest_user_message(
+        cls,
+        messages: List[Dict],
+        images_base64: List[str],
+    ) -> List[Dict]:
+        """在本轮最新用户消息上附加一张或多张隔离图片。"""
+        image_values = [str(value or "").strip() for value in images_base64 if str(value or "").strip()]
+        if not messages or not image_values:
             return copy.deepcopy(list(messages or []))
 
         prepared, removed_history_images = cls._strip_image_content_parts(
             messages,
             preserve_latest_user_annotation=True,
         )
-
-        image_url = image_base64.strip()
-        if not image_url.startswith("data:image/"):
-            image_url = f"data:image/jpeg;base64,{image_url}"
+        image_parts = []
+        for image_value in image_values:
+            image_url = image_value
+            if not image_url.startswith("data:image/"):
+                image_url = f"data:image/jpeg;base64,{image_url}"
+            image_parts.append({"type": "image_url", "image_url": {"url": image_url}})
 
         for msg in reversed(prepared):
             if msg.get("role") != "user" or msg.get("name") == "search_context":
                 continue
 
             content = msg.get("content")
-            image_part = {"type": "image_url", "image_url": {"url": image_url}}
             if isinstance(content, list):
-                content.append(image_part)
+                content.extend(image_parts)
             elif content:
                 msg["content"] = [
                     {"type": "text", "text": str(content)},
-                    image_part,
+                    *image_parts,
                 ]
             else:
-                msg["content"] = [image_part]
+                msg["content"] = image_parts
             logger.info(
-                "🖼️ 引用图片请求已隔离：移除历史图片=%s，当前图片=1",
+                "🖼️ 引用视觉请求已隔离：移除历史图片=%s，当前图片=%s",
                 removed_history_images,
+                len(image_parts),
             )
             return prepared
 
@@ -2073,6 +2133,39 @@ class AssistantHandler:
         if not content:
             return binding
         if "【当前引用图片】" in content:
+            return content
+        return f"{content}\n\n{binding}"
+
+    @staticmethod
+    def _build_quote_video_augmented_content(
+        content: str,
+        visual_inputs: List[Dict[str, Any]],
+    ) -> str:
+        """绑定四张视频抽帧，并要求模型主动核查出处。"""
+        content = str(content or "").strip()
+        labels = []
+        for index, item in enumerate(visual_inputs, start=1):
+            try:
+                percent = float(item.get("position_percent"))
+                timestamp = float(item.get("timestamp_seconds"))
+                labels.append(f"第{index}张 {percent:.1f}% / {timestamp:.1f}秒")
+            except (TypeError, ValueError):
+                labels.append(f"第{index}张")
+        frame_note = "、".join(labels) or "4张等间隔抽帧"
+        binding = (
+            "【当前引用视频】本条消息附带的图片是同一个被引用视频的"
+            f"四个时间分段中点抽帧（{frame_note}），按时间顺序排列。"
+            "请结合四张图回答用户，但不要声称看到了抽帧之间的动作或听到了声音。"
+            "无论用户是否明确追问出处，都要主动检查画面中的水印、账号名、"
+            "标题、字幕、标志和地标等线索，并使用网页搜索尝试找到原始发布页或可靠出处。"
+            "找到可靠出处时可自然地补充证据和直接链接；找不到时不得编造，"
+            "也不要汇报检索步骤、缺少了哪些视觉线索，或追加模板化的免责说明。"
+            "只有当用户明确询问出处时，才需要直接回答当前的查证结果。"
+            "历史聊天只作为语气和背景参考，不要借用历史中的其他图片猜测。"
+        )
+        if not content:
+            return binding
+        if "【当前引用视频】" in content:
             return content
         return f"{content}\n\n{binding}"
 
@@ -3166,7 +3259,10 @@ messages 是你要发送到微信的消息数组。请像真实微信用户一�
         **kwargs,
     ) -> str:
         response_format = self._get_human_like_response_format(role_name)
-        search_enabled = self._is_search_enabled()
+        requested_search_mode = str(kwargs.get("_mabobot_web_search_mode") or "").strip().lower()
+        if requested_search_mode not in {"disabled", "cached", "indexed", "live"}:
+            requested_search_mode = ""
+        search_enabled = self._is_search_enabled() or bool(requested_search_mode)
         output_schema = None
         max_output_messages = 0
         if response_format:
@@ -3190,7 +3286,8 @@ messages 是你要发送到微信的消息数组。请像真实微信用户一�
                     reasoning_effort=self.codex_reasoning_effort,
                     reasoning_summary=self.codex_reasoning_summary,
                     web_search_mode=(
-                        self.codex_web_search_mode if search_enabled else "disabled"
+                        requested_search_mode
+                        or (self.codex_web_search_mode if search_enabled else "disabled")
                     ),
                     timeout_seconds=self.codex_turn_timeout_seconds,
                     max_turns=self.codex_max_turns_per_thread,
@@ -3630,6 +3727,64 @@ messages 是你要发送到微信的消息数组。请像真实微信用户一�
         except Exception as e:
             logger.error(f"🤖 处理引用图片失败: {e}")
             return None
+
+    def _process_quoted_video_frames(
+        self,
+        message: Dict[str, Any],
+        wx_manager,
+    ) -> List[Dict[str, Any]]:
+        """下载精确引用的视频，只返回四张本地抽帧的 base64。"""
+        chat_name = str(message.get("chat_name") or "")
+        message_id = message.get("message_id")
+        requested_path = str(message.get("quote_video_path") or "").strip()
+        video_path = requested_path if requested_path and Path(requested_path).is_file() else ""
+        try:
+            if not video_path and message.get("has_quote_video") and wx_manager and message_id:
+                logger.info("🤖 开始按需下载引用视频: %s:%s", chat_name, message_id)
+                video_path = str(
+                    wx_manager.download_quote_video(chat_name, message_id=message_id)
+                    or ""
+                ).strip()
+            if not video_path or not Path(video_path).is_file():
+                logger.error(
+                    "🤖 引用视频精确路径不存在或下载失败: "
+                    "chat=%s message_id=%s requested_path=%s downloaded_path=%s",
+                    chat_name,
+                    message_id,
+                    requested_path,
+                    video_path,
+                )
+                return []
+
+            with tempfile.TemporaryDirectory(prefix="mabobot_quote_video_") as frame_dir:
+                samples = extract_evenly_spaced_frames(
+                    video_path,
+                    frame_dir,
+                    count=4,
+                    max_dimension=1280,
+                )
+                if len(samples) != 4:
+                    raise RuntimeError(f"引用视频抽帧数量异常: {len(samples)}/4")
+                visual_inputs = []
+                for sample in samples:
+                    encoded = base64.b64encode(sample.path.read_bytes()).decode("ascii")
+                    visual_inputs.append(
+                        {
+                            "base64": encoded,
+                            "position_percent": sample.position_percent,
+                            "timestamp_seconds": sample.timestamp_seconds,
+                            "duration_seconds": sample.duration_seconds,
+                        }
+                    )
+                logger.info(
+                    "🎬 引用视频已在后台抽取 4 帧: chat=%s duration=%.1fs",
+                    chat_name,
+                    samples[0].duration_seconds,
+                )
+                return visual_inputs
+        except Exception as e:
+            logger.error("🤖 处理引用视频抽帧失败: %s", e, exc_info=True)
+            return []
 
     def _detect_misidentified_quote_image(self, content: str) -> Optional[Dict[str, str]]:
         """检测被误识别为text的引用图片消息

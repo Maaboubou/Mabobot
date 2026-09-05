@@ -578,6 +578,39 @@
       "type": "string",
       "description": "主动回复裁判的系统提示词（支持{chat_text}占位符）",
       "default": "## Role\n你是一个谨慎的聊天群组观察员，负责判断 AI 助手是否应该参与当前对话。\n\n## Context\n以下是最近的聊天记录：\n[对话开始]\n{chat_text}\n[对话结束]\n\n## Rules\n- 明确提到机器人、请求帮助或提出适合 AI 回答的问题时，可以回复。\n- 纯表情、复读、礼貌收尾或参与会打扰正常交流时，不回复。\n- 不确定时优先不主动介入。\n\n## Output\n仅输出 JSON：\n{\n  \"atmosphere\": \"当前聊天氛围\",\n  \"should_reply\": true,\n  \"reason\": \"简短说明判断理由\"\n}"
+    },
+    "memory_person_stale_pending_days": {
+      "type": "integer",
+      "description": "人物相关消息长期未达到常规门槛时，最多等待多少天后自动炼化",
+      "default": 14,
+      "minimum": 1,
+      "maximum": 180
+    },
+    "memory_person_stale_pending_min_messages": {
+      "type": "integer",
+      "description": "启用超时自动炼化所需的最少人物相关消息数",
+      "default": 8,
+      "minimum": 1,
+      "maximum": 100
+    },
+    "memory_person_auto_merge_stable_identities": {
+      "type": "boolean",
+      "description": "稳定 sender_id 已确认昵称与旧无ID身份重合时自动合并，并保留可撤销审计",
+      "default": true
+    },
+    "memory_person_refresh_max_age_days": {
+      "type": "integer",
+      "description": "人物已有未投影观察时，最多等待多少天后自动刷新人物资料",
+      "default": 7,
+      "minimum": 1,
+      "maximum": 90
+    },
+    "memory_automation_poll_minutes": {
+      "type": "integer",
+      "description": "无人操作时自动扫描人物积压与投影刷新的间隔（分钟）",
+      "default": 15,
+      "minimum": 1,
+      "maximum": 1440
     }
   },
   "config": {
@@ -653,6 +686,11 @@
     "proactive_interval_minutes": 1,
     "proactive_msg_threshold": 5,
     "proactive_judge_model": "deepseek-chat",
-    "proactive_judge_prompt": "## Role\n你是一个谨慎的聊天群组观察员，负责判断 AI 助手是否应该参与当前对话。\n\n## Context\n以下是最近的聊天记录：\n[对话开始]\n{chat_text}\n[对话结束]\n\n## Rules\n- 明确提到机器人、请求帮助或提出适合 AI 回答的问题时，可以回复。\n- 纯表情、复读、礼貌收尾或参与会打扰正常交流时，不回复。\n- 不确定时优先不主动介入。\n\n## Output\n仅输出 JSON：\n{\n  \"atmosphere\": \"当前聊天氛围\",\n  \"should_reply\": true,\n  \"reason\": \"简短说明判断理由\"\n}"
+    "proactive_judge_prompt": "## Role\n你是一个谨慎的聊天群组观察员，负责判断 AI 助手是否应该参与当前对话。\n\n## Context\n以下是最近的聊天记录：\n[对话开始]\n{chat_text}\n[对话结束]\n\n## Rules\n- 明确提到机器人、请求帮助或提出适合 AI 回答的问题时，可以回复。\n- 纯表情、复读、礼貌收尾或参与会打扰正常交流时，不回复。\n- 不确定时优先不主动介入。\n\n## Output\n仅输出 JSON：\n{\n  \"atmosphere\": \"当前聊天氛围\",\n  \"should_reply\": true,\n  \"reason\": \"简短说明判断理由\"\n}",
+    "memory_person_stale_pending_days": 14,
+    "memory_person_stale_pending_min_messages": 8,
+    "memory_person_auto_merge_stable_identities": true,
+    "memory_person_refresh_max_age_days": 7,
+    "memory_automation_poll_minutes": 15
   }
 }

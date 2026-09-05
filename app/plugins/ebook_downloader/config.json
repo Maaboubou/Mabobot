@@ -1,0 +1,54 @@
+{
+  "name": "ebook_downloader",
+  "display_name": "电子书下载",
+  "version": "1.0.0",
+  "description": "把口语化找书请求结构化，在共享登录浏览器中高置信度匹配并发送电子书文件。",
+  "author": "System",
+  "category": "utility",
+  "ui": {
+    "icon": "bi-book",
+    "llm_tasks": {
+      "parse_request": {
+        "label": "找书请求解析",
+        "description": "将口语化找书请求解析为书名、作者、版本、语言、格式及风险判断",
+        "category": "电子书",
+        "order": 10
+      }
+    },
+    "settings_groups": {
+      "trigger": {"title": "触发方式", "description": "电子书命令入口", "order": 10},
+      "matching": {"title": "自动匹配", "description": "高置信度下载阈值与候选交互", "order": 20},
+      "browser": {"title": "浏览器下载", "description": "共享 Chrome 页面与文件限制", "order": 30},
+      "policy": {"title": "内容策略", "description": "本地规则文件与模型风险门禁", "order": 40}
+    }
+  },
+  "requires": ["selenium"],
+  "config_schema": {
+    "trigger_keywords": {"type": "array", "title": "找书触发词", "description": "消息以其中一个词开头时触发", "group": "trigger", "default": ["找书", "下载电子书", "电子书"]},
+    "session_timeout_seconds": {"type": "integer", "title": "候选有效期（秒）", "description": "用户回复候选序号的有效时间，当前交互上限为 60 秒", "group": "matching", "default": 60, "minimum": 10, "maximum": 60},
+    "max_choices": {"type": "integer", "title": "候选作品数", "description": "模糊时最多返回的不同作品数量", "group": "matching", "default": 5, "minimum": 1, "maximum": 5},
+    "parse_confidence_threshold": {"type": "number", "title": "请求解析阈值", "description": "非 ISBN/DOI 请求自动下载所需的最低模型解析置信度；模型分数只作为门禁，不替代书目匹配", "group": "matching", "default": 0.85, "minimum": 0.0, "maximum": 1.0, "step": 0.01},
+    "title_author_threshold": {"type": "number", "title": "书名+作者自动阈值", "description": "同时提供书名和作者时的最低身份得分", "group": "matching", "default": 0.9, "minimum": 0.5, "maximum": 1.0, "step": 0.01},
+    "title_only_threshold": {"type": "number", "title": "仅书名自动阈值", "description": "只提供书名时使用更严格的最低身份得分", "group": "matching", "default": 0.96, "minimum": 0.5, "maximum": 1.0, "step": 0.01},
+    "title_author_margin": {"type": "number", "title": "书名+作者领先差", "description": "第一名相对第二名的最低得分差", "group": "matching", "default": 0.08, "minimum": 0.0, "maximum": 0.5, "step": 0.01},
+    "title_only_margin": {"type": "number", "title": "仅书名领先差", "description": "仅书名请求要求更大的第一名领先差", "group": "matching", "default": 0.12, "minimum": 0.0, "maximum": 0.5, "step": 0.01},
+    "page_timeout_seconds": {"type": "integer", "title": "页面超时（秒）", "description": "Z-Library 搜索和详情页等待时间", "group": "browser", "default": 20, "minimum": 5, "maximum": 120},
+    "download_timeout_seconds": {"type": "integer", "title": "下载超时（秒）", "description": "单本电子书等待完成的最长时间", "group": "browser", "default": 120, "minimum": 10, "maximum": 600},
+    "max_file_mb": {"type": "integer", "title": "文件上限（MB）", "description": "超过此大小的文件不会发送到微信", "group": "browser", "default": 100, "minimum": 1, "maximum": 500},
+    "local_policy_path": {"type": "string", "title": "附加本地规则文件", "description": "可选 JSON 路径；同 ID 规则以插件内置版本优先，修改后需重载插件", "group": "policy", "default": ""}
+  },
+  "config": {
+    "trigger_keywords": ["找书", "下载电子书", "电子书"],
+    "session_timeout_seconds": 60,
+    "max_choices": 5,
+    "parse_confidence_threshold": 0.85,
+    "title_author_threshold": 0.9,
+    "title_only_threshold": 0.96,
+    "title_author_margin": 0.08,
+    "title_only_margin": 0.12,
+    "page_timeout_seconds": 20,
+    "download_timeout_seconds": 120,
+    "max_file_mb": 100,
+    "local_policy_path": ""
+  }
+}

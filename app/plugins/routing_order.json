@@ -6,7 +6,9 @@
       "magnet_check:text_message_received:handle_text",
       "boc_rate:text_message_received:handle_text",
       "Weekly:text_message_received:handle_text",
-      "menu_translator:text_message_received:handle_text"
+      "menu_translator:text_message_received:handle_text",
+      "ebook_downloader:text_message_received:handle_command",
+      "ebook_downloader:text_message_received:handle_session_reply"
     ],
     "image_message_received": [
       "builtin_chat_logger:image_message_received:handle_image_message",
@@ -20,7 +22,9 @@
     "quote_message_received": [
       "builtin_chat_logger:quote_message_received:handle_quote_message"
     ],
-    "quote_text_message_received": [],
+    "quote_text_message_received": [
+      "ebook_downloader:quote_text_message_received:handle_session_reply"
+    ],
     "quote_image_message_received": [],
     "other_message_received": [],
     "tickle_message_received": []

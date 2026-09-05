@@ -127,7 +127,7 @@
             </div>
 
             <div class="sidebar-footer p-3 border-top border-secondary border-opacity-25">
-                <small class="text-muted d-block mb-1">版本：3.0.2</small>
+                <small class="text-muted d-block mb-1">版本：3.1.0</small>
                 <div class="d-flex align-items-center text-muted gap-2">
                     <button id="themeToggle" type="button" class="sidebar-theme-toggle"
                         aria-label="切换到暗色模式" aria-pressed="false" title="切换到暗色模式">
@@ -1099,7 +1099,7 @@
                                     </button>
                                     <button class="memory-nav-btn" data-bs-target="#memoryLibraryReviewsPane" type="button"
                                         onclick="App.switchMemoryTab(this, '#memoryLibraryReviewsPane')">
-                                        <span><i class="bi bi-shield-exclamation"></i>待复核</span>
+                                        <span><i class="bi bi-shield-exclamation"></i>自动隔离</span>
                                         <span class="memory-nav-badge" id="memoryLibraryReviewCount">0</span>
                                     </button>
                                     <button class="memory-nav-btn" data-bs-target="#memoryLibraryChangesPane" type="button"
@@ -1130,7 +1130,7 @@
                                         <select class="mem-feed-select" id="memoryLibraryStatus" onchange="App.searchMemoryLibraryEvents()">
                                             <option value="all">全部版本</option>
                                             <option value="active">当前有效</option>
-                                            <option value="quarantined">待人工复核（已隔离）</option>
+                                            <option value="quarantined">自动隔离（不参与回答）</option>
                                             <option value="superseded">已被替代</option>
                                             <option value="invalidated">已作废</option>
                                         </select>
@@ -1615,14 +1615,14 @@
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
     <!-- App Scripts -->
     <script src="/static/assets/js/api.js?v=3.5.16"></script>
-    <script src="/static/assets/js/ui.js?v=3.4.19"></script>
+    <script src="/static/assets/js/ui.js?v=3.4.21"></script>
     <script src="/static/assets/js/system_operations.js?v=1.3.2"></script>
     <script src="/static/assets/js/system_tools.js?v=1.0.0"></script>
     <script src="/static/assets/js/llm_manager.js?v=3.4.11"></script>
     <script src="/static/assets/js/codex_center.js?v=1.0.14"></script>
     <script src="/static/assets/js/codex_skills.js?v=1.1.0"></script>
     <script src="/static/assets/js/main.js?v=3.6.14"></script>
-    <script src="/static/assets/js/memory_console.js?v=1.0.3"></script>
+    <script src="/static/assets/js/memory_console.js?v=1.0.4"></script>
 
     <!-- ==================== Judge History Modal ==================== -->
     <div class="modal fade" id="judgeHistoryModal" tabindex="-1" aria-labelledby="judgeHistoryModalLabel"

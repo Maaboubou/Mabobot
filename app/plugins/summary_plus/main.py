@@ -17,6 +17,7 @@ from selenium import webdriver
 
 from app.core.event_bus import Event, EventType
 from app.services.llm_manager import get_llm_manager
+from app.services.shared_chrome import get_shared_chrome_operation_lock
 from app.services.email_service import get_email_service
 from app.services.plugin_runtime import PluginContext
 from app.services.runtime_operations import OperationContext
@@ -333,7 +334,7 @@ class SummaryService(BrowserRuntimeMixin, MediaPipelineMixin, XiaohongshuMixin):
         # WebDriver 单例管理
         self.driver: Optional[webdriver.Chrome] = None
         self.driver_lock = threading.RLock()
-        self.driver_operation_lock = threading.RLock()
+        self.driver_operation_lock = get_shared_chrome_operation_lock()
         with self.driver_lock:
             self._init_webdriver()
 

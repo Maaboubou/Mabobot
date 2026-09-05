@@ -1,0 +1,686 @@
+{
+  "schema_version": 1,
+  "description": "电子书自动下载本地策略规则。A/B 为硬拒绝，C 为人工复核。本文件不是官方或完整禁书目录。",
+  "dataset": {
+    "name": "Banned Books — Open Censorship Core",
+    "version": "2026-07-07",
+    "license": "CC-BY-4.0",
+    "doi": "10.5281/zenodo.21235503",
+    "imported_country": "CN",
+    "imported_status": "active",
+    "note": "开放数据覆盖有限；中文别名为本项目维护补充，部署者应独立复核。"
+  },
+  "updated_at": "2026-09-05",
+  "rules": [
+    {
+      "id": "bboc-cn-1000-years-of-joys-and-sorrows",
+      "title": "1000 Years of Joys and Sorrows",
+      "aliases": [
+        "千年悲欢",
+        "千年悲歡"
+      ],
+      "authors": [
+        "Ai Weiwei"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-1984",
+      "title": "1984",
+      "aliases": [
+        "一九八四"
+      ],
+      "authors": [
+        "George Orwell"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-and-tango-makes-three",
+      "title": "And Tango Makes Three",
+      "aliases": [],
+      "authors": [
+        "Justin Richardson",
+        "Peter Parnell"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-animal-farm",
+      "title": "Animal Farm",
+      "aliases": [
+        "动物农场",
+        "動物農場"
+      ],
+      "authors": [
+        "George Orwell"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-beijing-coma",
+      "title": "Beijing Coma",
+      "aliases": [
+        "北京植物人",
+        "肉土"
+      ],
+      "authors": [
+        "Ma Jian"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-bloody-myth-tan-hecheng",
+      "title": "The Killing Wind: A Chinese County's Descent into Madness during the Cultural Revolution",
+      "aliases": [
+        "血的神话",
+        "血的神話",
+        "公元1967年湖南道县文革大屠杀纪实"
+      ],
+      "authors": [
+        "Tan Hecheng"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-candy-mian-mian",
+      "title": "Candy",
+      "aliases": [],
+      "authors": [
+        "Mian Mian"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-capital-and-ideology",
+      "title": "Capital and Ideology",
+      "aliases": [
+        "资本与意识形态",
+        "資本與意識形態"
+      ],
+      "authors": [
+        "Thomas Piketty"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-dream-of-ding-village",
+      "title": "Dream of Ding Village",
+      "aliases": [
+        "丁庄梦",
+        "丁莊夢"
+      ],
+      "authors": [
+        "Yan Lianke"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-for-a-song-and-a-hundred-songs",
+      "title": "For a Song and a Hundred Songs",
+      "aliases": [],
+      "authors": [
+        "Liao Yiwu"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-forbidden-memory-woeser",
+      "title": "Forbidden Memory: Tibet During the Cultural Revolution",
+      "aliases": [
+        "杀劫：镜头下的西藏文革",
+        "殺劫：鏡頭下的西藏文革"
+      ],
+      "authors": [
+        "Tsering Woeser"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-god-is-red-liao-yiwu",
+      "title": "God Is Red",
+      "aliases": [
+        "上帝是红色的",
+        "上帝是紅色的"
+      ],
+      "authors": [
+        "Liao Yiwu"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-how-the-red-sun-rose",
+      "title": "How the Red Sun Rose",
+      "aliases": [
+        "红太阳是怎样升起的",
+        "紅太陽是怎樣升起的"
+      ],
+      "authors": [
+        "Gao Hua"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-life-and-death-in-shanghai",
+      "title": "Life and Death in Shanghai",
+      "aliases": [
+        "上海生死劫"
+      ],
+      "authors": [
+        "Nien Cheng"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-lingren-wangshi",
+      "title": "Lingren Wangshi",
+      "aliases": [
+        "伶人往事"
+      ],
+      "authors": [
+        "Zhang Yihe"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-mao-the-unknown-story",
+      "title": "Mao: The Unknown Story",
+      "aliases": [
+        "毛泽东：鲜为人知的故事",
+        "毛澤東：鮮為人知的故事"
+      ],
+      "authors": [
+        "Jung Chang"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-moving-away-from-the-imperial-regime",
+      "title": "Moving Away from the Imperial Regime",
+      "aliases": [
+        "走出帝制"
+      ],
+      "authors": [
+        "Qin Hui"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-no-enemies-no-hatred",
+      "title": "No Enemies, No Hatred",
+      "aliases": [
+        "我没有敌人",
+        "我沒有敵人"
+      ],
+      "authors": [
+        "Liu Xiaobo"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-one-mans-bible",
+      "title": "One Man's Bible",
+      "aliases": [
+        "一个人的圣经",
+        "一個人的聖經"
+      ],
+      "authors": [
+        "Gao Xingjian"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-peoples-republic-of-amnesia",
+      "title": "People's Republic of Amnesia",
+      "aliases": [
+        "失忆人民共和国",
+        "失憶人民共和國"
+      ],
+      "authors": [
+        "Louisa Lim"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-prisoner-of-the-state",
+      "title": "Prisoner of the State",
+      "aliases": [
+        "国家的囚徒",
+        "國家的囚徒",
+        "赵紫阳秘密录音",
+        "趙紫陽秘密錄音"
+      ],
+      "authors": [
+        "Zhao Ziyang"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-prisoners-of-the-state",
+      "title": "Prisoners of the State: The Inside Story of China's Secret System",
+      "aliases": [],
+      "authors": [
+        "Xu Zhiyong"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-red-dust-ma-jian",
+      "title": "Red Dust",
+      "aliases": [
+        "红尘",
+        "紅塵"
+      ],
+      "authors": [
+        "Ma Jian"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-serve-the-people-yan-lianke",
+      "title": "Serve the People!",
+      "aliases": [
+        "为人民服务",
+        "為人民服務"
+      ],
+      "authors": [
+        "Yan Lianke"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-soul-mountain",
+      "title": "Soul Mountain",
+      "aliases": [
+        "灵山",
+        "靈山"
+      ],
+      "authors": [
+        "Gao Xingjian"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-the-corpse-walker",
+      "title": "The Corpse Walker",
+      "aliases": [
+        "吆尸人",
+        "吆屍人"
+      ],
+      "authors": [
+        "Liao Yiwu"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-the-fat-years",
+      "title": "The Fat Years",
+      "aliases": [
+        "盛世：中国2013年",
+        "盛世：中國2013年"
+      ],
+      "authors": [
+        "Chan Koonchung"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-the-noodle-maker",
+      "title": "The Noodle Maker",
+      "aliases": [
+        "拉面者",
+        "拉麵者"
+      ],
+      "authors": [
+        "Ma Jian"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-the-private-life-of-chairman-mao",
+      "title": "The Private Life of Chairman Mao",
+      "aliases": [
+        "毛泽东私人医生回忆录",
+        "毛澤東私人醫生回憶錄"
+      ],
+      "authors": [
+        "Li Zhisui"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-the-tiananmen-papers",
+      "title": "The Tiananmen Papers",
+      "aliases": [
+        "天安门文件",
+        "天安門文件"
+      ],
+      "authors": [
+        "Zhang Liang"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-tombstone-yang-jisheng",
+      "title": "Tombstone",
+      "aliases": [
+        "墓碑：中国六十年代大饥荒纪实",
+        "墓碑：中國六十年代大饑荒紀實"
+      ],
+      "authors": [
+        "Yang Jisheng"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-unfree-speech",
+      "title": "Unfree Speech",
+      "aliases": [
+        "不自由的言论",
+        "不自由的言論"
+      ],
+      "authors": [
+        "Joshua Wong"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-viral-murong-xuecun",
+      "title": "Viral: China's COVID Coverups",
+      "aliases": [],
+      "authors": [
+        "Murong Xuecun"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-we-uyghurs-have-no-say",
+      "title": "We Uyghurs Have No Say",
+      "aliases": [
+        "维吾尔人没有发言权",
+        "維吾爾人沒有發言權"
+      ],
+      "authors": [
+        "Ilham Tohti"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-wild-swans",
+      "title": "Wild Swans",
+      "aliases": [
+        "鸿：三代中国女人的故事",
+        "鴻：三代中國女人的故事"
+      ],
+      "authors": [
+        "Jung Chang"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-wuhan-diary-fang-fang",
+      "title": "Wuhan Diary",
+      "aliases": [
+        "武汉日记",
+        "武漢日記"
+      ],
+      "authors": [
+        "Fang Fang"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-yellow-peril-wang-lixiong",
+      "title": "Yellow Peril",
+      "aliases": [
+        "黄祸",
+        "黃禍"
+      ],
+      "authors": [
+        "Wang Lixiong"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "bboc-cn-zhuan-falun",
+      "title": "Zhuan Falun",
+      "aliases": [
+        "转法轮",
+        "轉法輪"
+      ],
+      "authors": [
+        "Li Hongzhi"
+      ],
+      "isbn": [],
+      "doi": [],
+      "source_tier": "B",
+      "source_url": "https://doi.org/10.5281/zenodo.21235503",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "local-adult-explicit-shaofu-baijie",
+      "title": "少妇白洁",
+      "aliases": [],
+      "authors": [],
+      "isbn": [],
+      "doi": [],
+      "risk_categories": ["pornography_explicit"],
+      "source_tier": "B",
+      "source_kind": "operator_confirmed",
+      "source_url": "",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    },
+    {
+      "id": "local-adult-explicit-keywords",
+      "title": "",
+      "aliases": [],
+      "keywords": [
+        "色情小说",
+        "色情文学",
+        "淫秽小说",
+        "成人色情小说",
+        "成人性爱小说",
+        "性爱小说合集",
+        "情色小说合集",
+        "H小说合集",
+        "肉文合集"
+      ],
+      "authors": [],
+      "isbn": [],
+      "doi": [],
+      "risk_categories": ["pornography_explicit"],
+      "source_tier": "B",
+      "source_kind": "local_content_policy",
+      "source_url": "",
+      "status": "active",
+      "last_verified": "2026-09-05"
+    }
+  ]
+}

@@ -68,6 +68,9 @@ class ChatMemoryService:
             ],
         ] = OrderedDict()
         self._retrieval_cache_max_chats = 16
+        self._automation_stop = threading.Event()
+        self._automation_thread: Optional[threading.Thread] = None
+        self._automation_lock = threading.Lock()
         self.person_memory = PersonMemoryEngine(
             self.store,
             self.context_manager,
@@ -85,7 +88,89 @@ class ChatMemoryService:
 
     def close(self) -> None:
         self._closed = True
+        self._automation_stop.set()
+        thread = self._automation_thread
+        if (
+            thread is not None
+            and thread.is_alive()
+            and thread is not threading.current_thread()
+        ):
+            thread.join(timeout=2.0)
         self._scheduler.close()
+
+    def start_automatic_maintenance(
+        self,
+        chat_names_provider: Callable[[], Iterable[str]],
+        config_provider: Callable[[str], Dict[str, Any]],
+        *,
+        poll_minutes: int = 15,
+        initial_delay_seconds: float = 30.0,
+    ) -> bool:
+        """Continuously resume durable person queues without user activity.
+
+        Event and stage thresholds remain owned by their normal due checks.  A
+        periodic scan only makes already-due work independent of a new message.
+        """
+        with self._automation_lock:
+            if self._closed:
+                return False
+            if self._automation_thread is not None:
+                return False
+            base_wait = max(60.0, min(86400.0, float(poll_minutes) * 60.0))
+
+            def worker() -> None:
+                wait_seconds = max(0.0, float(initial_delay_seconds))
+                while not self._automation_stop.wait(wait_seconds):
+                    next_wait = base_wait
+                    try:
+                        chat_names = list(
+                            dict.fromkeys(
+                                str(name or "").strip()
+                                for name in chat_names_provider()
+                                if str(name or "").strip()
+                            )
+                        )
+                    except Exception:
+                        logger.exception(
+                            "⚠️ Failed to enumerate chats for memory automation"
+                        )
+                        chat_names = []
+                    for chat_name in chat_names:
+                        if self._automation_stop.is_set() or self._closed:
+                            break
+                        try:
+                            config = dict(config_provider(chat_name) or {})
+                            configured_wait = max(
+                                60.0,
+                                min(
+                                    86400.0,
+                                    float(
+                                        config.get(
+                                            "memory_automation_poll_minutes",
+                                            poll_minutes,
+                                        )
+                                        or poll_minutes
+                                    )
+                                    * 60.0,
+                                ),
+                            )
+                            next_wait = min(next_wait, configured_wait)
+                            self.schedule(chat_name, config)
+                        except Exception:
+                            logger.exception(
+                                "⚠️ Automatic memory scan failed for %s",
+                                chat_name,
+                            )
+                    wait_seconds = next_wait
+
+            thread = threading.Thread(
+                target=worker,
+                name="chat-memory-automation",
+                daemon=True,
+            )
+            self._automation_thread = thread
+            thread.start()
+            return True
 
     def _configure_embedding(self, config: Dict[str, Any]) -> None:
         model_name = str(
@@ -131,13 +216,20 @@ class ChatMemoryService:
             config.get("memory_embedding_enabled", True)
             and self.embedding_service.can_attempt_load
         )
-        if not event_due and not person_due and not embedding_due:
+        maintenance_due = self.store.maintenance_is_due(
+            chat_name,
+            interval_hours=max(
+                1,
+                int(config.get("memory_maintenance_interval_hours") or 24),
+            ),
+        )
+        if not any((event_due, person_due, embedding_due, maintenance_due)):
             return False
 
         config_copy = dict(config)
 
         def worker() -> None:
-            if event_due or person_due:
+            if event_due or person_due or maintenance_due:
                 self.process_pending(chat_name, config_copy)
             elif self.embedding_service.warmup():
                 self._embed_missing_events(
@@ -308,7 +400,50 @@ class ChatMemoryService:
             5,
             int(config.get("memory_person_index_target_messages") or 20),
         )
-        return available >= target
+        if available >= target:
+            return True
+
+        # Person extraction and projection have their own durable queues.  They
+        # must keep moving even when the group has not produced another full
+        # raw-message indexing batch.
+        pending_people = self.person_memory.ledger.due_indexed_people(
+            chat_name,
+            threshold=max(
+                1,
+                int(config.get("memory_person_min_pending_messages") or 30),
+            ),
+            stale_after_days=max(
+                1,
+                int(config.get("memory_person_stale_pending_days") or 14),
+            ),
+            stale_min_pending=max(
+                1,
+                int(
+                    config.get("memory_person_stale_pending_min_messages")
+                    or 8
+                ),
+            ),
+            limit=1,
+        )
+        if pending_people:
+            return True
+        return bool(
+            self.person_memory.ledger.due_people(
+                chat_name,
+                threshold=max(
+                    1,
+                    int(config.get("memory_person_refresh_threshold") or 10),
+                ),
+                stale_after_days=max(
+                    1,
+                    int(
+                        config.get("memory_person_refresh_max_age_days")
+                        or 7
+                    ),
+                ),
+                limit=1,
+            )
+        )
 
     def _index_person_pending_messages(
         self,
@@ -429,6 +564,25 @@ class ChatMemoryService:
                 force_tail=force_tail,
             )
             person_links_indexed = int(person_index.get("links") or 0)
+            identity_merge = {
+                "candidates": 0,
+                "merged": 0,
+                "items": [],
+                "skipped": [],
+            }
+            if (
+                config.get("memory_person_enabled", True)
+                and config.get(
+                    "memory_person_auto_merge_stable_identities",
+                    True,
+                )
+            ):
+                identity_merge = (
+                    self.store.auto_merge_stable_identity_duplicates(
+                        chat_name,
+                        limit=2,
+                    )
+                )
 
             person_batches = {
                 "people_due": 0,
@@ -450,6 +604,26 @@ class ChatMemoryService:
                                     30,
                                 )
                                 or 30
+                            ),
+                        ),
+                        stale_after_days=max(
+                            1,
+                            int(
+                                config.get(
+                                    "memory_person_stale_pending_days",
+                                    14,
+                                )
+                                or 14
+                            ),
+                        ),
+                        stale_min_pending=max(
+                            1,
+                            int(
+                                config.get(
+                                    "memory_person_stale_pending_min_messages",
+                                    8,
+                                )
+                                or 8
                             ),
                         ),
                         batch_size=max(
@@ -561,6 +735,16 @@ class ChatMemoryService:
                             or 10
                         ),
                     ),
+                    stale_after_days=max(
+                        1,
+                        int(
+                            config.get(
+                                "memory_person_refresh_max_age_days",
+                                7,
+                            )
+                            or 7
+                        ),
+                    ),
                     limit=max(
                         1,
                         min(
@@ -594,6 +778,15 @@ class ChatMemoryService:
                     int(config.get("memory_maintenance_interval_hours") or 24),
                 ),
             )
+            integrity = {"ok": True, "checks": {}}
+            if not maintenance.get("skipped"):
+                integrity = self.store.integrity_report(chat_name)
+                if not integrity.get("ok"):
+                    logger.error(
+                        "⚠️ Automatic memory integrity check failed for %s: %s",
+                        chat_name,
+                        integrity.get("checks"),
+                    )
             return {
                 "chunks": chunks,
                 "events": created_events,
@@ -602,6 +795,9 @@ class ChatMemoryService:
                 "person_observations": person_observations,
                 "person_quarantined": person_quarantined,
                 "person_links_indexed": person_links_indexed,
+                "person_identities_merged": int(
+                    identity_merge.get("merged") or 0
+                ),
                 "person_messages_indexed": int(person_index.get("messages") or 0),
                 "person_links_processed": int(
                     person_batches.get("links_processed") or 0
@@ -615,6 +811,7 @@ class ChatMemoryService:
                 "maintenance_candidates_deleted": int(
                     maintenance.get("deleted") or 0
                 ),
+                "maintenance_integrity_ok": bool(integrity.get("ok", True)),
             }
 
     def _process_one_chunk(
@@ -2616,7 +2813,12 @@ class ChatMemoryService:
                     )
                 )
         state = self.store.get_state(chat_name)
-        stage = str(state.get("stage_summary") or "").strip()
+        stage_candidate = str(state.get("stage_summary") or "").strip()
+        stage = (
+            stage_candidate
+            if self._stage_is_relevant_for_query(query_text, stage_candidate)
+            else ""
+        )
 
         if not any((stage, people, events)):
             vector_ready = use_embedding and self.embedding_service.ready
@@ -2704,6 +2906,32 @@ class ChatMemoryService:
             "tokens": tokens,
             "trace": trace,
         }
+
+    @classmethod
+    def _stage_is_relevant_for_query(
+        cls,
+        query_text: str,
+        stage_text: str,
+    ) -> bool:
+        """Gate the broad stage overview with a local, deterministic check."""
+        if not str(stage_text or "").strip():
+            return False
+        query = str(query_text or "").strip()
+        if re.search(
+            r"最近群里|群里最近|这段时间|呢排|近期情况|当前情况|"
+            r"最近进展|整体情况|大家最近|最近在聊|群里在聊|发生了什么",
+            query,
+            flags=re.IGNORECASE,
+        ):
+            return True
+        query_tokens = cls._lexical_tokens(query)
+        stage_tokens = cls._lexical_tokens(stage_text)
+        if not query_tokens or not stage_tokens:
+            return False
+        overlap = query_tokens & stage_tokens
+        return len(overlap) >= 2 or (
+            len(overlap) == 1 and len(query_tokens) <= 3
+        )
 
     def _compose_retrieval_context(
         self,

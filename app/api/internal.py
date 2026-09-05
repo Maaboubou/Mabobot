@@ -70,6 +70,8 @@ class WeChatMessage(BaseModel):
     quote_nickname: Optional[str] = None
     quote_content: Optional[str] = None
     has_quote_image: Optional[bool] = False
+    quote_video_path: Optional[str] = None
+    has_quote_video: Optional[bool] = False
     file_id: Optional[str] = None
     file_name: Optional[str] = None
     file_path: Optional[str] = None
@@ -130,7 +132,9 @@ async def receive_wechat_message(
     elif message.mtype == 'quote':
         # 细分引用消息类型
         quote_content = message.quote_content or ""
-        if "[图片]" in quote_content:
+        if message.has_quote_video or "[视频]" in quote_content:
+            event_type = EventType.QUOTE_VIDEO_MESSAGE_RECEIVED
+        elif "[图片]" in quote_content:
             event_type = EventType.QUOTE_IMAGE_MESSAGE_RECEIVED
         else:
             event_type = EventType.QUOTE_TEXT_MESSAGE_RECEIVED
@@ -152,6 +156,9 @@ async def receive_wechat_message(
                 "quote_image_path": message.quote_image_path,
                 "quote_nickname": message.quote_nickname,
                 "quote_content": message.quote_content,
+                "has_quote_image": message.has_quote_image,
+                "quote_video_path": message.quote_video_path,
+                "has_quote_video": message.has_quote_video,
                 "has_quote_file": message.has_quote_file,
                 "quoted_file_id": message.quoted_file_id,
                 "quoted_file_name": message.quoted_file_name,
@@ -211,6 +218,8 @@ async def receive_wechat_message(
             "quote_nickname": message.quote_nickname,
             "quote_content": message.quote_content,
             "has_quote_image": message.has_quote_image,
+            "quote_video_path": message.quote_video_path,
+            "has_quote_video": message.has_quote_video,
             "file_id": message.file_id,
             "file_name": message.file_name,
             "file_path": message.file_path,

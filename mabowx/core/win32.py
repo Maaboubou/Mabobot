@@ -496,10 +496,10 @@ def capture_window_rect(hwnd: int, bbox: tuple[int, int, int, int]):
     使用 PrintWindow(PW_RENDERFULLCONTENT) 从窗口 DC 截图，即使窗口
     被部分遮挡也能拿到正确内容；这比 ImageGrab 更适合消息方向判断。
 
-    PrintWindow 的坐标原点固定在窗口左上角。通过把内存 DC 的
-    viewport 反向移动到 ``bbox``，可以让 GDI 只为目标区域分配
-    bitmap，而不是先分配整个监听窗口再用 PIL 裁剪。监听窗口
-    通常高达 6000 像素，这一点对连续的缩略图身份采样很重要。
+    必须先按完整窗口尺寸绘制，再裁剪 bbox。实测微信 Qt 窗口在
+    PrintWindow 绘制时不遵守调用方的 viewport 偏移；直接向小尺寸
+    bitmap 绘制会得到窗口顶部，而不是指定的消息行。身份校验和
+    点击坐标都依赖截图位置正确，不能用 viewport 偏移优化内存。
     """
     if not is_windows():
         raise RuntimeError("mabowx 截图功能只能在 Windows 上使用")
@@ -530,21 +530,17 @@ def capture_window_rect(hwnd: int, bbox: tuple[int, int, int, int]):
     mfc_dc = win32ui.CreateDCFromHandle(hwnd_dc)
     save_dc = mfc_dc.CreateCompatibleDC()
     bitmap = win32ui.CreateBitmap()
-    # Allocate only the requested message row/thumbnail region.  For the
-    # default 1600x6000 listener window this avoids a ~36.6 MiB bitmap on every
-    # fingerprint sample.
-    bitmap.CreateCompatibleBitmap(mfc_dc, width, height)
+    # Qt may reset the DC origin while servicing PrintWindow. Render at the
+    # actual window size/origin; crop pixels only after the render completes.
+    bitmap.CreateCompatibleBitmap(mfc_dc, window_width, window_height)
     old_bitmap = save_dc.SelectObject(bitmap)
     hdc = save_dc.GetSafeHdc()
     saved_dc = 0
     try:
         # Keep pixels outside the window deterministic when bbox is one pixel
         # beyond a rounded UIA/window boundary.
-        save_dc.PatBlt((0, 0), (width, height), win32con.BLACKNESS)
+        save_dc.PatBlt((0, 0), (window_width, window_height), win32con.BLACKNESS)
         saved_dc = int(save_dc.SaveDC() or 0)
-        # PyCDC.SetViewportOrg accepts one POINT tuple, unlike APIs such as
-        # BitBlt that expose the coordinates as separate arguments.
-        save_dc.SetViewportOrg((-source_x, -source_y))
         result = ctypes.windll.user32.PrintWindow(hwnd, hdc, 2)
         if saved_dc:
             save_dc.RestoreDC(saved_dc)
@@ -561,17 +557,18 @@ def capture_window_rect(hwnd: int, bbox: tuple[int, int, int, int]):
             copy_height = max(0, copy_bottom - copy_top)
             if copy_width and copy_height:
                 save_dc.BitBlt(
-                    (copy_left - left, copy_top - top),
+                    (copy_left - win_left, copy_top - win_top),
                     (copy_width, copy_height),
                     mfc_dc,
                     (copy_left - win_left, copy_top - win_top),
                     win32con.SRCCOPY,
                 )
         bits = bitmap.GetBitmapBits(True)
-        # Detach from the GDI bitmap before its handle is released below.
+        # crop() owns its pixels and pads any region outside the window black.
+        # Return only the requested region, without retaining the full bitmap.
         return Image.frombuffer(
-            "RGB", (width, height), bits, "raw", "BGRX", 0, 1
-        ).copy()
+            "RGB", (window_width, window_height), bits, "raw", "BGRX", 0, 1
+        ).crop((source_x, source_y, source_x + width, source_y + height))
     finally:
         if saved_dc:
             try:

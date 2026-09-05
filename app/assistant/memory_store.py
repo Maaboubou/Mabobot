@@ -1167,6 +1167,30 @@ class MemoryStore:
             reason="后台生命周期维护：清理过期的已拒绝人物候选",
         )
 
+    def maintenance_is_due(
+        self,
+        chat_name: str,
+        *,
+        interval_hours: int = 24,
+    ) -> bool:
+        interval = max(1, min(24 * 30, int(interval_hours)))
+        cutoff = (
+            datetime.now().astimezone() - timedelta(hours=interval)
+        ).isoformat(timespec="seconds")
+        with self._connection() as connection:
+            row = connection.execute(
+                """
+                SELECT 1
+                FROM memory_maintenance_audit
+                WHERE chat_name = ?
+                  AND action = 'prune_rejected_candidates'
+                  AND created_at >= ?
+                LIMIT 1
+                """,
+                (chat_name, cutoff),
+            ).fetchone()
+        return row is None
+
     def integrity_report(self, chat_name: str) -> Dict[str, Any]:
         """Check explicit references because legacy tables predate foreign keys."""
         checks = {
@@ -2826,6 +2850,91 @@ class MemoryStore:
             ),
             reverse=True,
         )
+
+    def auto_merge_stable_identity_duplicates(
+        self,
+        chat_name: str,
+        *,
+        limit: int = 2,
+    ) -> Dict[str, Any]:
+        """Merge only identities proven by a stable external sender ID.
+
+        A common live-upgrade shape is an old nickname-only identity plus a
+        newer sender-ID-backed identity that already owns that same nickname as
+        a confirmed alias.  This case is deterministic enough to automate.  Any
+        source identity that is manually locked or owns another stable ID stays
+        untouched and remains a correction/suggestion concern.
+        """
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT
+                    duplicate.id AS source_person_id,
+                    owner.id AS target_person_id,
+                    duplicate.canonical_name AS source_name,
+                    owner.canonical_name AS target_name,
+                    stable_alias.external_id
+                FROM memory_person_aliases AS alias
+                JOIN memory_person_identities AS owner
+                  ON owner.id = alias.person_id
+                 AND owner.chat_name = alias.chat_name
+                 AND owner.status = 'active'
+                 AND owner.manual_lock = 0
+                JOIN memory_person_aliases AS stable_alias
+                  ON stable_alias.chat_name = alias.chat_name
+                 AND stable_alias.person_id = owner.id
+                 AND stable_alias.status = 'confirmed'
+                 AND stable_alias.external_id != ''
+                JOIN memory_person_identities AS duplicate
+                  ON duplicate.chat_name = alias.chat_name
+                 AND duplicate.canonical_name = alias.alias_name
+                 AND duplicate.status = 'active'
+                 AND duplicate.manual_lock = 0
+                 AND duplicate.id != owner.id
+                WHERE alias.chat_name = ?
+                  AND alias.status = 'confirmed'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM memory_person_aliases AS conflicting
+                      WHERE conflicting.chat_name = alias.chat_name
+                        AND conflicting.person_id = duplicate.id
+                        AND conflicting.status = 'confirmed'
+                        AND conflicting.external_id != ''
+                  )
+                ORDER BY duplicate.id, owner.id
+                LIMIT ?
+                """,
+                (chat_name, max(1, min(20, int(limit)))),
+            ).fetchall()
+
+        merged: List[Dict[str, Any]] = []
+        skipped: List[Dict[str, Any]] = []
+        for row in rows:
+            candidate = dict(row)
+            try:
+                audit = self.merge_people(
+                    chat_name,
+                    int(candidate["source_person_id"]),
+                    int(candidate["target_person_id"]),
+                    reason=(
+                        "自动身份合并：稳定 sender_id 已确认该旧昵称属于目标身份；"
+                        "操作已记录且可撤销"
+                    ),
+                )
+                merged.append(
+                    {
+                        **candidate,
+                        "audit_id": int(audit.get("id") or 0),
+                    }
+                )
+            except ValueError as exc:
+                skipped.append({**candidate, "reason": str(exc)})
+        return {
+            "candidates": len(rows),
+            "merged": len(merged),
+            "items": merged,
+            "skipped": skipped,
+        }
 
     def count_people(self, chat_name: str) -> int:
         with self._connection() as connection:

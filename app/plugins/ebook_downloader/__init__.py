@@ -1,0 +1,1 @@
+"""Mabobot ebook downloader plugin."""

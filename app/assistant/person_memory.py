@@ -13,7 +13,7 @@ import logging
 import re
 import uuid
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from app.assistant.memory_store import MemoryStore
@@ -1520,14 +1520,46 @@ class PersonMemoryStore:
         chat_name: str,
         *,
         threshold: int = 30,
+        stale_after_days: int = 0,
+        stale_min_pending: int = 0,
         limit: int = 8,
         force: bool = False,
     ) -> List[Dict[str, Any]]:
         clauses = ["state.chat_name = ?", "state.pending_link_count > 0"]
         params: List[Any] = [chat_name]
         if not force:
-            clauses.append("state.pending_link_count >= ?")
-            params.append(max(1, int(threshold)))
+            normal_threshold = max(1, int(threshold))
+            stale_days = max(0, int(stale_after_days))
+            stale_minimum = max(1, int(stale_min_pending or normal_threshold))
+            if stale_days > 0:
+                stale_cutoff = (
+                    datetime.now().astimezone() - timedelta(days=stale_days)
+                ).isoformat(timespec="seconds")
+                clauses.append(
+                    """
+                    (
+                        state.pending_link_count >= ?
+                        OR (
+                            state.pending_link_count >= ?
+                            AND EXISTS (
+                                SELECT 1
+                                FROM memory_person_message_links AS pending_link
+                                WHERE pending_link.chat_name = state.chat_name
+                                  AND pending_link.person_id = state.person_id
+                                  AND pending_link.source_namespace = state.source_namespace
+                                  AND pending_link.id > state.processed_link_id
+                                  AND julianday(pending_link.created_at) <= julianday(?)
+                            )
+                        )
+                    )
+                    """
+                )
+                params.extend(
+                    [normal_threshold, stale_minimum, stale_cutoff]
+                )
+            else:
+                clauses.append("state.pending_link_count >= ?")
+                params.append(normal_threshold)
         params.append(max(1, min(1000, int(limit))))
         with self.store._connection() as connection:
             rows = connection.execute(
@@ -2126,14 +2158,31 @@ class PersonMemoryStore:
         chat_name: str,
         *,
         threshold: int = 10,
+        stale_after_days: int = 0,
         force: bool = False,
         limit: int = 8,
     ) -> List[Dict[str, Any]]:
-        clauses = ["state.chat_name = ?"]
+        clauses = ["state.chat_name = ?", "state.pending_observation_count > 0"]
         params: List[Any] = [chat_name]
         if not force:
-            clauses.append("state.pending_observation_count >= ?")
-            params.append(max(1, int(threshold)))
+            normal_threshold = max(1, int(threshold))
+            stale_days = max(0, int(stale_after_days))
+            if stale_days > 0:
+                stale_cutoff = (
+                    datetime.now().astimezone() - timedelta(days=stale_days)
+                ).isoformat(timespec="seconds")
+                clauses.append(
+                    """
+                    (
+                        state.pending_observation_count >= ?
+                        OR julianday(state.last_observation_at) <= julianday(?)
+                    )
+                    """
+                )
+                params.extend([normal_threshold, stale_cutoff])
+            else:
+                clauses.append("state.pending_observation_count >= ?")
+                params.append(normal_threshold)
         params.append(max(1, min(1000, int(limit))))
         with self.store._connection() as connection:
             rows = connection.execute(
@@ -5408,6 +5457,8 @@ class PersonMemoryEngine:
         chat_name: str,
         *,
         threshold: int = 30,
+        stale_after_days: int = 0,
+        stale_min_pending: int = 0,
         batch_size: int = 80,
         max_people: int = 4,
         input_token_budget: int = 24000,
@@ -5422,6 +5473,8 @@ class PersonMemoryEngine:
         due = self.ledger.due_indexed_people(
             chat_name,
             threshold=threshold,
+            stale_after_days=stale_after_days,
+            stale_min_pending=stale_min_pending,
             limit=max_people,
             force=force,
         )
@@ -6252,12 +6305,14 @@ class PersonMemoryEngine:
         chat_name: str,
         *,
         threshold: int = 10,
+        stale_after_days: int = 0,
         force: bool = False,
         limit: int = 8,
     ) -> Dict[str, Any]:
         due = self.ledger.due_people(
             chat_name,
             threshold=threshold,
+            stale_after_days=stale_after_days,
             force=force,
             limit=limit,
         )
@@ -6289,6 +6344,13 @@ class PersonMemoryEngine:
         if state.get("mode") != "active":
             return []
         query = str(content or "")
+        self_referential = bool(
+            re.search(
+                r"(?:^|[\s，。！？；：、,.!?;:])"
+                r"(?:我|我家|我的|本人|俺|咱)(?:$|[\s，。！？；：、,.!?;:]|们|家|的|在|是|有|想|要|会|曾|现)",
+                query,
+            )
+        )
         participants = {str(value or "").strip() for value in event_participants}
         selected = []
         for profile in self.ledger.list_profiles(chat_name, include_building=False):
@@ -6299,8 +6361,6 @@ class PersonMemoryEngine:
             }
             aliases.add(str(profile.get("person_name") or ""))
             reasons = []
-            if sender in aliases:
-                reasons.append("本轮发送者")
             matched = sorted(
                 {alias for alias in aliases if alias and alias in query},
                 key=len,
@@ -6310,6 +6370,8 @@ class PersonMemoryEngine:
                 reasons.append("问题中提及")
             if aliases & participants:
                 reasons.append("相关事件参与者")
+            if sender in aliases and self_referential:
+                reasons.append("本轮发送者")
             if not reasons:
                 continue
             value = dict(profile)
@@ -6318,8 +6380,9 @@ class PersonMemoryEngine:
             selected.append(value)
         selected.sort(
             key=lambda item: (
-                "本轮发送者" in item.get("selection_reasons", []),
                 "问题中提及" in item.get("selection_reasons", []),
+                "相关事件参与者" in item.get("selection_reasons", []),
+                "本轮发送者" in item.get("selection_reasons", []),
                 int(item.get("observation_count") or 0),
             ),
             reverse=True,

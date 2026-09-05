@@ -1,0 +1,13 @@
+{
+  "schema_version": 2,
+  "plugin_api_version": 2,
+  "storage": {"cache_retention_days": 1, "cache_limit_mb": 500},
+  "backup": {"schema_version": 1, "include_persistent_storage": true, "include_generated_files": false, "supports_restore_migration": false, "sensitive": true},
+  "health": {"critical": false, "timeout_seconds": 5},
+  "listeners": [
+    {"event": "text_message_received", "handler": "handle_command", "title": "电子书下载命令", "trigger": {"kind": "keyword", "summary": "消息以配置的找书触发词开头且其后包含书名、ISBN 或 DOI", "config_keys": ["trigger_keywords"], "conditions": ["作者信息可选，只有作者不满足最低输入条件"]}, "scope": {"level": "global", "chat_types": ["group", "user"]}, "propagation": "stop_on_consumed"},
+    {"event": "text_message_received", "handler": "handle_session_reply", "title": "电子书候选选择", "trigger": {"kind": "session", "summary": "同一聊天中的同一发送者在 60 秒内回复 1-5、@机器人 1-5 或取消", "config_keys": ["session_timeout_seconds", "max_choices"], "conditions": ["不消费无关文字；会话按聊天和发送者隔离"]}, "scope": {"level": "global", "chat_types": ["group", "user"]}, "propagation": "stop_on_consumed"},
+    {"event": "quote_text_message_received", "handler": "handle_session_reply", "title": "电子书候选引用选择", "trigger": {"kind": "session", "summary": "同一聊天中的同一发送者在 60 秒内引用本插件候选列表并回复序号或取消", "config_keys": ["session_timeout_seconds", "max_choices"], "conditions": ["仅接受引用内容以本插件候选提示开头的消息；不消费其他引用消息"]}, "scope": {"level": "global", "chat_types": ["group", "user"]}, "propagation": "stop_on_consumed"}
+  ],
+  "jobs": []
+}

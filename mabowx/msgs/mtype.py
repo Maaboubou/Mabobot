@@ -28,6 +28,12 @@ from mabowx.utils.tools import (
 )
 
 from .base import BaseMessage, HumanMessage
+from .media_diagnostics import (
+    media_download_trace,
+    media_event,
+    media_foreground_snapshot,
+    media_ui_snapshot,
+)
 from .identity import (
     FILE_COLOR_MAX_DISTANCE,
     FILE_DETAIL_MAX_DISTANCE,
@@ -61,12 +67,26 @@ TICKLE_QUOTE_PAIRS = {
 
 def _run_ordered_media_operation(message, operation):
     """Sequence a delayed media action before entering the global UI lock."""
-    parent = getattr(message, "parent", None)
-    runner = getattr(parent, "run_ordered_media_operation", None)
-    if callable(runner):
-        return runner(message, operation)
-    with ui_transaction(timeout=120.0):
-        return operation()
+    with media_download_trace(message):
+        media_event("queued")
+
+        def tracked_operation():
+            media_event("ui_acquired")
+            return operation()
+
+        try:
+            parent = getattr(message, "parent", None)
+            runner = getattr(parent, "run_ordered_media_operation", None)
+            if callable(runner):
+                result = runner(message, tracked_operation)
+            else:
+                with ui_transaction(timeout=120.0):
+                    result = tracked_operation()
+        except Exception as exc:
+            media_event("failed", level="warning", error_type=type(exc).__name__, error=str(exc))
+            raise
+        media_event("completed")
+        return result
 
 
 class SystemMessage(BaseMessage):
@@ -228,27 +248,59 @@ def _wait_for_media_preview(
     Ordinary image/video downloads keep their existing single-click behavior.
     """
     baseline = {int(hwnd or 0) for hwnd in (baseline_hwnds or set()) if int(hwnd or 0)}
+    started = time.monotonic()
+    polls = 0
+    query_errors = 0
+    last_query_error = None
+    pid_mismatches = 0
+    last_candidates = []
+    retry_result = "not_attempted" if retry_click else "not_configured"
+
+    def report(outcome):
+        media_event(
+            "preview_wait", level="info" if outcome == "opened" else "warning",
+            outcome=outcome, polls=polls, wait_ms=round((time.monotonic() - started) * 1000),
+            budget_ms=round(max(0.0, deadline - started) * 1000),
+            baseline_hwnds=sorted(baseline), candidates=last_candidates,
+            query_errors=query_errors, last_query_error=last_query_error,
+            pid_mismatches=pid_mismatches,
+            retry_result=retry_result,
+        )
+
     retry_at = time.monotonic() + max(0.3, retry_after)
     retried = retry_click is None
     while time.monotonic() < deadline:
+        query_diagnostics = {}
         controls = uia.find_top_level_controls(
             "mmui::PreviewWindow",
             pid=pid,
             max_results=5,
+            diagnostics=query_diagnostics,
         )
+        polls += 1
+        query_errors += query_diagnostics.get("property_errors", 0)
+        pid_mismatches += query_diagnostics.get("pid_mismatches", 0)
+        if query_diagnostics.get("enumeration_error"):
+            query_errors += 1
+        if query_diagnostics.get("last_error"):
+            last_query_error = query_diagnostics["last_error"]
+        last_candidates = []
         new_controls = []
         for control in controls:
             try:
                 hwnd = int(getattr(control, "NativeWindowHandle", 0) or 0)
-            except Exception:
+            except Exception as exc:
+                last_candidates.append({"rejected": "unreadable_handle", "error": str(exc)[:240]})
                 continue
-            if not hwnd or hwnd in baseline:
-                continue
-            if _preview_identity_is_safe(control, hwnd, pid):
+            safe = bool(hwnd and hwnd not in baseline and _preview_identity_is_safe(control, hwnd, pid))
+            last_candidates.append({"hwnd": hwnd, "baseline": hwnd in baseline, "identity_safe": safe})
+            if safe:
                 new_controls.append(control)
         if len(new_controls) == 1:
+            report("opened")
             return new_controls[0]
         if len(new_controls) > 1:
+            report("ambiguous")
             raise MediaIdentityError(
                 f"点击后同时出现 {len(new_controls)} 个新媒体预览窗口，拒绝猜测"
             )
@@ -257,12 +309,16 @@ def _wait_for_media_preview(
             retried = True
             try:
                 if retry_click and retry_click():
+                    retry_result = "clicked"
                     wxlog.info("引用媒体预览未出现，已对同一引用消息安全重试一次")
                 else:
+                    retry_result = "identity_unconfirmed"
                     wxlog.warning("引用媒体预览未出现，且无法重新确认同一引用消息")
             except Exception as exc:
+                retry_result = f"{type(exc).__name__}: {exc}"[:240]
                 wxlog.warning(f"引用媒体预览安全重试失败: {exc}")
         time.sleep(0.3)
+    report("timeout")
     return None
 
 
@@ -281,6 +337,11 @@ def download_media_via_preview(
     成功返回微信本地文件路径；若指定 dir_path 则复制到该目录。
     """
     pid = getattr(message.parent, "pid", None)
+    media_event(
+        "preview_baseline", download_timeout_sec=timeout,
+        preview_timeout_sec=MEDIA_PREVIEW_OPEN_TIMEOUT_SEC,
+        already_clicked=already_clicked, retry_enabled=retry_click is not None,
+    )
     if baseline_preview_hwnds is None:
         baseline_preview_hwnds = set()
         for existing in uia.find_top_level_controls(
@@ -295,11 +356,13 @@ def download_media_via_preview(
             if hwnd:
                 baseline_preview_hwnds.add(hwnd)
     if baseline_preview_hwnds:
+        media_event("preview_baseline_rejected", level="warning", baseline_hwnds=sorted(baseline_preview_hwnds))
         raise MediaIdentityError(
             "媒体操作开始前已有预览窗口，无法证明新预览属于当前消息"
         )
 
     if not already_clicked:
+        media_event("prepare_target")
         prepare = getattr(message, "prepare_for_media_action", None)
         if callable(prepare):
             prepare()
@@ -312,11 +375,18 @@ def download_media_via_preview(
         if point is None:
             raise RuntimeError("无法定位媒体消息")
         prepared_click = getattr(message, "click_prepared_media", None)
+        media_event(
+            "dispatch_click", point=point,
+            route="prepared_hwnd" if callable(prepared_click) else "screen",
+            prepared_row_rect=getattr(message, "_prepared_media_row_rect", None),
+        )
         if callable(prepared_click):
             prepared_click(point, right=False)
+            media_event("click_returned", foreground=media_foreground_snapshot())
             time.sleep(0.6)
         else:
             uia.click_screen(point[0], point[1], wait=0.6)
+            media_event("click_returned", foreground=media_foreground_snapshot())
 
     deadline = time.monotonic() + timeout
     # Creating PreviewWindow should be quick even when the media itself still
@@ -333,9 +403,11 @@ def download_media_via_preview(
         baseline_hwnds=baseline_preview_hwnds,
     )
     if preview is None:
+        media_event("preview_timeout_snapshot", level="warning", snapshot=media_ui_snapshot(message))
         raise RuntimeError("媒体预览窗口未打开")
 
     try:
+        media_event("validate_preview_origin")
         validate_origin = getattr(message, "validate_dispatched_media_origin", None)
         if callable(validate_origin):
             validate_origin()
@@ -350,6 +422,7 @@ def download_media_via_preview(
             deadline,
             time.monotonic() + min(10.0, max(2.0, (deadline - time.monotonic()) * 0.5)),
         )
+        media_event("copy_more_menu", preview_hwnd=preview_hwnd)
         try:
             return _copy_media_from_preview_more_menu(
                 message,
@@ -363,6 +436,7 @@ def download_media_via_preview(
             raise
         except Exception as exc:
             wxlog.warning(f"预览工具栏复制失败，回退预览右键: {exc}")
+            media_event("copy_context_menu", level="warning", error_type=type(exc).__name__, error=str(exc))
 
         while time.monotonic() < deadline:
             if not _preview_identity_is_safe(preview, preview_hwnd, pid):
@@ -768,7 +842,7 @@ class QuoteMessage(HumanMessage):
         uia.click_screen(point[0], point[1], wait=0.6)
         return True
 
-    def download_quote_image(self, dir_path: str | Path | None = None, timeout: int = 30) -> Path:
+    def download_quote_media(self, dir_path: str | Path | None = None, timeout: int = 30) -> Path:
         """下载引用消息中的图片/视频。"""
         return _run_ordered_media_operation(
             self,
@@ -777,6 +851,10 @@ class QuoteMessage(HumanMessage):
                 timeout=timeout,
             ),
         )
+
+    def download_quote_image(self, dir_path: str | Path | None = None, timeout: int = 30) -> Path:
+        """保留旧公开 API；底层与引用视频共用媒体下载路径。"""
+        return self.download_quote_media(dir_path=dir_path, timeout=timeout)
 
     def _download_quote_image_unlocked(
         self,
@@ -1081,6 +1159,7 @@ class ImageMessage(HumanMessage):
             dir_path=dir_path,
             timeout=max(1.0, float(timeout)),
         )
+        media_event("verify_downloaded_file")
         return self._verify_downloaded_path(path)
 
 
