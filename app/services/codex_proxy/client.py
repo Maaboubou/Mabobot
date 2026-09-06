@@ -1155,6 +1155,7 @@ def render_chat_prompt(
     input_image_count: int = 0,
     input_files: Optional[List[Dict[str, Any]]] = None,
     available_file_commands: Optional[Iterable[str]] = None,
+    text_only: bool = False,
 ) -> str:
     """Render OpenAI chat messages into a single Codex exec prompt."""
     rendered: List[str] = [
@@ -1172,7 +1173,18 @@ def render_chat_prompt(
         text = _content_to_text(message.get("content"))
         if text:
             rendered.append(f"[{label}]\n{text}")
-    if artifact_output_dir is not None:
+    if text_only:
+        rendered.extend([
+            "",
+            "LLM response instructions:",
+            "- Return the requested text or JSON directly in the final assistant message.",
+            "- Do not create output files or attachments, inspect project files, or run shell commands to compose the answer.",
+            "- Follow the supplied output schema and system/developer instructions; omit progress commentary.",
+            "- Read supplied input files only when needed to answer the request.",
+            "- Native web search is enabled; use it only when needed for this request."
+            if native_web_search_enabled else "- Native web search is disabled; use the supplied context.",
+        ])
+    elif artifact_output_dir is not None:
         search_instructions = [
             "- Treat any conversation sections labeled like 网络搜索结果, web_search, or search_results as framework-provided context, not as the only allowed source of truth.",
         ]
@@ -1548,6 +1560,7 @@ def count_codex_prompt_tokens(
     artifact_output_dir: Optional[str] = "<codex-output-dir>",
     native_web_search_enabled: bool = False,
     input_image_count: int = 0,
+    text_only: bool = False,
 ) -> int:
     """Count the exact rendered Codex text prompt with ``o200k_base``.
 
@@ -1560,6 +1573,7 @@ def count_codex_prompt_tokens(
         artifact_output_dir=artifact_output_dir,
         native_web_search_enabled=native_web_search_enabled,
         input_image_count=max(0, int(input_image_count or 0)),
+        text_only=text_only,
     )
     return _count_o200k_tokens(prompt)
 
@@ -1956,9 +1970,12 @@ class CodexCliClient:
             output_schema = extra_body.get("output_schema")
         if not isinstance(output_schema, dict):
             output_schema = None
+        text_only = _as_bool(
+            request.get("codex_text_only", extra_body.get("codex_text_only")), False
+        )
 
         image_urls = extract_image_urls(messages, allow_image_input=allow_image_input)
-        image_request_mode = _direct_image_request_mode(
+        image_request_mode = None if text_only else _direct_image_request_mode(
             messages,
             has_image_input=bool(image_urls),
         )
@@ -2040,6 +2057,7 @@ class CodexCliClient:
                 if runtime_capabilities is not None
                 else _detect_runtime_file_commands(False)
             ),
+            text_only=text_only,
         )
         image_paths: List[Path] = []
         temporary_image_paths: List[Path] = []
@@ -2282,7 +2300,7 @@ class CodexCliClient:
                     {},
                 )
                 raise CodexProxyError("Codex artifact output directory became unsafe")
-            attachments = _collect_artifact_attachments(output_dir)
+            attachments = [] if text_only else _collect_artifact_attachments(output_dir)
             valid_images = [item for item in attachments if item.get("type") == "image"]
             if image_request_mode and not valid_images:
                 recovered: List[Path] = []

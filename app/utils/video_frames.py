@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,12 +32,45 @@ class VideoFrameSample:
 
 
 def _resolve_media_tools() -> tuple[str, str]:
-    from static_ffmpeg import run as static_ffmpeg_run
+    """Locate installed tools only; a chat request must never wait for downloads."""
+    from app.utils.plugin_config import get_config
 
-    ffmpeg_path, ffprobe_path = (
-        static_ffmpeg_run.get_or_fetch_platform_executables_else_raise()
-    )
-    return str(ffmpeg_path), str(ffprobe_path)
+    def setting(key: str) -> str:
+        return str(get_config(key, plugin_name="summary_plus", default="") or "").strip()
+
+    suffix = ".exe" if os.name == "nt" else ""
+    directories = [setting("ffmpeg_dir"), str(Path.cwd() / "tools" / "ffmpeg" / "bin")]
+    try:
+        from static_ffmpeg import run as static_ffmpeg_run
+
+        # get_platform_dir only computes a path; unlike get_or_fetch it does not
+        # download executables or wait for an installation lock.
+        directories.append(static_ffmpeg_run.get_platform_dir())
+    except (ImportError, OSError):
+        pass
+
+    resolved = []
+    for name in ("ffmpeg", "ffprobe"):
+        configured = setting(f"{name}_path")
+        candidates = [configured, os.environ.get(f"{name.upper()}_PATH", "")]
+        # A configured FFmpeg installation normally includes FFprobe beside it.
+        ffmpeg_path = setting("ffmpeg_path") or os.environ.get("FFMPEG_PATH", "")
+        if ffmpeg_path:
+            candidates.append(str(Path(ffmpeg_path).parent / f"{name}{suffix}"))
+        candidates.extend(str(Path(directory) / f"{name}{suffix}") for directory in directories if directory)
+        candidates.append(shutil.which(name) or "")
+        path = None
+        for candidate in candidates:
+            if not candidate:
+                continue
+            expanded = Path(os.path.expandvars(candidate)).expanduser()
+            if expanded.is_file() and os.access(expanded, os.X_OK):
+                path = expanded
+                break
+        if path is None:
+            raise FileNotFoundError(f"本地 {name} 不存在或不可执行；本次跳过视频解析，不自动下载")
+        resolved.append(str(path))
+    return resolved[0], resolved[1]
 
 
 def _run_command(command: Sequence[str], *, timeout: int) -> subprocess.CompletedProcess:

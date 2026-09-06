@@ -34,7 +34,7 @@ from .core.plugin_manager import PluginManager
 from .core.wechat_manager import WeChatManager
 from .models.base import create_tables, SessionLocal
 from .api.endpoints import assistant, assistant_judges, assistant_roles, automation, backups, capabilities, chat_policies, codex_profiles, operations, system, settings, plugins, wechat, permissions, dashboard
-from .api.endpoints import codex_skills
+from .api.endpoints import codex_skills, email_notifications
 from .api import internal as internal_api
 from .api import codex_proxy
 from .api import codex_jobs
@@ -722,6 +722,7 @@ if cors_origins:
 app.include_router(system.router, prefix="/api/system", tags=["system"])
 app.include_router(backups.router, prefix="/api/backups", tags=["backups"])
 app.include_router(operations.router, prefix="/api/operations", tags=["operations"])
+app.include_router(email_notifications.router, prefix="/api/settings/notifications/email", tags=["settings"])
 app.include_router(settings.router, prefix="/api/settings", tags=["settings"])
 app.include_router(plugins.router, prefix="/api/plugins", tags=["plugins"])
 app.include_router(capabilities.router, prefix="/api/capabilities", tags=["capabilities"])
@@ -744,6 +745,7 @@ app.include_router(tool_updates.router)
 
 # 静态文件服务（前端）
 # 挂载web目录作为静态文件服务
+app.mount("/notification-assets", StaticFiles(directory="mabobot_launcher/ui/notifications"), name="notification-assets")
 app.mount("/static", StaticFiles(directory="web"), name="static")
 
 @app.get("/", response_class=HTMLResponse)

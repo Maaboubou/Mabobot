@@ -1953,8 +1953,29 @@ def send_files():
         if isinstance(file_paths, str):
             file_paths = [file_paths]
 
+        sent_at = time.time()
         success = wx.SendFiles(file_paths, who)
         if success:
+            for file_path in file_paths:
+                index_started = time.monotonic()
+                try:
+                    record = get_wechat_file_store().record_sent_file(
+                        chat_name=who,
+                        file_path=file_path,
+                        sent_at=sent_at,
+                    )
+                    logger.info(
+                        "📁 已发送文件已登记引用索引: chat=%s file_id=%s name=%s bytes=%s elapsed_ms=%.1f",
+                        who, record["file_id"], record["original_filename"],
+                        record["file_size"], (time.monotonic() - index_started) * 1000,
+                    )
+                except Exception:
+                    # Sending has already succeeded. An indexing failure must
+                    # not report a failed send and provoke duplicate delivery.
+                    logger.exception(
+                        "❌ 文件已发送但引用索引登记失败: chat=%s path=%s elapsed_ms=%.1f",
+                        who, file_path, (time.monotonic() - index_started) * 1000,
+                    )
             return jsonify({"status": "success", "message": f"Sent {len(file_paths)} files"})
         else:
             return jsonify({"status": "error", "message": "Failed to send files"}), 500

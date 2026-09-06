@@ -28,6 +28,7 @@ const UI = {
         '/settings': 'settings',
         '/system/providers': 'settings',
         '/system/integrations': 'settings',
+        '/system/notifications': 'settings',
         '/system/runtime': 'settings',
         '/system/developer': 'settings',
         '/system/operations': 'settings',
@@ -1454,6 +1455,7 @@ const UI = {
         return {
             '/system/providers': 'integrations',
             '/system/integrations': 'integrations',
+            '/system/notifications': 'notifications',
             '/system/runtime': 'runtime',
             '/system/developer': 'developer',
             '/system/operations': 'operations',
@@ -1470,6 +1472,7 @@ const UI = {
         const extensionGroups = groups.filter(group => group.id === 'developer');
         const platformGroups = [
             ...primaryGroups,
+            {id: 'notifications', title: '通知提醒', icon: 'bi-envelope', description: '使用自己的邮箱接收提醒'},
             {
                 id: 'operations', title: '运行状态', icon: 'bi-heart-pulse',
                 description: '统一任务、插件状态和组件健康'
@@ -1593,6 +1596,9 @@ const UI = {
                 </section>`;
         }).join('');
         const platformSections = `
+            <section class="system-settings-section ${activeId === 'notifications' ? '' : 'd-none'}" data-system-section="notifications">
+                <div id="systemEmailConsole"></div>
+            </section>
             <section class="system-settings-section ${activeId === 'operations' ? '' : 'd-none'}" data-system-section="operations">
                 <div id="systemOperationsConsole" class="system-platform-console"><div class="loading-wrapper">正在读取运行状态…</div></div>
             </section>
@@ -1672,7 +1678,7 @@ const UI = {
         if (mobilePicker) mobilePicker.open = false;
         if (options.history !== false) {
             const paths = {
-                identity: '/system', integrations: '/system/integrations',
+                identity: '/system', integrations: '/system/integrations', notifications: '/system/notifications',
                 runtime: '/system/runtime', developer: '/system/developer',
                 operations: '/system/operations', tools: '/system/tools', backups: '/system/backups'
             };
@@ -1681,6 +1687,7 @@ const UI = {
                 window.history.pushState({ tab: 'settings', section: groupId }, '', path);
             }
         }
+        if (groupId === 'notifications') window.EmailNotifications?.load();
         if (groupId === 'operations') window.SystemOperations?.loadRuntime();
         if (groupId === 'tools') window.SystemTools?.load();
         if (groupId === 'backups') window.SystemOperations?.loadBackups();

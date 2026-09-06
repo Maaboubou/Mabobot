@@ -271,13 +271,6 @@
       "description": "是否压制B站弹幕",
       "default": true
     },
-    "bili_cookie_email_alert_enabled": {
-      "type": "boolean",
-      "title": "Cookie 失效邮件提醒",
-      "description": "B站登录态刷新失败时发送邮件提醒",
-      "level": "advanced",
-      "default": true
-    },
     "bili_cookie_alert_cooldown_sec": {
       "type": "integer",
       "title": "Cookie 提醒冷却（秒）",
@@ -416,7 +409,6 @@
     "ffmpeg_path": "",
     "ffprobe_path": "",
     "bilibili_burn_danmu": true,
-    "bili_cookie_email_alert_enabled": true,
     "bili_cookie_alert_cooldown_sec": 21600,
     "xhs_max_download_duration": 120,
     "xhs_max_images": 9,

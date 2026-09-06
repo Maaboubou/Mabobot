@@ -7,6 +7,7 @@ import html
 import os
 import re
 import subprocess
+import tempfile
 import threading
 import uuid
 from pathlib import Path
@@ -20,6 +21,7 @@ __all__ = [
     "LocalASRError",
     "bili_transcribe_local",
     "douyin_transcribe_local",
+    "file_transcribe_local",
     "srt_text_to_plain",
 ]
 
@@ -273,6 +275,48 @@ def _write_cache(cache_path: Path, transcript: str) -> None:
     temporary = cache_path.with_suffix(f".{uuid.uuid4().hex[:8]}.tmp")
     temporary.write_text(transcript, encoding="utf-8")
     os.replace(temporary, cache_path)
+
+
+def file_transcribe_local(
+    source_path: str | Path,
+    *,
+    runtime_path: str,
+    model_path: str,
+    vad_path: str,
+    ffmpeg_bin: Optional[str] = None,
+    timeout_sec: int = 600,
+    logger=None,
+) -> str:
+    """Transcribe an already downloaded video using the shared local ASR slot.
+
+    Only the temporary audio is removed; the original media belongs to the caller.
+    """
+    source = Path(source_path)
+    if not source.is_file():
+        raise LocalASRError(f"本地媒体文件不存在: {source}")
+    runtime, model, vad = (
+        Path(os.path.expandvars(path)).expanduser().resolve()
+        for path in (runtime_path, model_path, vad_path)
+    )
+    missing = [str(path) for path in (runtime, model, vad) if not path.is_file()]
+    if missing:
+        raise LocalASRError(f"本地 ASR 资源不存在: {', '.join(missing)}")
+    if not ffmpeg_bin:
+        from app.utils.video_frames import _resolve_media_tools
+
+        ffmpeg_bin, _ = _resolve_media_tools()
+
+    with tempfile.TemporaryDirectory(prefix="mabobot_video_asr_") as work_dir:
+        wav_path = Path(work_dir) / "audio.wav"
+        _convert_to_wav(source, wav_path=wav_path, ffmpeg_bin=ffmpeg_bin, logger=logger)
+        return _transcribe_wav(
+            wav_path,
+            runtime_path=runtime,
+            model_path=model,
+            vad_path=vad,
+            timeout_sec=max(30, int(timeout_sec)),
+            logger=logger,
+        )
 
 
 def bili_transcribe_local(

@@ -1,8 +1,10 @@
-"""Managed storage and lookup for inbound WeChat file messages.
+"""Managed storage and lookup for received and sent WeChat file messages.
 
 The mabowx message object is only reliable while its UI control is alive, so
 ``wx_bot`` downloads files immediately and records the durable result here.
 Quoted messages can then be resolved by filename without touching WeChat UI.
+Successfully sent local files are archived here too, so their quotes use the
+same managed input paths and remain usable after the originals are removed.
 """
 
 from __future__ import annotations
@@ -10,9 +12,11 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import sqlite3
 import time
 import unicodedata
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -373,6 +377,47 @@ class WeChatFileStore:
         if stored_path:
             public_values["saved_path"] = str(local_path_from_external(stored_path))
         return public_values
+
+    def record_sent_file(
+        self,
+        *,
+        chat_name: str,
+        file_path: str | os.PathLike[str],
+        sent_at: float,
+    ) -> Dict[str, Any]:
+        """Archive a local file only after WeChat confirms a successful send.
+
+        Keep a separate snapshot in the managed input directory: generated
+        outputs may be edited or cleaned up, and Codex accepts only managed
+        attachments. No WeChat download or preview operation is needed.
+        """
+        source = local_path_from_external(file_path)
+        if not source.is_file():
+            raise FileNotFoundError(f"Sent file no longer exists: {source}")
+        file_id = f"sent_file_{uuid.uuid4().hex}"
+        directory = self.prepare_download_dir(
+            chat_name=chat_name,
+            file_id=file_id,
+            received_at=sent_at,
+        )
+        snapshot = directory / safe_file_name(source.name)
+        try:
+            shutil.copy2(source, snapshot)
+            return self.record(
+                file_id=file_id,
+                source_message_id=file_id,
+                chat_name=chat_name,
+                sender="self",
+                original_filename=source.name,
+                received_at=sent_at,
+                status="ready",
+                saved_path=str(snapshot),
+                file_size=snapshot.stat().st_size,
+                sha256=sha256_file(snapshot),
+            )
+        except Exception:
+            snapshot.unlink(missing_ok=True)
+            raise
 
     def resolve_quote(
         self,

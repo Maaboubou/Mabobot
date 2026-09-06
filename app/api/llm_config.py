@@ -1043,7 +1043,7 @@ async def test_model_connectivity(model_id: str):
                     False,
                 )
                 latency_ms = int(response_time * 1000)
-                actual_model = f"local_codex/{model_cfg.get('model', model_id)}"
+                actual_model = llm_manager._resolve_local_codex_model(response, model_cfg)
                 return {
                     "status": "success",
                     "data": {

@@ -198,7 +198,6 @@ SUMMARY_GROUP_FIELDS = {
         "bilibili_video_crf",
         "bilibili_max_download_duration",
         "bilibili_burn_danmu",
-        "bili_cookie_email_alert_enabled",
         "bili_cookie_alert_cooldown_sec",
     },
     "xiaohongshu": {

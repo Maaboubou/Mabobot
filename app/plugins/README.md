@@ -15,7 +15,7 @@ app/plugins/my_plugin/
 
 `priority`、`routing_overrides` 和 `block_after_handling` 已废弃，不得出现在插件配置中。消息顺序只有一个事实来源：`app/plugins/routing_order.json`。用户在“插件 → 执行顺序”拖动并应用后，系统直接更新该中央顺序表；新安装的监听器第一次加载时追加到对应事件末尾。
 
-当前触发设置和执行顺序均为全局级，不支持聊天级覆盖。聊天页只负责授权某个聊天是否可使用插件，以及群聊是否要求 @。
+当前触发设置和执行顺序均为全局级，不支持聊天级覆盖。聊天页通过统一插件分配管理普通插件权限、推送权限，以及群聊是否要求 @；推送能力的声明与使用规则见第 2.2 节。
 
 ## 2. 最小 config.json
 
@@ -80,6 +80,75 @@ app/plugins/my_plugin/
 - 在插件 `ui.llm_tasks` 中新增或更新任务说明。
 - 在统一模型映射中为同一个 `call_type` 配置主模型及可选备用模型。
 - 在任务路由页确认展示名称、说明和内部标识正确；不要把密钥、提示词或运行参数写进任务元数据。
+
+### 2.2 声明推送能力与使用统一权限
+
+会主动向群聊或私聊发送定时内容、订阅更新的插件，必须在 `config.json` **顶层**声明 `features: ["push"]`；已有其他能力时将 `"push"` 加入同一个数组。仅响应用户消息、向触发聊天返回结果，不因此要求声明推送能力。
+
+以下为推送相关配置片段，应合并到插件的完整 `config.json` 中：
+
+```json
+{
+  "features": ["push"],
+  "config_schema": {
+    "PUSH_TIME": {
+      "type": "string",
+      "title": "推送时间",
+      "description": "北京时间 HH:MM",
+      "default": "09:00"
+    }
+  },
+  "config": {
+    "PUSH_TIME": "09:00"
+  }
+}
+```
+
+声明后，统一插件分配界面会提供该插件的推送授权选项。接收资格以统一权限表中的记录为准：
+
+| 权限记录 | 对主动推送的含义 |
+|---|---|
+| `my_plugin` | 普通插件授权，不能据此发送主动推送 |
+| `my_plugin#push` | 允许向该群聊或私聊主动推送 |
+| `some/path/my_plugin#push` | 多级目录插件权限，查询时兼容完整键或末级插件名 |
+
+新增推送插件必须遵守以下规则：
+
+- 不在插件配置中另设 `ENABLE_PUSH`、`monthly_enabled` 等推送总开关，也不另设 `publish_chats`、`enabled_chats`、目标群列表等接收名单。插件生命周期由统一插件管理控制，每个聊天是否接收由其 `#push` 权限控制。
+- 时间、频率、内容范围等业务参数可以保留。配置里的管理员故障通知接收人属于独立用途，不能当作业务推送名单；不要因为参考 Weekly 而照搬其管理员能力。
+- 调度到期时读取 `#push` 权限，没有接收者就跳过本轮推送生成。不得将普通权限自动升级为推送权限，也不得把旧目标名单自动转换为授权。
+- 生成任务可能耗时较长，发送前必须重新读取推送权限；已撤销权限的聊天应跳过。权限读取失败时记录失败并停止发送，不能退回旧名单或向全部聊天发送。
+- 主动推送没有入站消息，不能依赖 EventBus 的消息权限过滤代为授权。代码必须主动查询接收者；`require_mention` 是消息触发条件，不是推送开关。
+- 推送任务同时在 `manifest.json` 的 `jobs` 中声明时间配置及授权条件。`features` 用于声明能力、显示授权入口；`jobs` 用于描述任务；两者都不会代替代码中的权限检查和调度执行。
+
+查询示例，与 Weekly 使用相同的 `WeChatUser` / `UserPermission` 统一权限记录。通过 EventBus 的会话工厂访问数据库，兼容带目录的权限键，并确保关闭会话：
+
+```python
+from app.models.user_permission import UserPermission, WeChatUser
+
+PLUGIN_NAME = "my_plugin"
+
+
+def get_push_enabled_chats(event_bus):
+    db = event_bus.db_session_factory()
+    try:
+        grants = db.query(WeChatUser.chat_name, UserPermission.plugin_name).join(
+            UserPermission, UserPermission.user_id == WeChatUser.id,
+        ).all()
+        expected = f"{PLUGIN_NAME.rsplit('/', 1)[-1]}#push"
+        return sorted({
+            chat_name for chat_name, permission_key in grants
+            if chat_name and str(permission_key or "").rsplit("/", 1)[-1] == expected
+        })
+    finally:
+        db.close()
+```
+
+上例的数据库异常交由托管任务或调度循环记录，不应吞掉后继续发送。调度循环使用 `context.workers.start()`，生成任务使用 `context.tasks.submit()`；发送前再次调用查询函数，并使用持久化发送记录避免重启或重试造成重复推送。
+
+推送插件验收应覆盖：声明能显示推送授权入口、普通权限不会收到推送、`#push` 权限可触发推送、权限撤销后停止发送、无授权或查询失败时不发送，以及同一计划任务不会重复推送。
+
+可参考 [Weekly](Weekly/main.py) 的 `Weekly#push` 权限查询和 [游戏发售日历](game_release_calendar/main.py) 的每月调度、发送前权限查询与发送记录；新插件应按本节规范实现，不以旧插件中的兼容逻辑代替显式声明。
 
 ## 3. manifest.json
 
@@ -159,13 +228,13 @@ app/plugins/my_plugin/
     "kind": "schedule",
     "summary": "每天在配置时间执行",
     "config_keys": ["DAILY_PUSH_TIME"],
-    "conditions": ["只有数据变化时发送"]
+    "conditions": ["仅向拥有 my_plugin#push 权限的聊天发送", "只有数据变化时发送"]
   },
   "scope": {"level": "global", "chat_types": ["group", "user"]}
 }
 ```
 
-`jobs` 用于能力说明和设置导航，不进入消息执行顺序。
+`jobs` 用于能力说明和设置导航，不进入消息执行顺序，也不会自动启动调度器。推送插件还必须按第 2.2 节声明 `features: ["push"]` 并查询统一推送权限。上例的 `DAILY_PUSH_TIME` 必须在该插件的 `config_schema` 中声明。
 
 ## 4. 统一插件管理接口（Plugin Runtime API v2）
 

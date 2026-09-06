@@ -8,6 +8,7 @@
     <title>Mabobot</title>
     <link rel="icon" href="mabobot-icon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="notifications/email_notifications.css?v=2">
 </head>
 <body>
     <svg class="symbol-library" aria-hidden="true">
@@ -158,8 +159,9 @@
                 </section>
 
                 <section class="page" id="page-settings" data-page-panel="settings">
-                    <div class="page-heading"><div><p class="eyebrow">PREFERENCES</p><h1>设置</h1><p class="page-description">管理启动方式、窗口行为与本地环境。</p></div></div>
+                    <div class="page-heading"><div><p class="eyebrow">PREFERENCES</p><h1>设置</h1><p class="page-description">管理启动方式、邮箱提醒、窗口行为与本地环境。</p></div></div>
                     <div class="settings-layout">
+                        <article class="panel settings-card wide-card"><details class="launcher-email-settings"><summary>邮箱提醒 · 配置与测试</summary><div id="launcherEmailConsole"></div></details></article>
                         <article class="panel settings-card">
                             <div class="settings-card-heading"><span class="setting-icon"><svg><use href="#i-power"/></svg></span><div><h2>Windows 登录启动</h2><p>使用当前用户启动项，无需管理员权限。</p></div></div>
                             <label class="settings-line" for="startupToggleSettings"><span><strong>随 Windows 登录启动</strong><small id="startupDetail">读取系统状态中</small></span><input type="checkbox" id="startupToggleSettings"><span class="switch" aria-hidden="true"></span></label>
@@ -191,6 +193,7 @@
         </div>
     </div>
     <div class="toast-stack" id="toastStack" aria-live="polite"></div>
+    <script src="notifications/email_notifications.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

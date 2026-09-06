@@ -720,12 +720,17 @@ const LLMManager = {
     updateModelSamplingControls(provider = null, modelName = null) {
         provider ||= this.getActiveProviderPreset();
         modelName ??= this.normalizePastedText(document.getElementById('modelName')?.value || '').trim();
-        const disabled = this.isGemini3FormSelection(provider, modelName);
+        const isCodex = provider.key === 'local_codex';
+        const disabled = isCodex || this.isGemini3FormSelection(provider, modelName);
         const group = document.getElementById('modelTemperatureGroup');
         const input = document.getElementById('modelTemp');
         const notice = document.getElementById('modelSamplingNotice');
         group?.classList.toggle('d-none', disabled);
         notice?.classList.toggle('d-none', !disabled);
+        const noticeText = notice?.querySelector('.alert');
+        if (noticeText) noticeText.textContent = isCodex
+            ? '本地 Codex 按本模型配置独立调用，复用本地登录，不继承聊天 Profile 或历史。当前不传递温度、最大输出 Token 和 SDK 重试次数；请使用推理强度和任务指令控制输出。任务可覆盖模型超时。'
+            : 'Gemini 3+ 使用模型默认采样设置；temperature、top_p 和 top_k 不会保存或发送。需要约束输出时请写入系统指令。';
         if (input) {
             input.disabled = disabled;
             if (disabled) input.value = '';
@@ -738,6 +743,8 @@ const LLMManager = {
         const fallbackId = document.getElementById('mappingFallback')?.value || '';
         const primaryIsGemini3 = this.isGemini3ModelConfig(this.currentModels[primaryId] || {});
         const fallbackIsGemini3 = this.isGemini3ModelConfig(this.currentModels[fallbackId] || {});
+        const hasCodex = [primaryId, fallbackId].some(id =>
+            this.getPresetKeyForConfig(this.currentModels[id] || {}) === 'local_codex');
         const group = document.getElementById('mappingOverrideTemperatureGroup');
         const input = document.getElementById('mappingOverrideTemp');
         const notice = document.getElementById('mappingSamplingNotice');
@@ -747,10 +754,15 @@ const LLMManager = {
             if (primaryIsGemini3) input.value = '';
         }
         if (notice) {
-            notice.classList.toggle('d-none', !(primaryIsGemini3 || fallbackIsGemini3));
+            notice.classList.toggle('d-none', !(primaryIsGemini3 || fallbackIsGemini3 || hasCodex));
             notice.textContent = primaryIsGemini3
                 ? 'Gemini 3+ 使用模型默认采样设置；路由中的 temperature、top_p 和 top_k 不会保存或发送。'
                 : 'Gemini 3+ 备用模型使用默认采样设置；此处参数只会应用到支持它们的模型。';
+            if (hasCodex) {
+                const codexNotice = '本地 Codex 不传递温度和最大输出 Token；这些覆盖仅对支持它们的其他模型生效。记忆任务的超时以任务限制为准。';
+                notice.textContent = primaryIsGemini3 || fallbackIsGemini3
+                    ? `${notice.textContent} ${codexNotice}` : codexNotice;
+            }
         }
         return primaryIsGemini3;
     },
@@ -793,7 +805,11 @@ const LLMManager = {
         document.getElementById('modelProviderOverrideGroup')?.classList.toggle('d-none', !['compatible', 'other'].includes(presetKey));
         const isCodex = presetKey === 'local_codex';
         document.getElementById('modelCodexReasoningGroup')?.classList.toggle('d-none', !isCodex);
-        document.getElementById('modelCodexProfileGroup')?.classList.toggle('d-none', !isCodex);
+        for (const id of ['modelMaxTokens', 'modelMaxRetries']) {
+            const input = document.getElementById(id);
+            if (input) input.disabled = isCodex;
+            input?.closest('.col-sm-6')?.classList.toggle('d-none', isCodex);
+        }
         document.getElementById('modelCodexIsolatedGroup')?.classList.toggle('d-none', !isCodex);
         document.getElementById('modelCredentialSection')?.classList.toggle('d-none', isCodex);
         document.getElementById('modelApiBaseRequired')?.classList.toggle('d-none', !preset.apiBaseRequired);
@@ -826,7 +842,6 @@ const LLMManager = {
             document.getElementById('modelWebSearch').checked = false;
             document.getElementById('modelExtraBody').value = '';
         }
-        if (isCodex) await this.loadCodexProfileOptions();
         this.updateCredentialFields();
         if (presetKey === 'other') {
             if (!this.catalogProviders.length) await this.loadModelCatalogProviders();
@@ -930,28 +945,6 @@ const LLMManager = {
         const providerKey = preset.catalogProvider
             || (preset.key === 'compatible' ? 'compatible' : preset.providerValue || '');
         await this.loadModelCatalog(providerKey, { forceRefresh: true });
-    },
-
-    async loadCodexProfileOptions(selectedProfile = null) {
-        const select = document.getElementById('modelCodexProfile');
-        if (!select) return;
-        const selected = selectedProfile === null ? select.value : selectedProfile;
-        select.disabled = true;
-        try {
-            const data = await API.codexProfiles.list();
-            const inheritedLabel = data.default_profile_id
-                ? `继承默认 Profile · ${this.escapeHtml(data.default_profile_id)}`
-                : '继承默认 Profile · 尚未配置';
-            select.innerHTML = `<option value="">${inheritedLabel}</option>` + (data.profiles || [])
-                .filter(profile => profile.available)
-                .map(profile => `<option value="${this.escapeHtml(profile.name)}">${this.escapeHtml(profile.name)} · ${this.escapeHtml(profile.model)}</option>`)
-                .join('');
-            select.value = Array.from(select.options).some(option => option.value === selected) ? selected : '';
-        } catch (error) {
-            select.innerHTML = '<option value="">无法加载 Codex Profile</option>';
-        } finally {
-            select.disabled = false;
-        }
     },
 
     setCatalogState(models, message = '', discovery = null) {
@@ -1384,7 +1377,7 @@ const LLMManager = {
                 if (config.context_window_tokens || config.max_input_tokens) {
                     tokenPills.push(`<span title="上下文窗口"><i class="bi bi-arrows-expand"></i>${this.formatTokenCount(config.context_window_tokens || config.max_input_tokens)}</span>`);
                 }
-                if (config.max_tokens) tokenPills.push(`<span title="最大输出"><i class="bi bi-box-arrow-up"></i>${this.formatTokenCount(config.max_tokens)}</span>`);
+                if (config.max_tokens && meta.provider !== 'local_codex') tokenPills.push(`<span title="最大输出"><i class="bi bi-box-arrow-up"></i>${this.formatTokenCount(config.max_tokens)}</span>`);
                 if (config.supports_vision) tokenPills.push('<span title="支持图片"><i class="bi bi-image"></i>图片</span>');
                 if (config.enable_web_search || config.codex_web_search) tokenPills.push('<span title="启用 Web 搜索"><i class="bi bi-globe"></i>搜索</span>');
                 html += `
@@ -1406,7 +1399,9 @@ const LLMManager = {
                                 </div>
                                 ${config.api_base ? `<div class="llm-model-endpoint" title="${this.escapeHtml(config.api_base)}"><i class="bi bi-link-45deg"></i>${this.escapeHtml(config.api_base)}</div>` : ''}
                                 <div class="llm-model-capabilities">
-                                    ${this.isGemini3ModelConfig(config)
+                                    ${meta.provider === 'local_codex'
+                                        ? `<span title="独立调用的推理强度"><i class="bi bi-stars"></i>${this.escapeHtml(config.codex_reasoning_effort || config.extra_body?.reasoning_effort || 'medium')}</span>`
+                                        : this.isGemini3ModelConfig(config)
                                         ? '<span title="Gemini 3+ 使用模型默认采样设置"><i class="bi bi-stars"></i>默认采样</span>'
                                         : `<span title="温度"><i class="bi bi-thermometer-half"></i>${this.formatTemperature(config.temperature, '默认')}</span>`}
                                     ${tokenPills.join('')}
@@ -2244,9 +2239,6 @@ const LLMManager = {
         document.getElementById('modelVision').checked = Boolean(config.supports_vision || config.vision || config.image_input);
         document.getElementById('modelWebSearch').checked = Boolean(config.enable_web_search || config.codex_web_search);
         document.getElementById('modelCodexReasoning').value = config.codex_reasoning_effort || 'medium';
-        if (presetKey === 'local_codex') {
-            await this.loadCodexProfileOptions(config.codex_profile_id || '');
-        }
         document.getElementById('modelCodexIsolated').checked = config.codex_isolated_workdir !== false;
         document.getElementById('modelExtraBody').value = config.extra_body ? JSON.stringify(config.extra_body, null, 2) : '';
         document.getElementById('modelApiKeyEnv').value = meta.credential?.environment_variable || this.getActiveProviderPreset().envVar || '';
@@ -2332,14 +2324,15 @@ const LLMManager = {
             if (values.credentialMode === 'none' && provider.requiresCredential) {
                 throw new Error(`${provider.label} 需要 API Key，请填写后再保存。`);
             }
-            values.samplingDisabled = this.isGemini3FormSelection(provider, values.modelName);
+            const isCodex = provider.key === 'local_codex';
+            values.samplingDisabled = isCodex || this.isGemini3FormSelection(provider, values.modelName);
             values.temperature = values.samplingDisabled
                 ? { value: null, empty: true }
                 : this.parseOptionalNumber('modelTemp', '温度', 0, 2);
-            values.maxTokens = this.parseOptionalNumber('modelMaxTokens', '最大输出 Token', 1);
+            values.maxTokens = isCodex ? { value: null, empty: true } : this.parseOptionalNumber('modelMaxTokens', '最大输出 Token', 1);
             values.contextWindow = this.parseOptionalNumber('modelContextWindow', '上下文窗口', 1);
             values.timeout = this.parseOptionalNumber('modelTimeout', '超时', 1, 3600);
-            values.maxRetries = this.parseOptionalNumber('modelMaxRetries', 'SDK 重试次数', 0, 20);
+            values.maxRetries = isCodex ? { value: null, empty: true } : this.parseOptionalNumber('modelMaxRetries', 'SDK 重试次数', 0, 20);
             const extraBody = document.getElementById('modelExtraBody').value.trim();
             values.extraBody = extraBody ? JSON.parse(extraBody) : {};
             if (!values.extraBody || Array.isArray(values.extraBody) || typeof values.extraBody !== 'object') {
@@ -2422,9 +2415,7 @@ const LLMManager = {
             payload.enable_web_search = false;
             payload.codex_web_search = webSearch;
             payload.codex_reasoning_effort = document.getElementById('modelCodexReasoning').value;
-            const codexProfileId = document.getElementById('modelCodexProfile').value;
-            if (codexProfileId) payload.codex_profile_id = codexProfileId;
-            else if (isEdit && this.currentModels[targetModelId]?.codex_profile_id) payload.clear_fields.push('codex_profile_id');
+            if (isEdit && this.currentModels[targetModelId]?.codex_profile_id) payload.clear_fields.push('codex_profile_id');
             payload.codex_isolated_workdir = document.getElementById('modelCodexIsolated').checked;
         } else {
             payload.enable_web_search = webSearch;

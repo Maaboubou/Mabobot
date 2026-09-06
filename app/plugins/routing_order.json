@@ -8,7 +8,8 @@
       "Weekly:text_message_received:handle_text",
       "menu_translator:text_message_received:handle_text",
       "ebook_downloader:text_message_received:handle_command",
-      "ebook_downloader:text_message_received:handle_session_reply"
+      "ebook_downloader:text_message_received:handle_session_reply",
+      "game_release_calendar:text_message_received:handle_text"
     ],
     "image_message_received": [
       "builtin_chat_logger:image_message_received:handle_image_message",

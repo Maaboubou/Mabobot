@@ -508,7 +508,11 @@ class SummaryService(BrowserRuntimeMixin, MediaPipelineMixin, XiaohongshuMixin):
 
     def _send_bili_cookie_failure_email(self, chat_name: str) -> None:
         """发送 B 站 cookie 失效告警邮件（带冷却）"""
-        if not self.bili_cookie_email_alert_enabled:
+        service = get_email_service()
+        # Preserve the old plugin switch until the user saves unified preferences.
+        if not service.has_saved_preferences and not self.bili_cookie_email_alert_enabled:
+            return
+        if not service.event_enabled("bili_cookie"):
             return
 
         now = time.time()
@@ -517,7 +521,6 @@ class SummaryService(BrowserRuntimeMixin, MediaPipelineMixin, XiaohongshuMixin):
             self.logger.info("ℹ️ B站 Cookie 告警邮件处于冷却期，跳过发送")
             return
 
-        self._bili_cookie_alert_last_ts = now
         cookies_path = self._get_bili_cookies_path()
         body = (
             "summary_plus 检测到 B 站 Cookie 失效。\n\n"
@@ -530,10 +533,12 @@ class SummaryService(BrowserRuntimeMixin, MediaPipelineMixin, XiaohongshuMixin):
             "建议：在调试 Chrome 中重新登录 B 站，再重试。"
         )
         try:
-            ok = get_email_service().send_email(body, "🚨 summary_plus B站Cookie失效告警")
+            ok = service.send_email(body, "🚨 summary_plus B站Cookie失效告警", event="bili_cookie")
+            if service.last_status != "skipped":
+                self._bili_cookie_alert_last_ts = now
             if ok:
                 self.logger.info("✅ 已发送 B站 Cookie 失效告警邮件")
-            else:
+            elif service.last_status != "skipped":
                 self.logger.error("❌ B站 Cookie 失效告警邮件发送失败")
         except Exception as e:
             self.logger.error(f"❌ 发送 B站 Cookie 失效告警邮件异常: {e}")

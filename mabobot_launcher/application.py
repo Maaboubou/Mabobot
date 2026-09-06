@@ -117,6 +117,26 @@ class LauncherApi:
     def open_web_console(self) -> dict[str, Any]:
         return self._application.open_url(self._application.web_console_url)
 
+    def get_email_preferences(self) -> dict[str, Any]:
+        from app.services.email_settings_service import open_settings_db, public_config
+        with open_settings_db() as db:
+            return public_config(db)
+
+    def save_email_preferences(self, values: dict) -> dict[str, Any]:
+        from pydantic import ValidationError
+        from app.services.email_settings_service import open_settings_db, EmailPreferencesUpdate, save_config
+        try:
+            request = EmailPreferencesUpdate(**values)
+        except ValidationError:
+            raise ValueError("邮箱配置格式不正确，请检查邮箱服务和端口") from None
+        with open_settings_db() as db:
+            return save_config(db, request)
+
+    def test_email_preferences(self) -> dict[str, Any]:
+        from app.services.email_settings_service import open_settings_db, test_saved_config
+        with open_settings_db() as db:
+            return test_saved_config(db)
+
     def open_project_folder(self) -> dict[str, Any]:
         return self._application.open_path(PROJECT_ROOT)
 

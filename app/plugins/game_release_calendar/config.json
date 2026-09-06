@@ -1,0 +1,46 @@
+{
+  "name": "game_release_calendar",
+  "display_name": "刘局推荐 · 游戏发售日历",
+  "version": "1.0.0",
+  "description": "子 Codex 发现、核实并精选主机及 PC 当月发售，生成可追溯日历",
+  "author": "Mabobot",
+  "category": "utility",
+  "config_schema": {
+    "command": {
+      "type": "string",
+      "title": "预览命令",
+      "description": "完整命令格式：命令 YYYY-MM 预览",
+      "group": "trigger",
+      "default": "/月度发售"
+    },
+    "title": {
+      "type": "string",
+      "title": "栏目名",
+      "default": "刘局推荐"
+    },
+    "subtitle": {
+      "type": "string",
+      "title": "图片标题",
+      "description": "{month} 将替换为月份数字",
+      "default": "{month}月重磅游戏发售信息"
+    },
+    "publish_time": {
+      "type": "string",
+      "title": "每月1号发布时间",
+      "description": "北京时间 HH:MM；当日重启后可补执行一次",
+      "default": "09:00"
+    }
+  },
+  "features": [
+    "push"
+  ],
+  "config": {
+    "command": "/月度发售",
+    "title": "刘局推荐",
+    "subtitle": "{month}月重磅游戏发售信息",
+    "publish_time": "09:00"
+  },
+  "ui": {
+    "icon": "bi-calendar-event"
+  }
+}

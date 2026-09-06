@@ -2993,6 +2993,7 @@ const App = {
             const settings = await API.settings.getConsole();
             UI.renderSystemSettings(settings);
             const activeGroup = document.getElementById('settings')?.dataset.activeSystemGroup;
+            if (activeGroup === 'notifications') await window.EmailNotifications?.load();
             if (activeGroup === 'operations') await window.SystemOperations?.loadRuntime();
             if (activeGroup === 'tools') await window.SystemTools?.load();
             if (activeGroup === 'backups') await window.SystemOperations?.loadBackups();

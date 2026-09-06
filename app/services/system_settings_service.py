@@ -101,14 +101,6 @@ FIELD_SPECS: Dict[str, Dict[str, Any]] = {
         "group": "integrations", "section": "通知与分享", "title": "GitHub Token",
         "description": "用于需要 GitHub Gist 等能力的功能。", "source": "本机数据库优先", "editable": True,
     },
-    "QQEMAIL_ADDR": {
-        "group": "integrations", "section": "通知与分享", "title": "QQ 邮箱地址",
-        "description": "邮件通知服务使用的发件和收件地址。", "source": "本机数据库优先", "editable": True,
-    },
-    "QQEMAIL_CODE": {
-        "group": "integrations", "section": "通知与分享", "title": "QQ 邮箱授权码",
-        "description": "供邮件通知服务登录 SMTP；不是邮箱登录密码。", "source": "本机数据库优先", "editable": True,
-    },
     "CODEX_PROXY_KEY": {
         "group": "integrations", "section": "本地服务", "title": "Codex 代理访问密钥",
         "description": "保护本地 Codex 代理接口；修改后新的请求立即使用。", "source": "本机数据库优先", "editable": True,
@@ -221,7 +213,8 @@ MODEL_SETTING_PREFIXES = (
     "GROQ", "XAI", "COHERE", "TOGETHER", "DEEPINFRA", "FIREWORKS",
 )
 MODEL_MANAGED_KEYS = {"LLM_PROXY_URL"}
-NON_UI_INTERNAL_KEYS = {"LLM_CALL_TIMEOUT"}
+NON_UI_INTERNAL_KEYS = {"LLM_CALL_TIMEOUT", "QQEMAIL_ADDR", "QQEMAIL_CODE",
+                        "EMAIL_NOTIFICATION_CONFIG", "EMAIL_NOTIFICATION_PASSWORD", "EMAIL_NOTIFICATION_HISTORY"}
 
 
 SENSITIVE_PATTERN = re.compile(

@@ -1,0 +1,70 @@
+{
+  "schema_version": 2,
+  "plugin_api_version": 2,
+  "storage": {
+    "cache_retention_days": 7,
+    "cache_limit_mb": 500
+  },
+  "backup": {
+    "schema_version": 1,
+    "include_persistent_storage": true,
+    "include_generated_files": false,
+    "supports_restore_migration": false
+  },
+  "health": {
+    "critical": false,
+    "timeout_seconds": 5
+  },
+  "listeners": [
+    {
+      "event": "text_message_received",
+      "handler": "handle_text",
+      "title": "发售日历预览",
+      "trigger": {
+        "kind": "keyword",
+        "summary": "完整命令：/月度发售 YYYY-MM 预览",
+        "config_keys": [
+          "command"
+        ],
+        "conditions": [
+          "月份必须有效",
+          "后台任务运行中时拒绝重复提交",
+          "只向触发聊天返回预览"
+        ]
+      },
+      "scope": {
+        "level": "global",
+        "chat_types": [
+          "group",
+          "user"
+        ]
+      },
+      "propagation": "stop_on_consumed"
+    }
+  ],
+  "jobs": [
+    {
+      "id": "monthly_publish",
+      "title": "每月1号发售日历",
+      "trigger": {
+        "kind": "schedule",
+        "summary": "每月1号北京时间配置时刻向拥有推送权限的聊天发布",
+        "config_keys": [
+          "publish_time"
+        ],
+        "conditions": [
+          "仅向统一插件分配中拥有 game_release_calendar#push 权限的聊天发布",
+          "证据或覆盖不足时停止自动发布",
+          "发送记录不明确时不自动重发"
+        ]
+      },
+      "scope": {
+        "level": "global",
+        "chat_types": [
+          "group",
+          "user"
+        ]
+      }
+    }
+  ]
+}

@@ -32,14 +32,15 @@ class WeChatMonitorService:
         self.wechat_manager = wechat_manager
         self.email_service = get_email_service()
         self.logger = logging.getLogger(__name__)
-        
+
         # 监控配置
         self.is_monitoring = False
         self.monitor_thread = None
         self.check_interval = 30  # 30秒检查一次
-        
+
         # 防止重复发邮件；连续离线检查达到阈值后才发送掉线通知，避免瞬时超时误报
         self.offline_email_sent = False
+        self.offline_detected = False
         self.offline_failure_count = 0
         self.offline_alert_threshold = 3
         self.last_online_status = None
@@ -58,63 +59,63 @@ class WeChatMonitorService:
         self.listener_recovery_state = {}
         self.last_listener_recovery = None
         self._listener_recovery_lock = threading.RLock()
-        
+
         # 从配置获取机器人名称
         self.bot_name = get_setting("WECHAT_BOT_NAME", "微信助手")
-        
+
         self.logger.info(f"🔧 微信掉线监控服务初始化完成 (机器人: {self.bot_name})")
-    
+
     def set_wechat_manager(self, wechat_manager):
         """设置微信管理器实例"""
         self.wechat_manager = wechat_manager
         self.logger.info("微信管理器已设置到监控服务")
-    
+
     def start_monitoring(self) -> bool:
         """启动监控"""
         if self.is_monitoring:
             self.logger.warning("⚠️ 监控服务已在运行")
             return False
-            
+
         if not self.wechat_manager:
             self.logger.error("❌ 微信管理器未设置，无法启动监控")
             return False
-        
+
         self.is_monitoring = True
         self.monitor_thread = threading.Thread(
-            target=self._monitor_loop, 
+            target=self._monitor_loop,
             name="wechat_monitor_service",
             daemon=True
         )
         self.monitor_thread.start()
         self.logger.info("🔍 微信掉线监控已启动")
         return True
-    
+
     def stop_monitoring(self) -> None:
         """停止监控"""
         if not self.is_monitoring:
             return
-            
+
         self.is_monitoring = False
         self.logger.info("🛑 微信掉线监控已停止")
-        
+
         # 等待监控线程结束
         if self.monitor_thread and self.monitor_thread.is_alive():
             self.monitor_thread.join(timeout=5)
-    
+
     def _monitor_loop(self) -> None:
         """监控循环"""
         self.logger.info("监控循环已启动")
         consecutive_failures = 0
         max_consecutive_failures = 5
-        
+
         while self.is_monitoring:
             try:
                 # 检查微信在线状态
                 is_online = self._check_wechat_online()
-                
+
                 # 重置连续失败计数
                 consecutive_failures = 0
-                
+
                 if is_online:
                     listener_status = self._check_listener_status()
                     if listener_status:
@@ -129,14 +130,19 @@ class WeChatMonitorService:
                         )
                         self.offline_failure_count = 0
 
-                    if self.offline_email_sent:
-                        # 之前发过掉线邮件，现在恢复了，发送恢复邮件
+                    if self.offline_email_sent or self.offline_detected:
+                        # 恢复提醒有独立订阅，即使关闭掉线邮件也可以接收。
                         self.logger.info("✅ 微信状态恢复正常，发送恢复通知...")
                         if self.email_service.send_recovery_notification(self.bot_name):
                             self.offline_email_sent = False
+                            self.offline_detected = False
+                        elif getattr(self.email_service, "last_status", "") == "skipped":
+                            if not self.email_service.event_enabled("wechat_recovery"):
+                                self.offline_email_sent = False
+                                self.offline_detected = False
                         else:
                             self.logger.error("恢复通知邮件发送失败")
-                    
+
                     # 更新状态
                     if self.last_online_status != True:
                         self.logger.info("✅ 微信在线")
@@ -151,37 +157,38 @@ class WeChatMonitorService:
                             self.offline_alert_threshold,
                         )
                     else:
+                        self.offline_detected = True
                         if not self.offline_email_sent:
                             self.logger.warning(
-                                "❌ 连续 %s 次检测到微信离线，发送邮件通知...",
+                                "❌ 连续 %s 次检测到微信离线，尝试恢复登录并检查通知设置...",
                                 self.offline_failure_count,
                             )
                             if self._handle_offline_alert():
                                 self.offline_email_sent = True
-                            else:
+                            elif getattr(self.email_service, "last_status", "") != "skipped":
                                 self.logger.error("掉线通知邮件发送失败")
-                        
+
                         # 更新状态
                         if self.last_online_status != False:
                             self.logger.warning("⚠️ 微信离线")
                             self.last_online_status = False
-                
+
                 # 等待下次检查
                 time.sleep(self.check_interval)
-                
+
             except Exception as e:
                 consecutive_failures += 1
                 self.logger.error(f"监控循环异常 (连续失败 {consecutive_failures}/{max_consecutive_failures}): {e}")
-                
+
                 if consecutive_failures >= max_consecutive_failures:
                     self.logger.error(f"监控服务连续失败 {max_consecutive_failures} 次，延长检查间隔")
                     time.sleep(300)  # 5分钟
                     consecutive_failures = 0  # 重置计数
                 else:
                     time.sleep(60)  # 异常时等待1分钟
-        
+
         self.logger.info("监控循环已结束")
-    
+
     def _check_wechat_online(self) -> bool:
         """读取连接监控缓存，避免重复探测微信桥接端口。"""
         try:
@@ -196,7 +203,7 @@ class WeChatMonitorService:
             )
             self.logger.debug(f"微信在线状态: {is_online}")
             return is_online
-            
+
         except Exception as e:
             self.logger.debug(f"检查微信在线状态异常: {e}")
             return False
@@ -407,7 +414,7 @@ class WeChatMonitorService:
             else:
                 self.logger.info("✅ 监听健康检查正常")
             self.last_listener_status = current_listener_status
-    
+
     def get_status(self) -> dict:
         """获取监控服务状态"""
         with self._listener_recovery_lock:
@@ -442,12 +449,12 @@ class WeChatMonitorService:
             "last_listener_recovery": last_listener_recovery,
             "wechat_manager_available": self.wechat_manager is not None
         }
-    
+
     def force_check(self) -> dict:
         """强制执行一次检查（用于测试）"""
         if not self.wechat_manager:
             return {"success": False, "message": "微信管理器未设置"}
-        
+
         try:
             is_connected = self.wechat_manager.is_connected()
             is_online = self.wechat_manager.is_online() if is_connected else False
@@ -478,10 +485,10 @@ def get_monitor_service() -> WeChatMonitorService:
 def start_wechat_monitoring(wechat_manager) -> WeChatMonitorService:
     """
     启动微信掉线监控的便捷函数
-    
+
     Args:
         wechat_manager: 微信管理器实例
-        
+
     Returns:
         WeChatMonitorService: 监控服务实例
     """

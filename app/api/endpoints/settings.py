@@ -90,9 +90,9 @@ def get_setting_by_key(
     value = settings_service.get(key)
     if value is None:
         raise HTTPException(status_code=404, detail=f"Setting '{key}' not found")
-    
+
     is_sensitive = is_sensitive_setting(key)
-    
+
     return schemas_setting.SettingPublic(
         key=key,
         value="********" if is_sensitive else value,
@@ -108,14 +108,14 @@ def update_setting_value(
     """仅更新一个设置项的值"""
     # 检查是否为敏感信息，如果是脱敏的星号则不更新
     is_sensitive = is_sensitive_setting(key)
-    
+
     if is_sensitive and setting_in.value == "********":
         # 如果是敏感信息且值为脱敏星号，则跳过更新
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail=f"不能保存脱敏的星号值，请输入真实的{key}"
         )
-    
+
     setting = settings_service.set(key, setting_in.value)
     if not setting:
          raise HTTPException(status_code=404, detail=f"Setting '{key}' not found, cannot update.")
@@ -127,10 +127,10 @@ async def reload_environment_config():
     try:
         from app.services.config_service import reload_from_env
         from app.services.openai_service import rebuild_client
-        
+
         updated_count = reload_from_env()
         rebuild_client()  # 重建OpenAI客户端
-        
+
         return {
             "success": True,
             "message": f"成功重新加载了 {updated_count} 个配置项",

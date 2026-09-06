@@ -519,7 +519,7 @@ def start_mabobot(start_target: str) -> None:
 
 
 def send_qr_required_email(reason: str) -> bool:
-    from app.services.email_service import send_alert_email
+    from app.services.email_service import get_email_service
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     subject = "🚨 微信开机自动登录失败，需要扫码确认"
@@ -531,7 +531,7 @@ def send_qr_required_email(reason: str) -> bool:
         "常见情况：微信显示二维码登录界面，按 Enter 无法进入微信。\n"
         "请远程到这台电脑扫码登录微信，登录完成后再启动 Mabobot。"
     )
-    return send_alert_email(subject=subject, body=body)
+    return get_email_service().send_email(body, subject, event="startup_failure")
 
 
 def wait_and_login(args: argparse.Namespace) -> bool:

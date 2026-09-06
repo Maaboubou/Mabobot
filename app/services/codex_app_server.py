@@ -17,6 +17,7 @@ import shutil
 import signal
 import sqlite3
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -2232,6 +2233,15 @@ class CodexAppServerManager:
     def run(self, request: Dict[str, Any], *, profile_name: str = "batch") -> Dict[str, Any]:
         """Run one isolated turn on this long-lived process."""
         run_key = f"{profile_name}:{uuid.uuid4().hex}"
+        extra_body = request.get("extra_body") or {}
+        if _as_bool(request.get("codex_isolated_workdir", extra_body.get("codex_isolated_workdir")), False):
+            # Create the cwd before thread/start, and clean it on startup failures
+            # as well as completed/interrupted turns. Never mutate the caller.
+            with tempfile.TemporaryDirectory(prefix="mabobot_codex_llm_") as directory:
+                isolated = dict(request)
+                isolated["codex_workdir"] = str(Path(directory).resolve())
+                isolated["codex_isolated_workdir"] = False
+                return self.run(isolated, profile_name=profile_name)
         with self._chat_lock(run_key):
             return self._chat_locked(
                 request,
@@ -2370,6 +2380,9 @@ class CodexAppServerManager:
             output_schema = extra_body.get("output_schema")
         if not isinstance(output_schema, dict):
             output_schema = None
+        text_only = _as_bool(
+            request.get("codex_text_only", extra_body.get("codex_text_only")), False
+        )
 
         runtime_profile = str(request.get("codex_runtime_profile") or "").strip()
         state = None if ephemeral else self.state_store.get(chat_id)
@@ -2535,7 +2548,7 @@ class CodexAppServerManager:
             )
 
         image_urls = extract_image_urls(delta.messages, allow_image_input=allow_image_input)
-        image_request_mode = _direct_image_request_mode(
+        image_request_mode = None if text_only else _direct_image_request_mode(
             delta.messages,
             has_image_input=bool(image_urls),
         )
@@ -2562,6 +2575,7 @@ class CodexAppServerManager:
             input_image_count=len(runtime_image_paths),
             input_files=staged_input_files,
             available_file_commands=_detect_runtime_file_commands(self.use_wsl),
+            text_only=text_only,
         )
         if delta.resume:
             prompt = (
@@ -2675,7 +2689,7 @@ class CodexAppServerManager:
 
             response_messages = tracker.final_messages or tracker.unclassified_messages
             text = response_messages[-1].strip() if response_messages else ""
-            attachments = self._collect_response_attachments(
+            attachments = [] if text_only else self._collect_response_attachments(
                 output_dir=output_dir,
                 turn_trackers=turn_trackers,
                 image_request_mode=image_request_mode,
@@ -2784,7 +2798,7 @@ class CodexAppServerManager:
 
                 response_messages = tracker.final_messages or tracker.unclassified_messages
                 text = response_messages[-1].strip() if response_messages else ""
-                attachments = self._collect_response_attachments(
+                attachments = [] if text_only else self._collect_response_attachments(
                     output_dir=output_dir,
                     turn_trackers=turn_trackers,
                     image_request_mode=image_request_mode,

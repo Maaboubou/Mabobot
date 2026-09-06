@@ -11,6 +11,9 @@ import logging
 import mimetypes
 import os
 import smtplib
+import ssl
+import time
+import threading
 from email import encoders
 from email.mime.base import MIMEBase
 from email.mime.image import MIMEImage
@@ -20,11 +23,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional
 
-# config_service 依赖数据库，独立运行时可能不可用，做安全导入
-try:
-    from .config_service import get_setting as _get_setting_from_db
-except Exception:
-    _get_setting_from_db = None  # type: ignore
+from .email_settings_service import load_config, normalize, read_setting, record_delivery
+
+_get_setting_from_db = read_setting
 
 logger = logging.getLogger(__name__)
 
@@ -32,34 +33,52 @@ logger = logging.getLogger(__name__)
 class EmailService:
     """邮件服务类"""
 
+    def __init__(self, config=None):
+        self._config_override = config
+        self._local = threading.local()
+        self._attempts = {}
+        self._send_lock = threading.Lock()
+
+    @property
+    def last_message(self):
+        return getattr(self._local, "message", "")
+
+    @property
+    def last_status(self):
+        return getattr(self._local, "status", "")
+
+    def _config(self):
+        return self._config_override or load_config(_get_setting_from_db)
+
+    def event_enabled(self, event: str) -> bool:
+        try:
+            config = self._config()
+            return bool(config["enabled"] and config["events"].get(event, True)
+                        and config["address"] and config["password"])
+        except Exception:
+            return False
+
+    @property
+    def has_saved_preferences(self) -> bool:
+        return self._config().get("revision") != "legacy"
+
     def _get_email_address(self) -> Optional[str]:
-        """获取发件地址（优先数据库，回退到环境变量）。"""
-        email_address: Optional[str] = None
-        if _get_setting_from_db is not None:
-            try:
-                email_address = _get_setting_from_db("QQEMAIL_ADDR")
-            except Exception:
-                pass
-        if not email_address:
-            email_address = os.getenv("QQEMAIL_ADDR")
-        return str(email_address or "").strip() or None
+        return self._config()["address"] or None
 
     def _get_auth_code(self) -> Optional[str]:
-        """获取邮箱授权码（优先数据库，回退到环境变量）"""
-        auth_code: Optional[str] = None
+        return self._config()["password"] or None
 
-        # 优先从数据库获取
-        if _get_setting_from_db is not None:
+    def _result(self, event, status, message, config, *, record=True):
+        self._local.status = status
+        self._local.message = message
+        if record:
             try:
-                auth_code = _get_setting_from_db("QQEMAIL_CODE")
+                record_delivery(event, status, message, config.get("revision", ""))
             except Exception:
-                pass
-
-        # 回退到环境变量
-        if not auth_code:
-            auth_code = os.getenv("QQEMAIL_CODE")
-
-        return auth_code
+                logger.warning("邮件发送记录未能保存")
+        if status == "failed":
+            logger.warning("邮件提醒：%s", message)
+        return status == "sent"
 
     def send_email(
         self,
@@ -70,6 +89,8 @@ class EmailService:
         inline_image_paths: Optional[
             Iterable[tuple[str, str | os.PathLike[str]]]
         ] = None,
+        *,
+        event: str = "general",
     ) -> bool:
         """
         发送邮件
@@ -84,20 +105,28 @@ class EmailService:
         Returns:
             bool: 发送成功返回True，失败返回False
         """
-        qq_email = self._get_email_address()
-        if not qq_email:
-            logger.error("❌ 邮箱地址未配置，请设置 QQEMAIL_ADDR")
-            return False
-
-        auth_code = self._get_auth_code()
-        if not auth_code:
-            logger.error("❌ 邮件授权码未配置，请设置环境变量 QQEMAIL_CODE")
-            return False
+        try:
+            config = normalize(self._config())
+        except Exception:
+            return self._result(event, "failed", "邮箱配置不可用，请重新保存配置", {}, record=False)
+        if event != "test" and (not config["enabled"] or not config["events"].get(event, True)):
+            return self._result(event, "skipped", "邮件提醒未开启或未订阅此事件", config, record=False)
+        if not all(config.get(key) for key in ("address", "host", "password")):
+            return self._result(event, "skipped" if event != "test" else "failed", "请先配置邮箱和授权码", config, record=event == "test")
+        # Failed deliveries back off independently of the business alert state.
+        attempt_key = (event, config.get("revision"))
+        with self._send_lock:
+            if time.monotonic() < self._attempts.get(attempt_key, 0):
+                return self._result(event, "skipped", "发送冷却中，请稍后再试", config, record=False)
+            self._attempts[attempt_key] = time.monotonic() + (10 if event == "test" else 300)
+        qq_email = config["address"]
+        auth_code = config["password"]
+        server = None
 
         try:
             msg = MIMEMultipart("mixed")
             msg['From'] = qq_email
-            msg['To'] = qq_email  # 发给自己
+            msg['To'] = config['recipient'] or qq_email
             msg['Subject'] = subject
 
             inline_images = tuple(inline_image_paths or ())
@@ -145,17 +174,44 @@ class EmailService:
                 )
                 msg.attach(part)
 
-            server = smtplib.SMTP_SSL('smtp.qq.com', 465)
-            server.login(qq_email, auth_code)
-            server.send_message(msg)
-            server.quit()
-
-            logger.info(f"✅ 邮件发送成功: {subject}")
-            return True
-
-        except Exception as e:
-            logger.error(f"❌ 邮件发送失败: {e}")
-            return False
+            context = ssl.create_default_context()
+            if config["security"] == "ssl":
+                server = smtplib.SMTP_SSL(config["host"], config["port"], timeout=15, context=context)
+            else:
+                server = smtplib.SMTP(config["host"], config["port"], timeout=15)
+                server.ehlo()
+                server.starttls(context=context)
+                server.ehlo()
+            server.login(config["username"] or qq_email, auth_code)
+            refused = server.send_message(msg)
+            if refused:
+                raise smtplib.SMTPRecipientsRefused(refused)
+            with self._send_lock:
+                if event != "test":
+                    self._attempts.pop(attempt_key, None)
+            return self._result(event, "sent", "已提交发送，请检查收件箱及垃圾邮件", config)
+        except smtplib.SMTPAuthenticationError:
+            message = "邮箱认证失败，请检查账号、授权码及 SMTP 是否开启"
+        except smtplib.SMTPRecipientsRefused:
+            message = "收件地址被拒绝，请检查收件邮箱"
+        except ssl.SSLError:
+            message = "邮箱服务的加密连接或证书验证失败，请检查 SMTP 配置"
+        except (TimeoutError, OSError):
+            message = "连接邮箱服务失败，请检查服务器、端口和网络后重试"
+        except smtplib.SMTPNotSupportedError:
+            message = "邮箱服务不支持所选加密方式，请检查 SMTP 配置"
+        except Exception:
+            message = "邮件发送失败，请检查邮箱服务设置后重试"
+        finally:
+            if server is not None:
+                try:
+                    server.quit()
+                except Exception:
+                    try:
+                        server.close()
+                    except Exception:
+                        pass
+        return self._result(event, "failed", message, config)
 
     def send_offline_notification(self, bot_name: str = "微信助手") -> bool:
         """发送掉线通知邮件"""
@@ -173,7 +229,7 @@ class EmailService:
 此消息由微信掉线监控系统自动发送。
         """.strip()
 
-        return self.send_email(email_body, f"🚨 {bot_name} 掉线通知")
+        return self.send_email(email_body, f"🚨 {bot_name} 掉线通知", event="wechat_offline")
 
     def send_login_qr_notification(
         self,
@@ -228,6 +284,7 @@ class EmailService:
             email_body,
             f"🔐 {bot_name} 需要扫码登录",
             body_html=email_html,
+            event="wechat_offline",
             inline_image_paths=[("wechat-login-qr", qr_image_path)],
         )
 
@@ -247,7 +304,7 @@ class EmailService:
 此消息由微信掉线监控系统自动发送。
         """.strip()
 
-        return self.send_email(email_body, f"✅ {bot_name} 恢复在线")
+        return self.send_email(email_body, f"✅ {bot_name} 恢复在线", event="wechat_recovery")
 
 
 # 全局实例

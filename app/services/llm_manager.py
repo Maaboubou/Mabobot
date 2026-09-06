@@ -398,11 +398,11 @@ class LLMManager:
         for model_id, model_cfg in list(self.config.get("models", {}).items()):
             if not isinstance(model_cfg, dict):
                 continue
-            if str(model_cfg.get("codex_profile_id") or "").strip() == "__current__":
+            if self._is_local_codex_model(model_cfg) and "codex_profile_id" in model_cfg:
                 model_cfg.pop("codex_profile_id", None)
                 modified = True
                 logger.info(
-                    "🧹 已将模型 %s 的旧版当前 Codex 绑定迁移为默认 Profile",
+                    "🧹 已移除模型 %s 的旧 Codex Profile 绑定，单次调用使用模型自身配置",
                     model_id,
                 )
             sanitized, removed = sanitize_gemini_3_model_config(model_cfg)
@@ -757,6 +757,7 @@ class LLMManager:
             messages,
             native_web_search_enabled=native_web_search_enabled,
             input_image_count=input_image_count,
+            text_only=True,
         )
         return token_count or None
 
@@ -1353,15 +1354,7 @@ class LLMManager:
         ) -> str:
             candidate_config = entry["model_config"]
             if self._is_local_codex_model(candidate_config):
-                codex_backend = (
-                    str(response.get("backend") or "")
-                    if isinstance(response, dict)
-                    else ""
-                )
-                backend_label = f"local_codex_{codex_backend or 'runtime'}"
-                self.last_used_model = (
-                    f"{backend_label}/{candidate_config.get('model', entry['model_id'])}"
-                )
+                self.last_used_model = self._resolve_local_codex_model(response, candidate_config)
             else:
                 self.last_used_model = self._resolve_actual_model(
                     response,
@@ -1489,13 +1482,7 @@ class LLMManager:
                 if not result:
                     raise ValueError("Local Codex CLI returned empty response")
 
-                codex_backend = (
-                    str(response.get("backend") or "")
-                    if isinstance(response, dict)
-                    else ""
-                )
-                backend_label = f"local_codex_{codex_backend or 'runtime'}"
-                self.last_used_model = f"{backend_label}/{model_config.get('model', primary_model_id)}"
+                self.last_used_model = self._resolve_local_codex_model(response, model_config)
                 response_attachments = self._extract_attachments_from_response(response)
                 if isinstance(attachment_capture, list):
                     attachment_capture.clear()
@@ -1892,6 +1879,13 @@ class LLMManager:
         return new_messages
 
     @staticmethod
+    def _resolve_local_codex_model(response, model_config: dict) -> str:
+        """Use the runtime result, including for fallback and connectivity tests."""
+        backend = str(response.get("backend") or "runtime") if isinstance(response, dict) else "runtime"
+        model = response.get("model") if isinstance(response, dict) else None
+        return f"local_codex_{backend}/{model or model_config.get('model') or 'unknown'}"
+
+    @staticmethod
     def _resolve_actual_model(response, model_config: dict) -> str:
         """从 LiteLLM response 中还原实际使用的完整模型名（含 provider 前缀）"""
         actual = getattr(response, "model", None) or model_config["model"]
@@ -2027,8 +2021,8 @@ class LLMManager:
         codex_output_schema: Optional[dict] = None,
         input_files: Optional[List[Dict[str, Any]]] = None,
     ) -> tuple:
-        """Call the shared Codex runtime using the appropriate workload profile."""
-        from app.services.codex_profile_service import get_codex_runtime_registry
+        """Use local Codex as a stateless LLM provider, independent of chat Profiles."""
+        from app.services.agent_runtime import get_agent_runtime
 
         extra_body = copy.deepcopy(params.get("extra_body") or {})
         timeout = int(params.get("timeout") or model_config.get("timeout") or 600)
@@ -2037,6 +2031,9 @@ class LLMManager:
             "timeout": timeout,
             "messages": messages,
             "extra_body": extra_body,
+            "codex_text_only": True,
+            "codex_isolated_workdir": True,
+            "codex_sandbox": "read-only",
         }
         try:
             configured_context_window = int(
@@ -2064,6 +2061,11 @@ class LLMManager:
             payload["codex_isolated_workdir"] = model_config.get(
                 "codex_isolated_workdir"
             )
+        response_format = params.get("response_format") or model_config.get("response_format") or {}
+        if not codex_output_schema and isinstance(response_format, dict):
+            schema_config = response_format.get("json_schema")
+            if response_format.get("type") == "json_schema" and isinstance(schema_config, dict):
+                codex_output_schema = schema_config.get("schema")
         if codex_output_schema:
             payload["output_schema"] = copy.deepcopy(codex_output_schema)
         if input_files:
@@ -2085,38 +2087,20 @@ class LLMManager:
             payload["mabobot_allow_image_input"] = True
             payload.setdefault("extra_body", {})["mabobot_allow_image_input"] = True
 
-        t0 = time.time()
-        codex_profile_id = str(model_config.get("codex_profile_id") or "").strip()
-        runtime, codex_profile = get_codex_runtime_registry().resolve(codex_profile_id)
-        resolved_profile_id = str(codex_profile.get("name") or "")
-        payload["model"] = str(codex_profile.get("model") or payload["model"])
-        payload["codex_runtime_profile"] = resolved_profile_id
-        try:
-            profile_context_window = int(codex_profile.get("context_window") or 0)
-        except (TypeError, ValueError):
-            profile_context_window = 0
-        if profile_context_window >= 4096:
-            payload["codex_model_context_window"] = profile_context_window
-        if "reasoning_effort" not in payload:
-            payload["reasoning_effort"] = str(
-                codex_profile.get("reasoning_effort") or "high"
-            )
+        payload.setdefault("reasoning_effort", extra_body.get("reasoning_effort") or "medium")
+        payload.setdefault(
+            "codex_web_search",
+            payload.get("web_search", extra_body.get("codex_web_search", extra_body.get("web_search", False))),
+        )
         if chat_id:
-            response = runtime.chat(
-                payload,
-                chat_id=chat_id,
-                role_name=role_name or None,
-                retry=retry,
-                max_turns=codex_max_turns,
-                allow_exec_fallback=codex_exec_fallback,
-            )
-        else:
-            profile_name = "memory" if codex_output_schema else "batch"
-            response = runtime.run(
-                payload,
-                profile_name=profile_name,
-                allow_exec_fallback=codex_exec_fallback,
-            )
+            payload["codex_source_chat_name"] = chat_id
+        t0 = time.time()
+        runtime = get_agent_runtime()
+        response = runtime.run(
+            payload,
+            profile_name="memory" if codex_output_schema else "batch",
+            allow_exec_fallback=codex_exec_fallback,
+        )
         response_time = time.time() - t0
         choices = response.get("choices") or [] if isinstance(response, dict) else []
         message = (choices[0].get("message") if choices else {}) or {}
@@ -2981,6 +2965,8 @@ class LLMManager:
             if "models" not in self.config:
                 self.config["models"] = {}
             sanitized, removed = sanitize_gemini_3_model_config(config)
+            if self._is_local_codex_model(sanitized):
+                sanitized.pop("codex_profile_id", None)
             self.config["models"][model_id] = sanitized
             self.save_config()
         if removed:

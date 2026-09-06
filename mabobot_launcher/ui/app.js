@@ -332,6 +332,11 @@
         $$('.nav-item').forEach(item => item.classList.toggle('is-active', item.dataset.page === page));
         $$('[data-page-panel]').forEach(panel => panel.classList.toggle('is-visible', panel.dataset.pagePanel === page));
         if (page === 'logs') renderLogStream(true);
+        if (page === 'settings') window.EmailNotifications?.mount($('#launcherEmailConsole'), {
+            get: () => apiCall('get_email_preferences'),
+            save: values => apiCall('save_email_preferences', values),
+            test: () => apiCall('test_email_preferences')
+        });
     }
 
     function toast(message, level = 'success') {

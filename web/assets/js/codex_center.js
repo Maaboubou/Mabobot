@@ -741,7 +741,7 @@ const CodexCenter = {
             ? '\n它当前是默认 Profile；删除后会自动选择另一个可用 Profile，如无可用项则需要重新配置。'
             : '';
         const confirmed = await UI.confirm(
-            `确定永久删除 Codex Profile “${profileName}”吗？${defaultNotice}\n引用它的聊天和模型配置会恢复为继承默认 Profile。此操作无法撤销。`,
+            `确定永久删除 Codex Profile “${profileName}”吗？${defaultNotice}\n引用它的聊天会恢复为继承默认 Profile。此操作无法撤销。`,
             {
                 title: '删除 Codex Profile',
                 confirmText: '永久删除',
