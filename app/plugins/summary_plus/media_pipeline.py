@@ -35,7 +35,7 @@ class MediaPipelineMixin:
     """Platform URL, downloader, FFmpeg and Bilibili media primitives."""
 
     def _extract_douyin_share_url(self, text: str) -> Optional[str]:
-        """提取抖音分享链接（支持 v.douyin.com 短链和 www.douyin.com）"""
+        """提取抖音短链、douyin.com 长链和 iesdouyin.com 分享链接。"""
         if not text:
             return None
 
@@ -45,8 +45,12 @@ class MediaPipelineMixin:
         if m:
             return m.group(1)
 
-        # 兼容 www.douyin.com 长链接
-        m = re.search(r"(https?://(?:www\.)?douyin\.com/[^\s<>\"]+)", text)
+        # 保留分享参数，供 yt-dlp 跟随跳转及 TikHub 解析原始分享链接。
+        m = re.search(
+            r"(https?://(?:www\.)?(?:douyin|iesdouyin)\.com/[^\s<>\"]+)",
+            text,
+            re.IGNORECASE,
+        )
         return m.group(1) if m else None
 
     def _extract_tiktok_share_url(self, text: str) -> Optional[str]:

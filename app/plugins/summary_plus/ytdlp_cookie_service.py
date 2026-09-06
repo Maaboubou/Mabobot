@@ -15,7 +15,7 @@ import websocket
 
 
 _PLATFORM_COOKIE_DOMAINS = {
-    "douyin": ("douyin.com",),
+    "douyin": ("douyin.com", "iesdouyin.com"),
     "xiaohongshu": ("xiaohongshu.com", "xhslink.com", "xhslink.cn"),
 }
 
