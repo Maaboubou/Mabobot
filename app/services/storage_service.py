@@ -19,18 +19,12 @@ class StorageError(RuntimeError):
 class StorageService:
     CATEGORY_PATHS = {
         "models": ["data/models"],
-        "memory_snapshots": [
-            "data/memory_activations", "data/memory_experiments",
-            "data/memory_correction_backups", "data/person_alias_audits",
-            "data/person_rebuilds", "data/migration_backups",
-        ],
         "generated": [
             "data/daily_reports", "data/weekly_reports",
             "data/chat_summaries",
         ],
-        "chat_and_memory": [
-            "data/database.db", "data/chat_memory.db", "data/chat_logs",
-            "data/chatbot_anchor_contexts",
+        "chat_archive": [
+            "data/database.db", "data/chat_archive", "data/chat_logs",
         ],
         "diagnostics": [
             "data/llm_call_history.jsonl",
@@ -38,7 +32,7 @@ class StorageService:
         ],
         "managed_plugins": ["data/plugins", "tmp/plugins"],
         "temporary": ["tmp"],
-        "backups": ["data/system_backups", "data/memory_backups", "data/backups"],
+        "backups": ["data/system_backups", "data/backups"],
     }
 
     def __init__(self, project_root: Optional[Path] = None):

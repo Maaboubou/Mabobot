@@ -12,6 +12,7 @@ import requests
 import time
 import json
 import uuid
+_ARCHIVE_DELIVERY_SESSION = uuid.uuid4().hex
 from datetime import datetime
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
@@ -1456,6 +1457,9 @@ def message_callback(msg, chat):
             "type": msg.type,
             "mtype": resolved_mtype,  # 使用解析后的mtype
             "message_id": final_message_id,  # 消息ID，用于后续操作
+            # A delivery identity is not a WeChat database/platform message ID.
+            "archive_message_id": str(getattr(msg, "delivery_sequence", 0) or getattr(msg, "id", "") or uuid.uuid4().hex),
+            "archive_source": "mabowx_delivery:" + _ARCHIVE_DELIVERY_SESSION,
             "url": url,  # 添加URL字段
             "quote_image_path": quote_image_path,  # 引用图片路径（延迟下载时为None）
             "quote_nickname": quote_nickname or None,  # 被引用消息发送者的群内显示名

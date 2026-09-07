@@ -8,6 +8,7 @@ from sqlalchemy import func
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -23,7 +24,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 _codex_refresh_lock = asyncio.Lock()
 _codex_live_status_snapshot_file = Path("data/codex_usage_snapshot.json")
-_codex_live_status_snapshot_version = 1
+_codex_live_status_snapshot_version = 2
 
 
 def _get_chat_logs_dir() -> Path:
@@ -37,10 +38,10 @@ def _count_today_messages() -> int:
         logs_dir = _get_chat_logs_dir()
         if not logs_dir.exists():
             return 0
-        
+
         today = datetime.now().date()
         total = 0
-        
+
         for log_file in logs_dir.glob("*.jsonl"):
             try:
                 with open(log_file, 'r', encoding='utf-8') as f:
@@ -59,7 +60,7 @@ def _count_today_messages() -> int:
                             continue
             except Exception:
                 continue
-        
+
         return total
     except Exception:
         return 0
@@ -71,11 +72,11 @@ def _count_today_ai_replies() -> int:
         logs_dir = _get_chat_logs_dir()
         if not logs_dir.exists():
             return 0
-        
+
         today = datetime.now().date()
         total = 0
         bot_name = get_setting("WECHAT_BOT_NAME", "刘局")
-        
+
         for log_file in logs_dir.glob("*.jsonl"):
             try:
                 with open(log_file, 'r', encoding='utf-8') as f:
@@ -93,7 +94,7 @@ def _count_today_ai_replies() -> int:
                             continue
             except Exception:
                 continue
-        
+
         return total
     except Exception:
         return 0
@@ -105,11 +106,11 @@ def _count_active_users_today() -> int:
         logs_dir = _get_chat_logs_dir()
         if not logs_dir.exists():
             return 0
-        
+
         today = datetime.now().date()
         active_users = set()
         bot_name = get_setting("WECHAT_BOT_NAME", "刘局")
-        
+
         for log_file in logs_dir.glob("*.jsonl"):
             try:
                 with open(log_file, 'r', encoding='utf-8') as f:
@@ -130,7 +131,7 @@ def _count_active_users_today() -> int:
                             continue
             except Exception:
                 continue
-        
+
         return len(active_users)
     except Exception:
         return 0
@@ -142,10 +143,10 @@ def _get_recent_activities(limit: int = 20) -> List[Dict[str, Any]]:
         logs_dir = _get_chat_logs_dir()
         if not logs_dir.exists():
             return []
-        
+
         activities = []
         bot_name = get_setting("WECHAT_BOT_NAME", "刘局")
-        
+
         # 收集所有日志文件的最新条目
         for log_file in logs_dir.glob("*.jsonl"):
             try:
@@ -159,16 +160,16 @@ def _get_recent_activities(limit: int = 20) -> List[Dict[str, Any]]:
                             time_str = entry.get('time', '')
                             sender = entry.get('sender', '')
                             content = entry.get('content', '')
-                            
+
                             if not time_str:
                                 continue
-                            
+
                             # 判断是用户消息还是机器人回复
                             is_bot = sender == bot_name
-                            
+
                             # 生成预览文本（简化处理，都当文本）
                             preview = content[:50] + '...' if len(content) > 50 else content
-                            
+
                             activities.append({
                                 'time': time_str,
                                 'chat_name': chat_name,
@@ -180,7 +181,7 @@ def _get_recent_activities(limit: int = 20) -> List[Dict[str, Any]]:
                             continue
             except Exception:
                 continue
-        
+
         # 按时间排序，取最新的 limit 条
         activities.sort(key=lambda x: x['time'], reverse=True)
         return activities[:limit]
@@ -194,16 +195,16 @@ def _get_top_users_today(limit: int = 5) -> List[Dict[str, Any]]:
         logs_dir = _get_chat_logs_dir()
         if not logs_dir.exists():
             return []
-        
+
         today = datetime.now().date()
         user_counts = {}
         bot_name = get_setting("WECHAT_BOT_NAME", "刘局")
-        
+
         for log_file in logs_dir.glob("*.jsonl"):
             try:
                 chat_name = log_file.stem
                 count = 0
-                
+
                 with open(log_file, 'r', encoding='utf-8') as f:
                     for line in f:
                         try:
@@ -217,15 +218,15 @@ def _get_top_users_today(limit: int = 5) -> List[Dict[str, Any]]:
                                 count += 1
                         except (json.JSONDecodeError, ValueError, KeyError):
                             continue
-                
+
                 if count > 0:
                     user_counts[chat_name] = count
             except Exception:
                 continue
-        
+
         # 排序并获取 top N
         sorted_users = sorted(user_counts.items(), key=lambda x: x[1], reverse=True)[:limit]
-        
+
         # 获取用户的 is_group 信息
         from app.models.base import SessionLocal
         db = SessionLocal()
@@ -243,27 +244,6 @@ def _get_top_users_today(limit: int = 5) -> List[Dict[str, Any]]:
             db.close()
     except Exception:
         return []
-
-
-def _get_codex_sessions_dir() -> Path:
-    codex_home = os.getenv("CODEX_HOME")
-    if codex_home:
-        return Path(codex_home).expanduser() / "sessions"
-    return Path.home() / ".codex" / "sessions"
-
-
-def _get_latest_codex_rollout() -> Optional[Path]:
-    sessions_dir = _get_codex_sessions_dir()
-    if not sessions_dir.exists():
-        return None
-
-    try:
-        return max(
-            sessions_dir.glob("**/rollout-*.jsonl"),
-            key=lambda path: path.stat().st_mtime,
-        )
-    except Exception:
-        return None
 
 
 def _timestamp_from_epoch(value: Any) -> Optional[str]:
@@ -441,178 +421,113 @@ def _write_codex_live_status_snapshot(
             pass
 
 
-def _read_codex_rate_limits_from_rollout(rollout_file: Optional[Path] = None) -> Dict[str, Any]:
-    path = rollout_file or _get_latest_codex_rollout()
-    if not path:
-        return {
-            "quota_available": False,
-            "quota": None,
-            "quota_message": f"No rollout files found under {_get_codex_sessions_dir()}",
-            "rollout_file": None,
-            "rate_limits": None,
-            "source": "rollout",
-            "rate_limit_updated_at": None,
-            "session": None,
-        }
+def _codex_profile_context_key(profile: Dict[str, Any]) -> str:
+    """Scope usage to a configuration/account identity without storing secrets."""
+    identity = {key: profile.get(key) for key in (
+        "name", "model", "provider_name", "base_url", "auth_type", "auth_source",
+        "account_email", "plan_type", "created_at", "auth_sync_status", "available",
+    )}
+    return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
 
-    session_meta: Dict[str, Any] = {}
-    latest_rate_limits: Optional[Dict[str, Any]] = None
-    latest_timestamp = None
 
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
-
-        for line in lines:
-            try:
-                event = json.loads(line)
-            except Exception:
-                continue
-            if event.get("type") == "session_meta" and isinstance(event.get("payload"), dict):
-                session_meta = event["payload"]
-                break
-
-        for line in reversed(lines):
-            try:
-                event = json.loads(line)
-            except Exception:
-                continue
-            payload = event.get("payload") or {}
-            rate_limits = payload.get("rate_limits") if isinstance(payload, dict) else None
-            if isinstance(rate_limits, dict):
-                latest_rate_limits = _normalize_rate_limits(rate_limits)
-                latest_timestamp = event.get("timestamp")
-                break
-    except Exception as exc:
-        return {
-            "quota_available": False,
-            "quota": None,
-            "quota_message": f"Failed to read rollout file: {exc}",
-            "rollout_file": str(path),
-            "rate_limits": None,
-            "source": "rollout",
-            "rate_limit_updated_at": None,
-            "session": session_meta or None,
-        }
-
-    if not latest_rate_limits:
-        return {
-            "quota_available": False,
-            "quota": None,
-            "quota_message": "Latest rollout file does not contain rate_limits yet",
-            "rollout_file": str(path),
-            "rate_limits": None,
-            "source": "rollout",
-            "rate_limit_updated_at": None,
-            "session": session_meta or None,
-        }
-
+def _codex_status_base(refresh: bool) -> Dict[str, Any]:
     return {
-        "quota_available": True,
-        "quota": _format_codex_quota(latest_rate_limits),
-        "quota_message": "Read from latest Codex rollout rate_limits",
-        "rollout_file": str(path),
-        "rate_limits": latest_rate_limits,
-        "source": "rollout",
-        "rate_limit_updated_at": latest_timestamp,
-        "session": session_meta or None,
+        "status": "warning", "logged_in": None, "profile_available": False,
+        "profile_id": "", "model": "", "model_provider": "", "auth_mode": "",
+        "context_key": "unconfigured", "configuration_scope": "default_assistant",
+        "quota_scope": None, "quota_supported": False, "quota_available": False,
+        "quota": None, "quota_message": "尚未配置默认助手模型，请先在 Codex 页面完成配置。",
+        "version": "", "plan_type": None, "rate_limits": None,
+        "rate_limits_by_limit_id": None, "rate_limit_updated_at": None,
+        "usage_source": None, "served_from_snapshot": False,
+        "refreshed": refresh, "refresh_succeeded": False if refresh else None,
+        "updated_at": datetime.now().isoformat(timespec="milliseconds"), "errors": [],
     }
 
 
 async def _get_codex_status_payload(refresh: bool = False) -> Dict[str, Any]:
-    now = datetime.now()
-    errors: List[str] = []
-    initialize_result: Dict[str, Any] = {}
-    refresh_succeeded = False
+    from app.services.codex_profile_service import get_codex_profile_service, get_codex_runtime_registry
+
+    data = _codex_status_base(refresh)
+    listing = await asyncio.to_thread(get_codex_profile_service().list_profiles)
+    profile_id = listing.get("default_profile_id")
+    profile = next((item for item in listing.get("profiles", []) if item.get("name") == profile_id), None)
+    if not profile:
+        return data
+    data.update({
+        "profile_id": profile_id, "model": profile.get("model") or "",
+        "model_provider": profile.get("provider_name") or "",
+        "auth_mode": profile.get("auth_type") or "",
+        "profile_available": bool(profile.get("available")),
+        "context_key": _codex_profile_context_key(profile),
+    })
+    if listing.get("stale"):
+        data["quota_message"] = "配置读取暂不可用，当前显示最近的配置，未查询额度。"
+        return data
+    if not profile.get("available"):
+        data["quota_message"] = "当前配置尚未完成认证，请在 Codex 页面检查。"
+        return data
+    data["status"] = "ok"
+    if profile.get("auth_type") != "chatgpt":
+        data["quota_message"] = "API Key / 第三方模型暂未接入额度查询，请到对应服务商查看余额和限额。"
+        return data
+
+    data.update({"quota_supported": True, "quota_scope": "chatgpt_account",
+                 "quota_message": "点击刷新读取此配置对应的 ChatGPT 账户额度；额度由账户共享，并非单模型余额。"})
+
+    def cached_usage():
+        snapshot = _read_codex_live_status_snapshot()
+        if not snapshot or snapshot.get("context_key") != data["context_key"]:
+            return None
+        # Only quota fields come from cache. Model/provider always reflect the
+        # current configuration, never global CLI sessions or environment defaults.
+        fields = ("quota_available", "quota", "rate_limits", "rate_limits_by_limit_id",
+                  "rate_limit_reset_credits", "rate_limit_updated_at", "plan_type", "version", "usage_source")
+        return {key: snapshot.get(key) for key in fields}
+
     if not refresh:
-        live_snapshot = _read_codex_live_status_snapshot()
-        if live_snapshot:
-            live_snapshot.update({
-                "refreshed": False,
-                "refresh_succeeded": None,
-                "served_from_snapshot": True,
-            })
-            return live_snapshot
+        cached = cached_usage()
+        if cached:
+            data.update(cached, served_from_snapshot=True, quota_message="正在显示此配置最近一次获取的账户额度。")
+        return data
 
-    if refresh:
-        async with _codex_refresh_lock:
-            try:
-                from app.services.agent_runtime import get_agent_runtime
-
-                timeout = int(os.getenv("CODEX_USAGE_REFRESH_TIMEOUT", "30"))
-                response, runtime_worker = await asyncio.to_thread(
-                    get_agent_runtime().read_rate_limits,
-                    timeout,
-                )
-                initialize_result = {
-                    "userAgent": runtime_worker.get("user_agent"),
-                    "codexVersion": runtime_worker.get("codex_version"),
-                }
-                usage_info = _usage_info_from_runtime(response)
-                refresh_succeeded = bool(usage_info.get("quota_available"))
-            except Exception as exc:
-                errors.append(f"Codex live usage refresh failed: {exc}")
-                live_snapshot = _read_codex_live_status_snapshot()
-                if live_snapshot:
-                    live_snapshot.update({
-                        "status": "warning",
-                        "login_status": "Live refresh failed; showing last successful live usage",
-                        "quota_message": "Live refresh failed; showing last successful live usage",
-                        "refreshed": True,
-                        "refresh_succeeded": False,
-                        "served_from_snapshot": True,
-                        "errors": errors,
-                    })
-                    return live_snapshot
-                usage_info = _read_codex_rate_limits_from_rollout()
-                if usage_info.get("quota_available"):
-                    usage_info["quota_message"] = "Live refresh failed; showing cached rollout data"
-    else:
-        usage_info = _read_codex_rate_limits_from_rollout()
-
-    session = usage_info.get("session") or {}
-    logged_in = bool(usage_info.get("quota_available"))
-    user_agent = initialize_result.get("userAgent") or ""
-    version_match = re.match(r"[^/]+/([^\s]+)", user_agent)
-    version = (
-        session.get("cli_version")
-        or initialize_result.get("codexVersion")
-        or (version_match.group(1) if version_match else "")
-    )
-    model = session.get("model") or os.getenv("CODEX_PROXY_MODEL", "gpt-5.6-sol")
-    rate_limits = usage_info.get("rate_limits") or {}
-    plan_type = rate_limits.get("plan_type")
-
-    data = {
-        "status": "ok" if logged_in and (not refresh or refresh_succeeded) else "warning",
-        "logged_in": logged_in,
-        "login_status": usage_info.get("quota_message"),
-        "version": version,
-        "model": model,
-        "model_provider": session.get("model_provider") or "openai",
-        "auth_mode": "chatgpt" if plan_type else ("codex session" if logged_in else "-"),
-        "plan_type": plan_type,
-        "quota_available": usage_info.get("quota_available"),
-        "quota": usage_info.get("quota"),
-        "quota_message": usage_info.get("quota_message"),
-        "rate_limits": rate_limits or None,
-        "rate_limits_by_limit_id": usage_info.get("rate_limits_by_limit_id"),
-        "rate_limit_reset_credits": usage_info.get("rate_limit_reset_credits"),
-        "rate_limit_updated_at": usage_info.get("rate_limit_updated_at"),
-        "rollout_file": usage_info.get("rollout_file"),
-        "refreshed": refresh,
-        "refresh_succeeded": refresh_succeeded if refresh else None,
-        "served_from_snapshot": False,
-        "usage_source": usage_info.get("source"),
-        "updated_at": now.isoformat(timespec="seconds"),
-        "errors": errors,
-    }
-    if refresh_succeeded:
+    async with _codex_refresh_lock:
         try:
-            _write_codex_live_status_snapshot(data)
+            def read_profile_usage():
+                runtime, resolved_profile = get_codex_runtime_registry().resolve(profile_id)
+                if not resolved_profile or resolved_profile.get("auth_type") != "chatgpt":
+                    raise ValueError("配置认证方式已变更，请重新读取配置")
+                response, worker = runtime.read_rate_limits(int(os.getenv("CODEX_USAGE_REFRESH_TIMEOUT", "30")))
+                return response, worker, resolved_profile
+
+            response, worker, resolved_profile = await asyncio.to_thread(read_profile_usage)
+            # Resolving may synchronize account credentials. Do not attach the
+            # resulting account's usage to a stale pre-sync identity.
+            if resolved_profile:
+                profile = resolved_profile
+                data.update({"context_key": _codex_profile_context_key(profile),
+                             "model": profile.get("model") or "",
+                             "model_provider": profile.get("provider_name") or ""})
+            usage = _usage_info_from_runtime(response)
+            data.update({key: value for key, value in usage.items() if key != "source"})
+            data.update({"usage_source": usage["source"], "version": worker.get("codex_version") or "",
+                         "plan_type": (usage.get("rate_limits") or {}).get("plan_type"),
+                         "refresh_succeeded": bool(usage.get("quota_available")),
+                         "quota_message": "额度由此配置对应的 ChatGPT 账户共享，并非单模型余额。" if usage.get("quota_available") else "此账户暂未返回可显示的额度。"})
+            if data["refresh_succeeded"]:
+                try:
+                    _write_codex_live_status_snapshot(data)
+                except Exception as exc:
+                    logger.warning("保存 Codex 额度快照失败: %s", exc)
+            return data
         except Exception as exc:
-            logger.warning(f"保存 Codex 实时额度快照失败: {exc}")
-    return data
+            logger.warning("读取默认助手配置的 Codex 额度失败: %s", exc)
+            cached = cached_usage()
+            if cached:
+                data.update(cached, served_from_snapshot=True)
+            data.update({"status": "warning", "refresh_succeeded": False,
+                         "quota_message": "额度刷新失败，显示此配置最近一次的账户额度。" if cached else "额度暂时无法获取，不代表模型不可用或余额为零。"})
+            return data
 
 
 @router.get("/stats")
@@ -621,31 +536,31 @@ def get_dashboard_stats():
     try:
         from app.services.llm_manager import get_llm_manager
         import psutil
-        
+
         # LLM Stats Aggregation
         llm_manager = get_llm_manager()
         llm_stats = llm_manager.get_stats()
         session_stats = llm_stats.get('session', {})
-        
+
         token_usage = 0
         total_calls = 0
         error_count = 0
         llm_response_times = []
-        
+
         e2e_latency_stats = session_stats.get('assistant.reply_latency')
-        
+
         for key, data in session_stats.items():
             # Skip the virtual latency metric for call counts and tokens
             if key == 'assistant.reply_latency':
                 continue
-                
+
             token_usage += data.get('total_tokens', 0)
             total_calls += data.get('count', 0)
             error_count += data.get('error_count', 0)
             llm_response_times.extend(data.get('response_times', []))
-            
+
         avg_latency = 0.0
-        
+
         # Prioritize E2E Latency if available
         if e2e_latency_stats and e2e_latency_stats.get('response_times'):
             times = e2e_latency_stats.get('response_times', [])
@@ -654,7 +569,7 @@ def get_dashboard_stats():
         # Fallback to LLM latency if E2E not available
         elif llm_response_times:
             avg_latency = sum(llm_response_times) / len(llm_response_times)
-            
+
         # Runtime Duration
         create_time = psutil.Process().create_time()
         uptime_seconds = datetime.now().timestamp() - create_time
@@ -662,7 +577,7 @@ def get_dashboard_stats():
         hours, remainder = divmod(int(uptime_seconds), 3600)
         minutes, seconds = divmod(remainder, 60)
         runtime_duration = f"{hours}h {minutes}m {seconds}s"
-        
+
     except Exception as e:
         logger.error(f"Error calculating stats: {e}")
         token_usage = 0
@@ -670,7 +585,7 @@ def get_dashboard_stats():
         error_count = 0
         avg_latency = 0.0
         runtime_duration = "0h 0m 0s"
-    
+
     return {
         "today_messages": _count_today_messages(),
         "today_ai_replies": _count_today_ai_replies(),
@@ -687,7 +602,7 @@ def get_dashboard_stats():
 
 @router.get("/codex-status")
 async def get_codex_status():
-    """读取最近一次成功的实时额度快照；没有快照时回退到 rollout。"""
+    """读取默认助手配置及其对应的账户额度快照。"""
     try:
         return await _get_codex_status_payload(refresh=False)
     except Exception as exc:
@@ -697,8 +612,10 @@ async def get_codex_status():
             "logged_in": False,
             "login_status": "Codex status unavailable",
             "version": "",
-            "model": os.getenv("CODEX_PROXY_MODEL", "gpt-5.6-sol"),
-            "model_provider": "openai",
+            "model": "",
+            "model_provider": "",
+            "context_key": "unavailable",
+            "quota_supported": False,
             "quota_available": False,
             "quota": None,
             "quota_message": f"获取失败: {exc}",
@@ -709,7 +626,7 @@ async def get_codex_status():
 
 @router.post("/codex-status/refresh")
 async def refresh_codex_status():
-    """通过 Codex 运行时读取实时账户额度，不启动模型会话。"""
+    """通过默认助手 Profile 查询账户额度；API Key 配置返回不支持查询。"""
     try:
         return await _get_codex_status_payload(refresh=True)
     except Exception as exc:
@@ -719,8 +636,10 @@ async def refresh_codex_status():
             "logged_in": False,
             "login_status": "Codex status unavailable",
             "version": "",
-            "model": os.getenv("CODEX_PROXY_MODEL", "gpt-5.6-sol"),
-            "model_provider": "openai",
+            "model": "",
+            "model_provider": "",
+            "context_key": "unavailable",
+            "quota_supported": False,
             "quota_available": False,
             "quota": None,
             "quota_message": f"刷新失败: {exc}",
@@ -812,24 +731,24 @@ async def get_latest_judge():
                 "judge_name": None,
                 "history": [],
             }
-        
+
         # 读取最后 2000 行日志（避免读取整个文件）
         with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
             lines = f.readlines()
             recent_lines = lines[-2000:] if len(lines) > 2000 else lines
-        
+
         # 查找最新的 judge 输出
         # 日志格式: 2026-01-29 10:32:50,163 [INFO] app.assistant.handler: ⚖️ Judge decided to STAY SILENT: reason
         # 或: ⚖️ Judge decided to REPLY: reason
         judge_pattern = re.compile(r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*Judge decided to (STAY SILENT|REPLY): (.+)')
-        
+
         latest_judge = None
         latest_timestamp = None
         should_reply = None
         reason = None
         judge_name = None
         history = []
-        
+
         # 从后往前查找（最新的在最后）
         for line in reversed(recent_lines):
             if 'Judge decided to' in line:
@@ -839,7 +758,7 @@ async def get_latest_judge():
                     decision = match.group(2)  # "STAY SILENT" or "REPLY"
                     reason = match.group(3).strip()
                     should_reply = (decision == "REPLY")
-                    
+
                     item = {
                         "should_reply": should_reply,
                         "reason": reason,
@@ -856,7 +775,7 @@ async def get_latest_judge():
                     })
                     if len(history) >= 10:
                         break
-        
+
         if latest_judge:
             latest_item = history[0] if history else {}
             return {
@@ -876,7 +795,7 @@ async def get_latest_judge():
                 "judge_name": None,
                 "history": [],
             }
-            
+
     except Exception as e:
         logger.error(f"获取最新 judge 输出失败: {e}")
         return {
@@ -927,25 +846,25 @@ async def get_latest_search():
                 "result_length": None,
                 "reason": "日志文件不存在"
             }
-        
+
         # 读取最后 2000 行日志（避免读取整个文件）
         with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
             lines = f.readlines()
             recent_lines = lines[-2000:] if len(lines) > 2000 else lines
-        
+
         # 查找最新的 search 输出
         # 新格式: 🔍 Web Search Success | Query: "query" | Length: 1234 | Content: actual content...
         # 旧格式: 🔍 Web Search Success | Query: "query" | Results: 1234 chars
         search_pattern_new = re.compile(r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*🔍 Web Search Success \| Query: "(.+?)" \| Length: (\d+) \| Content: (.+)')
         search_pattern_old = re.compile(r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}).*🔍 Web Search Success \| Query: "(.+?)" \| Results: (\d+) chars')
-        
+
         latest_search = None
         latest_timestamp = None
         query = None
         content = None
         result_length = None
         model_name = None
-        
+
         # 从后往前查找（最新的在最后）
         for i in range(len(recent_lines) - 1, -1, -1):
             line = recent_lines[i]
@@ -959,11 +878,11 @@ async def get_latest_search():
                         query = match.group(2).strip()
                         model_name = match.group(3).strip() if match.group(3) else None
                         result_length = int(match.group(4))
-                        
+
                         # 提取内容（从 "Content: " 开始）
                         content_start = line.find('| Content: ') + len('| Content: ')
                         content_parts = [line[content_start:].rstrip('\n')]
-                        
+
                         # 继续读取后续行，直到遇到新的日志条目或达到限制
                         j = i + 1
                         max_lines = 200  # 最多读取200行（支持更长的搜索结果）
@@ -974,10 +893,10 @@ async def get_latest_search():
                                 break
                             content_parts.append(next_line.rstrip('\n'))
                             j += 1
-                        
+
                         # 合并内容（不限制长度，在前端用 modal 显示）
                         content = '\n'.join(content_parts).strip()
-                        
+
                         latest_search = {
                             "query": query,
                             "content": content,
@@ -985,7 +904,7 @@ async def get_latest_search():
                             "model_name": model_name
                         }
                         break
-                
+
                 # 如果新格式不匹配，尝试旧格式（无 Content）
                 match = search_pattern_old.search(line)
                 if match:
@@ -993,14 +912,14 @@ async def get_latest_search():
                     query = match.group(2).strip()
                     result_length = int(match.group(3))
                     content = "（旧版本日志，无内容预览）"
-                    
+
                     latest_search = {
                         "query": query,
                         "content": content,
                         "result_length": result_length
                     }
                     break
-        
+
         if latest_search:
             return {
                 "search_output": latest_search,
@@ -1019,7 +938,7 @@ async def get_latest_search():
                 "result_length": None,
                 "reason": "暂无搜索记录"
             }
-            
+
     except Exception as e:
         logger.error(f"获取最新搜索输出失败: {e}")
         return {

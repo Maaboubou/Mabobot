@@ -446,7 +446,7 @@ class CodexProfileRuntimeRegistry:
             raise CodexProfileError(f"Codex Profile 尚未完成登录或密钥配置：{normalized}")
         signature = "|".join(
             str(profile.get(key) or "")
-            for key in ("wrapper_path", "model", "reasoning_effort", "created_at")
+            for key in ("wrapper_path", "model", "reasoning_effort", "context_window", "created_at")
         )
         with self._lock:
             cached = self._runtimes.get(normalized)

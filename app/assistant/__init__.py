@@ -1,6 +1,6 @@
 """First-class Codex Assistant domain.
 
-Runtime exports are lazy so auxiliary modules such as memory task contracts
+Runtime exports are lazy so archive import utilities
 can be imported by the generic model manager without creating an import cycle.
 """
 

@@ -624,7 +624,13 @@ class CodexBrowserToolService:
         route_web_socket = getattr(browser_context, "route_web_socket", None)
         if callable(route_web_socket):
             try:
-                route_web_socket("**/*", lambda websocket: websocket.close())
+                # A routed socket never connects upstream unless the handler
+                # explicitly calls connect_to_server(). Leave it mocked instead
+                # of calling the synchronous close() inside Playwright's route
+                # callback: that can strand its dispatcher in a GIL-holding spin
+                # while a browser context is closing.
+                # https://playwright.dev/python/docs/api/class-websocketroute
+                route_web_socket("**/*", lambda websocket: None)
             except Exception:
                 logger.debug("Could not install WebSocket blocker", exc_info=True)
         return state

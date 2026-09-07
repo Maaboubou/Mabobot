@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import sqlite3
+from contextvars import copy_context
 import threading
 import time
 import uuid
@@ -247,8 +248,8 @@ class RuntimeOperationService:
             "_target": target,
         }
         thread = threading.Thread(
-            target=self._run,
-            args=(operation_id,),
+            target=copy_context().run,
+            args=(self._run, operation_id),
             name=f"operation-{str(kind)[:24]}-{operation_id[:8]}",
             daemon=True,
         )

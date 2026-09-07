@@ -12,6 +12,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -390,6 +391,8 @@ class MediaPipelineMixin:
         self,
         share_url: str,
         timeout_sec: int = 180,
+        *,
+        video_info: Optional[dict] = None,
     ) -> Optional[str]:
         """Download Douyin with yt-dlp before the paid TikHub fallback."""
         share_url = self._extract_douyin_share_url(share_url or "") or ""
@@ -402,7 +405,18 @@ class MediaPipelineMixin:
             f"douyin_ytdlp_{int(time.time())}_{uuid.uuid4().hex[:8]}.%(ext)s",
         )
         self.logger.info("📥 抖音优先使用 yt-dlp 下载: %s", share_url)
+        info_path = ""
         try:
+            source_args = [share_url]
+            if video_info:
+                with tempfile.NamedTemporaryFile(
+                    mode="w", encoding="utf-8", prefix="summary_plus_douyin_",
+                    suffix=".info.json", delete=False,
+                ) as info_file:
+                    info_path = info_file.name
+                    json.dump(video_info, info_file, ensure_ascii=False)
+                source_args = ["--load-info-json", info_path]
+                self.logger.info("♻️ 复用抖音时长检测的完整元数据，跳过重复详情解析")
             result = self._run_platform_ytdlp(
                 "douyin",
                 [
@@ -418,7 +432,7 @@ class MediaPipelineMixin:
                     "--no-progress",
                     "-o",
                     output_template,
-                    share_url,
+                    *source_args,
                 ],
                 timeout_sec=timeout_sec,
             )
@@ -445,9 +459,19 @@ class MediaPipelineMixin:
         except Exception as exc:
             self.logger.warning("⚠️ 抖音 yt-dlp 下载异常，将回退 TikHub: %s", exc)
             return None
+        finally:
+            if info_path:
+                try:
+                    os.remove(info_path)
+                except OSError:
+                    self.logger.warning("⚠️ 删除抖音临时元数据文件失败: %s", info_path)
 
-    def _check_douyin_duration(self, share_url: str) -> Optional[int]:
+    def _check_douyin_duration(
+        self, share_url: str, *, metadata_capture: Optional[dict] = None,
+    ) -> Optional[int]:
         """Use yt-dlp metadata to return a Douyin video's duration in seconds."""
+        if metadata_capture is not None:
+            metadata_capture.clear()
         share_url = self._extract_douyin_share_url(share_url or "") or ""
         if not share_url:
             return None
@@ -458,8 +482,7 @@ class MediaPipelineMixin:
                 "douyin",
                 [
                     "--skip-download",
-                    "--print",
-                    "%(duration)s",
+                    "--dump-single-json",
                     share_url,
                 ],
                 timeout_sec=30,
@@ -478,23 +501,20 @@ class MediaPipelineMixin:
             self._log_ytdlp_failure("抖音时长检测", result)
             return None
 
-        for line in reversed((result.stdout or "").splitlines()):
-            value = line.strip()
-            if not value:
-                continue
-            try:
-                duration = float(value)
-            except (TypeError, ValueError):
-                continue
+        try:
+            info = json.loads(result.stdout or "")
+            if not isinstance(info, dict) or info.get("_type", "video") != "video":
+                raise ValueError("expected single video metadata")
+            if metadata_capture is not None:
+                metadata_capture.update(info)
+            duration = float(info.get("duration"))
             if math.isfinite(duration) and duration > 0:
                 total_seconds = int(math.ceil(duration))
                 self.logger.info("✅ 抖音视频时长检测: %s秒", total_seconds)
                 return total_seconds
-
-        self.logger.warning(
-            "⚠️ 抖音 yt-dlp 未返回有效时长: %r",
-            (result.stdout or "").strip()[-200:],
-        )
+        except (TypeError, ValueError):
+            pass
+        self.logger.warning("⚠️ 抖音 yt-dlp 未返回有效时长或视频元数据")
         return None
 
     def _download_video(self, url_list: List[str]) -> Optional[str]:

@@ -13,6 +13,7 @@ const UI = {
         roles: '/assistant',
         plugins: '/plugins',
         llm: '/ai',
+        usage: '/usage',
         logs: '/operations/logs',
         settings: '/system'
     },
@@ -36,12 +37,12 @@ const UI = {
         '/system/backups': 'settings',
         '/assistant/roles': 'roles',
         '/assistant/chats': 'roles',
-        '/assistant/memory': 'roles',
         '/ai/models': 'llm',
         '/ai/mappings': 'llm',
-        '/ai/usage': 'llm',
+        '/ai/usage': 'usage',
         '/ai/sessions': 'codex',
-        '/ai/calls': 'llm',
+        '/ai/calls': 'usage',
+        '/usage/calls': 'usage',
         '/ai/network': 'llm',
         '/operations': 'logs'
     },
@@ -49,7 +50,6 @@ const UI = {
     // Icons mapping
     icons: {
         cpu: 'bi-cpu',
-        memory: 'bi-memory',
         disk: 'bi-hdd',
         time: 'bi-clock',
         check: 'bi-check-circle-fill',
@@ -356,6 +356,13 @@ const UI = {
             activeLink.setAttribute('aria-current', 'page');
         }
 
+        if (options.history !== false) {
+            const targetPath = this.routes[tabId];
+            if (this.normalizePath(window.location.pathname) !== targetPath) {
+                window.history.pushState({ tab: tabId }, '', targetPath);
+            }
+        }
+
         // Update Content
         // specific selector to avoid hiding nested tab-content (like in LLM manager)
         document.querySelectorAll('.main-content > .tab-content').forEach(el => el.classList.add('d-none'));
@@ -366,12 +373,6 @@ const UI = {
             window.App.loadTab(tabId);
         }
 
-        if (options.history !== false) {
-            const targetPath = this.routes[tabId];
-            if (this.normalizePath(window.location.pathname) !== targetPath) {
-                window.history.pushState({ tab: tabId }, '', targetPath);
-            }
-        }
 
         // Close sidebar on mobile
         if (window.innerWidth <= 768) UI.toggleSidebar(false);
@@ -386,7 +387,8 @@ const UI = {
             'settings': '系统',
             'wechat': 'WeChat 状态',
             'logs': '运行与日志',
-            'llm': '模型配置'
+            'llm': '模型配置',
+            'usage': '用量统计'
         };
         const currentTitle = titleMap[tabId] || '概览';
         document.getElementById('pageTitle').textContent = currentTitle;
@@ -1405,9 +1407,9 @@ const UI = {
             ? `${typeLabel} · ${statusLabel}`
             : '尚未选择';
         if (avatar) avatar.innerHTML = `<i class="bi ${chatName ? (chat?.is_group ? 'bi-people' : 'bi-person') : 'bi-chat-square-text'}"></i>`;
-        const memoryButton = document.getElementById('chatMemoryButton');
+        const archiveButton = document.getElementById('chatArchiveButton');
         const deleteButton = document.getElementById('chatDeleteButton');
-        if (memoryButton) memoryButton.disabled = !userId;
+        if (archiveButton) archiveButton.disabled = !userId;
         if (deleteButton) deleteButton.disabled = !userId;
     },
 
@@ -1714,12 +1716,6 @@ const UI = {
         const chat = policy.chat || {};
         const assistant = policy.assistant || {};
         const codex = policy.codex || {};
-        const memory = assistant.memory || { mode: 'inherit', overrides: {} };
-        const globalMemory = assistantOverview.global?.memory || {};
-        const memoryOverrides = memory.overrides || {};
-        const memoryValue = (key, fallback) => memoryOverrides[key] !== undefined
-            ? memoryOverrides[key]
-            : (globalMemory[key] !== undefined ? globalMemory[key] : fallback);
         const grants = policy.plugin_grants || [];
         const grantByName = Object.fromEntries(grants.map(item => [item.plugin_name, item]));
         const roles = assistantOverview.roles || [];
@@ -1827,23 +1823,9 @@ const UI = {
                         </div>
                     </section>
 
-                    <section class="chat-policy-block chat-policy-memory">
-                        <div class="chat-policy-block-head"><div class="chat-policy-title-row"><h4>长期记忆</h4><button class="chat-policy-inline-action" type="button" onclick="App.showCapabilitySettings('assistant', {focusGroup: 'memory'})">全局设置</button></div><div class="chat-policy-block-actions"><button class="chat-policy-head-action" type="button" onclick="App.openSelectedChatMemory()"><i class="bi bi-database"></i>记忆库</button></div></div>
-                        <div class="chat-memory-mode-grid">
-                            <label class="chat-memory-mode"><input type="radio" name="memory_mode" value="inherit" ${memory.mode === 'inherit' ? 'checked' : ''}><span>继承全局</span></label>
-                            <label class="chat-memory-mode"><input type="radio" name="memory_mode" value="off" ${memory.mode === 'off' ? 'checked' : ''}><span>关闭</span></label>
-                            <label class="chat-memory-mode"><input type="radio" name="memory_mode" value="custom" ${memory.mode === 'custom' ? 'checked' : ''}><span>自定义</span></label>
-                        </div>
-                        <div class="chat-memory-custom" data-memory-custom>
-                            <div class="chat-policy-field-grid two">
-                                <label class="chat-policy-toggle-field"><span>证据复核</span><span class="chat-toggle-control"><small>低可信内容自动隔离，不产生人工任务</small><input class="form-check-input" type="checkbox" name="memory_verification_enabled" ${memoryValue('memory_verification_enabled', true) ? 'checked' : ''}></span></label>
-                                <label class="chat-policy-toggle-field"><span>人物记忆</span><span class="chat-toggle-control"><small>维护人物事实与关系</small><input class="form-check-input" type="checkbox" name="memory_person_enabled" ${memoryValue('memory_person_enabled', true) ? 'checked' : ''}></span></label>
-                            </div>
-                            <div class="chat-policy-field-grid two chat-memory-fields">
-                                <label><span>检索时间范围（天）</span><input class="form-control" name="memory_retention_days" type="number" min="0" max="3650" value="${Number(memoryValue('memory_retention_days', 365))}" required></label>
-                                <label><span>每次最多召回</span><input class="form-control" name="memory_retrieval_top_k" type="number" min="1" max="20" value="${Number(memoryValue('memory_retrieval_top_k', 6))}" required></label>
-                            </div>
-                        </div>
+                    <section class="chat-policy-block chat-policy-archive">
+                        <div class="chat-policy-block-head"><h4>聊天档案</h4><button class="chat-policy-head-action" type="button" onclick="App.openSelectedChatArchive()"><i class="bi bi-database"></i>查看档案</button></div>
+                        <p class="text-muted mb-0">长期保存已接收的原始消息。助手默认读取最近 50 条，需要时自主查阅历史；文本归档不调用模型。</p>
                     </section>
                 </div>
 
@@ -1955,11 +1937,6 @@ const UI = {
                     form.elements.judge_id.value = form.elements.judge_id.querySelector('option[value]:not([value=""])')?.value || '';
                 }
             }
-            const memoryMode = form.elements.memory_mode.value;
-            form.querySelector('[data-memory-custom]')?.classList.toggle('is-collapsed', memoryMode !== 'custom');
-            form.querySelectorAll('.chat-memory-mode').forEach(card => {
-                card.classList.toggle('selected', card.querySelector('input').checked);
-            });
             const groupSelected = form.elements.chat_type.value === 'group';
             const codexSelect = form.elements.codex_mode;
             if (groupSelected) {
@@ -2197,20 +2174,6 @@ const UI = {
         const editableFields = groups.flatMap(group => group.fields || []).filter(field => !field.deprecated);
         const hasBasicFields = editableFields.some(field => field.level === 'basic');
         const levelFilter = hasBasicFields ? 'basic' : 'all';
-        const globalMemory = editableFields.find(field => field.key === 'memory_enabled');
-        const inheritanceSummary = settings.capability_id === 'assistant' && globalMemory ? `
-            <div class="cap-settings-inheritance">
-                <span class="cap-settings-inheritance-icon"><i class="bi bi-database-check"></i></span>
-                <div><strong data-global-memory-summary>长期记忆全局默认：${globalMemory.value ? '开启' : '关闭'}</strong>
-                    <small data-global-memory-help>聊天卡片上的“继承全局 · ${globalMemory.value ? '开启' : '关闭'}”就是来自这个设置。</small></div>
-                <div class="cap-settings-inheritance-actions">
-                    <label class="cap-settings-primary-toggle">
-                        <span data-global-memory-toggle-label>${globalMemory.value ? '已开启' : '已关闭'}</span>
-                        <input class="form-check-input" type="checkbox" data-global-memory-toggle ${globalMemory.value ? 'checked' : ''} aria-label="长期记忆全局总开关">
-                    </label>
-                    <button type="button" class="btn btn-sm btn-outline-primary" data-settings-jump="memory">详细设置</button>
-                </div>
-            </div>` : '';
 
         const nav = groups.map(group => {
             const visibleCount = (group.fields || []).filter(field => !field.deprecated).length;
@@ -2248,7 +2211,6 @@ const UI = {
                         </div>
                     </div>
                     <div class="cap-settings-notice"><i class="bi bi-globe2"></i><span>${this.escapeHtml(settings.notice || '这里设置该能力对所有聊天的默认行为。')}</span></div>
-                    ${inheritanceSummary}
                     <form id="capabilitySettingsForm">${sections}</form>
                     <div class="cap-settings-empty d-none" id="capabilitySettingsEmpty">没有匹配的设置</div>
                 </main>
@@ -2320,25 +2282,6 @@ const UI = {
             shell.querySelector('#capabilitySettingsEmpty')?.classList.toggle('d-none', visibleFields > 0);
         };
 
-        const syncDependencies = () => {
-            if (shell.dataset.capabilityId !== 'assistant') return;
-            const memoryToggle = shell.querySelector('[data-config-key="memory_enabled"]');
-            if (!memoryToggle) return;
-            const enabled = memoryToggle.checked;
-            const summary = shell.querySelector('[data-global-memory-summary]');
-            const help = shell.querySelector('[data-global-memory-help]');
-            const primaryToggle = shell.querySelector('[data-global-memory-toggle]');
-            const primaryToggleLabel = shell.querySelector('[data-global-memory-toggle-label]');
-            if (primaryToggle) primaryToggle.checked = enabled;
-            if (primaryToggleLabel) primaryToggleLabel.textContent = enabled ? '已开启' : '已关闭';
-            if (summary) summary.textContent = `长期记忆全局默认：${enabled ? '开启' : '关闭'}`;
-            if (help) help.textContent = `保存后，所有“继承全局”的聊天都会显示并使用“${enabled ? '开启' : '关闭'}”状态。`;
-            shell.querySelectorAll('[data-config-key^="memory_"]').forEach(control => {
-                if (control === memoryToggle) return;
-                control.disabled = !enabled;
-                control.closest('.cap-settings-field')?.classList.toggle('is-dependency-disabled', !enabled);
-            });
-        };
 
         search?.addEventListener('input', this.debounce(apply, 100));
         filterButtons.forEach(button => button.addEventListener('click', () => {
@@ -2354,14 +2297,6 @@ const UI = {
             const targetId = `cap-settings-${button.dataset.settingsJump}`;
             shell.querySelector(`#${targetId}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }));
-        shell.querySelector('[data-config-key="memory_enabled"]')?.addEventListener('change', syncDependencies);
-        shell.querySelector('[data-global-memory-toggle]')?.addEventListener('change', event => {
-            const memoryToggle = shell.querySelector('[data-config-key="memory_enabled"]');
-            if (!memoryToggle) return;
-            memoryToggle.checked = event.currentTarget.checked;
-            memoryToggle.dispatchEvent(new Event('change', { bubbles: true }));
-        });
-        syncDependencies();
         apply();
     },
 

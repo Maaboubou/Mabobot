@@ -21,13 +21,12 @@ websocket-client>=1.8,<2
 playwright>=1.58,<2
 ddgs>=9.15,<10
 
-# LLM providers and local retrieval
+# LLM providers
 litellm
 packaging>=23,<27
 openai
 google-genai
 tiktoken>=0.12,<1
-fastembed>=0.7,<1
 numpy>=1.26,<3
 
 # Media, OCR, and image processing

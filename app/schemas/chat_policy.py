@@ -25,8 +25,6 @@ class AssistantSettingsPatch(BaseModel):
     ignored_senders: Optional[List[str]] = Field(default=None, max_length=200)
     role_id: Optional[int] = Field(default=None, ge=1)
     judge_id: Optional[int] = Field(default=None, ge=1)
-    memory_mode: Optional[Literal["inherit", "off", "custom"]] = None
-    memory_overrides: Optional[Dict[str, Any]] = None
     codex_profile_id: Optional[str] = Field(default=None, max_length=48)
 
 

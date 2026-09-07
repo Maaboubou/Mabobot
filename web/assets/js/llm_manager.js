@@ -65,11 +65,13 @@ const LLMManager = {
         },
     },
     activeStatsType: 'today',
-    statsSort: {
-        today: { field: 'calls', direction: 'desc' },
-        session: { field: 'calls', direction: 'desc' },
-        total: { field: 'calls', direction: 'desc' },
-    },
+    usageView: 'task',
+    usageSubject: null,
+    usageSearch: '',
+    usagePage: 1,
+    usageExpanded: null,
+    usageSort: { field: 'tokens', direction: 'desc' },
+
 
     escapeHtml(value) {
         return String(value ?? '')
@@ -347,11 +349,18 @@ const LLMManager = {
         await this.activateSubTab(this.getSubTabFromPath(), { history: false });
     },
 
+    async initUsage() {
+        this.setupSubTabHandlers();
+        const path = UI.normalizePath(window.location.pathname);
+        const target = ['/usage/calls', '/ai/calls'].includes(path) ? 'llm-history' : 'llm-stats';
+        await this.activateSubTab(target, { history: false });
+    },
+
     setupSubTabHandlers() {
         if (this.subTabHandlersReady) return;
         this.subTabHandlersReady = true;
 
-        document.querySelectorAll('#llm > ul.nav [data-bs-target^="#llm-"]').forEach(button => {
+        document.querySelectorAll('#llm > ul.nav [data-bs-target^="#llm-"], #usage > ul.nav [data-bs-target^="#llm-"]').forEach(button => {
             button.addEventListener('click', (event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -376,7 +385,7 @@ const LLMManager = {
         if (!panes.includes(targetId)) targetId = 'llm-models';
         panes.forEach(id => {
             const pane = document.getElementById(id);
-            const button = document.querySelector(`#llm > ul.nav [data-bs-target="#${id}"]`);
+            const button = document.querySelector(`#llm > ul.nav [data-bs-target="#${id}"], #usage > ul.nav [data-bs-target="#${id}"]`);
 
             const active = id === targetId;
             if (pane) {
@@ -394,13 +403,13 @@ const LLMManager = {
             const paths = {
                 'llm-models': '/ai/models',
                 'llm-mappings': '/ai/mappings',
-                'llm-stats': '/ai/usage',
-                'llm-history': '/ai/calls',
+                'llm-stats': '/usage',
+                'llm-history': '/usage/calls',
                 'llm-proxy': '/ai/network'
             };
             const path = paths[targetId];
             if (UI.normalizePath(window.location.pathname) !== path) {
-                window.history.pushState({ tab: 'llm', section: targetId }, '', path);
+                window.history.pushState({ tab: ['llm-stats', 'llm-history'].includes(targetId) ? 'usage' : 'llm', section: targetId }, '', path);
             }
         }
 
@@ -759,7 +768,7 @@ const LLMManager = {
                 ? 'Gemini 3+ 使用模型默认采样设置；路由中的 temperature、top_p 和 top_k 不会保存或发送。'
                 : 'Gemini 3+ 备用模型使用默认采样设置；此处参数只会应用到支持它们的模型。';
             if (hasCodex) {
-                const codexNotice = '本地 Codex 不传递温度和最大输出 Token；这些覆盖仅对支持它们的其他模型生效。记忆任务的超时以任务限制为准。';
+                const codexNotice = '本地 Codex 不传递温度和最大输出 Token；这些覆盖仅对支持它们的其他模型生效。';
                 notice.textContent = primaryIsGemini3 || fallbackIsGemini3
                     ? `${notice.textContent} ${codexNotice}` : codexNotice;
             }
@@ -796,6 +805,7 @@ const LLMManager = {
         if (!preset) return;
         const preserveValues = options.preserveValues === true;
         document.getElementById('modelProviderPreset').value = presetKey;
+        document.querySelectorAll('#modelBillingOptions input, #modelBillingOptions select').forEach(input => { input.disabled = presetKey === 'local_codex'; });
         document.querySelectorAll('.model-provider-option').forEach(button => {
             const active = button.dataset.modelProvider === presetKey;
             button.classList.toggle('active', active);
@@ -1759,372 +1769,305 @@ const LLMManager = {
     /**
      * Load statistics
      */
-    async loadStats() {
-        try {
-            const response = await fetch('/api/llm/stats');
-            const result = await response.json();
+    async loadRouteOwners() {
+        if (!this.routeOwnersPromise) {
+            this.routeOwnersPromise = fetch('/api/llm/route-owners')
+                .then(async response => {
+                    if (!response.ok) throw new Error('任务名称暂时无法读取');
+                    const result = await response.json();
+                    if (result.status !== 'success') throw new Error('任务名称暂时无法读取');
+                    this.currentRouteOwners = Object.fromEntries((result.data || []).map(owner => [owner.id, owner]));
+                    this.routeOwnersUnavailable = false;
+                }).catch(error => {
+                    this.routeOwnersUnavailable = true;
+                    console.warn(error);
+                }).finally(() => { this.routeOwnersPromise = null; });
+        }
+        return this.routeOwnersPromise;
+    },
 
-            if (result.status === 'success') {
-                this.currentStats = result.data;
+    getUsageTaskMeta(key) {
+        const dot = key.indexOf('.');
+        const ownerId = dot < 0 ? key : key.slice(0, dot);
+        const callType = dot < 0 ? '' : key.slice(dot + 1);
+        const canonical = ownerId === 'builtin_chatbot' ? 'assistant' : ownerId;
+        const declared = this.currentRouteOwners[canonical]?.usage_tasks?.[callType];
+        const meta = declared ? { ...declared, declared: true } : this.getTaskRouteMeta(canonical, callType);
+        return { ...meta, label: meta.declared ? meta.label : '自定义任务',
+            owner: this.currentRouteOwners[canonical]?.display_name || ownerId };
+    },
+
+    async loadStats() {
+        this.usageAbortController?.abort();
+        const controller = new AbortController();
+        this.usageAbortController = controller;
+        const requestId = (this.usageRequestId || 0) + 1;
+        this.usageRequestId = requestId;
+        this.usageLoading = true;
+        this.usageError = '';
+        this.renderStats();
+        const params = new URLSearchParams({ period: this.activeStatsType, view: this.usageView });
+        if (this.usageSubject) params.set('subject', this.usageSubject);
+        try {
+            const [response] = await Promise.all([
+                fetch(`/api/llm/usage?${params}`, { signal: controller.signal }),
+                this.loadRouteOwners(),
+            ]);
+            if (!response.ok) throw new Error(`用量加载失败（HTTP ${response.status}）`);
+            const result = await response.json();
+            if (result.status !== 'success' || !result.data) throw new Error('用量数据不可用');
+            if (requestId !== this.usageRequestId) return;
+            this.currentStats = result.data;
+        } catch (error) {
+            if (controller.signal.aborted || requestId !== this.usageRequestId) return;
+            this.usageError = error.message || '用量加载失败';
+        } finally {
+            if (requestId === this.usageRequestId) {
+                this.usageLoading = false;
                 this.renderStats();
             }
-        } catch (error) {
-            console.error('Failed to load stats:', error);
         }
     },
 
-    /**
-     * Render statistics
-     */
+    setUsagePeriod(period) {
+        if (!['today', '7d', '30d', 'session', 'total'].includes(period)) return;
+        this.activeStatsType = period;
+        this.usagePage = 1;
+        this.usageExpanded = null;
+        this.loadStats();
+    },
+
+    setUsageView(view) {
+        if (!['task', 'chat'].includes(view)) return;
+        this.usageView = view;
+        this.usageSubject = null;
+        this.usageSearch = '';
+        this.usagePage = 1;
+        this.usageExpanded = null;
+        this.loadStats();
+    },
+
+    openUsageSubject(key) {
+        this.usageSubject = key;
+        this.usageView = 'task';
+        this.usageSearch = '';
+        this.usagePage = 1;
+        this.usageExpanded = null;
+        this.loadStats();
+    },
+
+    usageNumber(value) {
+        return Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 0 });
+    },
+
+    usageDate(value) {
+        return value ? this.escapeHtml(String(value).replace('T', ' ').slice(0, 19)) : '—';
+    },
+
+    usageCosts(metrics) {
+        const costs = Object.entries(metrics.costs || {}).map(([currency, amount]) => {
+            const label = currency === 'UNSPECIFIED' ? '未声明币种' : currency;
+            const formatted = Number(amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            return `<span>${this.escapeHtml(label)} ${formatted}</span>`;
+        });
+        return costs.length ? costs.join('') : '—';
+    },
+
+    usageTokens(metrics) {
+        return metrics.token_calls ? this.usageNumber(metrics.tokens) : '—';
+    },
+
     renderStats() {
         const container = document.getElementById('llmStatsList');
-
-        // Check if we have stats data in the new format
-        const hasTodayStats = this.currentStats.today && Object.keys(this.currentStats.today).length > 0;
-        const hasSessionStats = this.currentStats.session && Object.keys(this.currentStats.session).length > 0;
-        const hasTotalStats = this.currentStats.total && Object.keys(this.currentStats.total).length > 0;
-
-        if (!hasTodayStats && !hasSessionStats && !hasTotalStats) {
-            container.innerHTML = `
-                <div class="text-center py-5 text-muted">
-                    <i class="bi bi-graph-up fs-1 mb-3 d-block"></i>
-                    <p>暂无用量统计。</p>
-                    <small>发起 LLM 调用后，统计数据会显示在这里。</small>
+        if (!container) return;
+        const periods = { today: '今日', '7d': '近 7 天', '30d': '近 30 天', session: '本次运行', total: '累计' };
+        const subject = this.currentStats.subject;
+        container.innerHTML = `<section class="llm-usage" aria-label="模型用量">
+            <div class="usage-toolbar">
+                <div class="usage-views" aria-label="统计视角">
+                    <button type="button" data-usage-view="task" aria-pressed="${this.usageView === 'task'}">调用类型</button>
+                    <button type="button" data-usage-view="chat" aria-pressed="${this.usageView === 'chat'}">聊天对象</button>
                 </div>
-            `;
+                <label class="usage-period">统计周期<select class="form-select form-select-sm" id="usagePeriod">
+                    ${Object.entries(periods).map(([value, label]) => `<option value="${value}" ${value === this.activeStatsType ? 'selected' : ''}>${label}</option>`).join('')}
+                </select></label>
+            </div>
+            ${this.usageSubject ? `<div class="usage-breadcrumb"><button type="button" id="usageBack">全部聊天对象</button><span aria-hidden="true">/</span><span>${this.escapeHtml(subject?.key === this.usageSubject ? subject.name : '所选对象')}</span></div>` : ''}
+            <div id="usageResults" aria-live="polite" aria-busy="${Boolean(this.usageLoading)}"></div>
+        </section>`;
+        container.querySelectorAll('[data-usage-view]').forEach(button => button.addEventListener('click', () => this.setUsageView(button.dataset.usageView)));
+        container.querySelector('#usagePeriod').addEventListener('change', event => this.setUsagePeriod(event.target.value));
+        container.querySelector('#usageBack')?.addEventListener('click', () => this.setUsageView('chat'));
+        this.renderUsageResults();
+    },
+
+    renderUsageResults() {
+        const target = document.getElementById('usageResults');
+        if (!target) return;
+        if (this.usageLoading) {
+            target.innerHTML = '<div class="usage-empty" role="status">正在读取用量…</div>';
             return;
         }
-
-        const statsTypes = ['today', 'session', 'total'];
-        const activeType = statsTypes.includes(this.activeStatsType)
-            ? this.activeStatsType
-            : 'today';
-        this.activeStatsType = activeType;
-        const tabClass = type => `nav-link${type === activeType ? ' active' : ''}`;
-        const paneClass = type => `tab-pane fade${type === activeType ? ' show active' : ''}`;
-
-        // Add tabs for today vs session vs total and preserve the active view.
-        let html = `
-            <ul class="nav nav-tabs mb-4" role="tablist">
-                <li class="nav-item" role="presentation">
-                    <button class="${tabClass('today')}" id="today-stats-tab" data-bs-toggle="tab"
-                            data-bs-target="#today-stats" data-stats-type="today" type="button" role="tab"
-                            aria-selected="${activeType === 'today'}">
-                        <i class="bi bi-calendar-day me-2"></i>今日统计
-                    </button>
-                </li>
-                <li class="nav-item" role="presentation">
-                    <button class="${tabClass('session')}" id="session-stats-tab" data-bs-toggle="tab"
-                            data-bs-target="#session-stats" data-stats-type="session" type="button" role="tab"
-                            aria-selected="${activeType === 'session'}">
-                        <i class="bi bi-clock-history me-2"></i>本次运行统计
-                    </button>
-                </li>
-                <li class="nav-item" role="presentation">
-                    <button class="${tabClass('total')}" id="total-stats-tab" data-bs-toggle="tab"
-                            data-bs-target="#total-stats" data-stats-type="total" type="button" role="tab"
-                            aria-selected="${activeType === 'total'}">
-                        <i class="bi bi-database me-2"></i>历史总统计
-                    </button>
-                </li>
-            </ul>
-
-            <div class="tab-content">
-                <div class="${paneClass('today')}" id="today-stats" role="tabpanel">
-                    ${this.renderStatsContent(this.currentStats.today || {}, 'today')}
-                </div>
-                <div class="${paneClass('session')}" id="session-stats" role="tabpanel">
-                    ${this.renderStatsContent(this.currentStats.session || {}, 'session')}
-                </div>
-                <div class="${paneClass('total')}" id="total-stats" role="tabpanel">
-                    ${this.renderStatsContent(this.currentStats.total || {}, 'total')}
-                </div>
-            </div>
-        `;
-
-        container.innerHTML = html;
-        container.querySelectorAll('[data-stats-type]').forEach(tab => {
-            tab.addEventListener('shown.bs.tab', () => {
-                this.activeStatsType = tab.dataset.statsType || 'today';
-            });
+        if (this.usageError) {
+            target.innerHTML = `<div class="usage-empty" role="alert">${this.escapeHtml(this.usageError)}<button type="button" id="usageRetry">重新加载</button></div>`;
+            target.querySelector('#usageRetry').addEventListener('click', () => this.loadStats());
+            return;
+        }
+        const metrics = this.currentStats.totals || {};
+        const unknownTokens = Math.max(0, (metrics.calls || 0) - (metrics.token_calls || 0));
+        const unpriced = Math.max(0, (metrics.calls || 0) - (metrics.cost_calls || 0));
+        target.innerHTML = `<div class="usage-overview" aria-label="所选范围概览">
+            <div><small>成功次数</small><strong>${this.usageNumber(metrics.successes)}</strong><span>失败尝试不计入</span></div>
+            <div><small>已记录 Token</small><strong>${this.usageTokens(metrics)}</strong><span>${unknownTokens ? `${this.usageNumber(unknownTokens)} 次尝试未上报用量` : metrics.estimated_calls ? '含估算 Token' : '输入与输出合计'}</span></div>
+            <div><small>预估费用</small><strong class="usage-money">${this.usageCosts(metrics)}</strong><span>已计价 ${this.usageNumber(metrics.cost_calls)} / ${this.usageNumber(metrics.calls)} 次尝试${unpriced ? ` · ${this.usageNumber(unpriced)} 次未知` : ''}</span></div>
+            <div><small>失败次数</small><strong>${this.usageNumber(metrics.failures)}</strong><span>未成功的请求</span></div>
+        </div>
+        <div class="usage-list-toolbar"><label class="usage-search-label"><span class="visually-hidden">搜索${this.usageView === 'chat' ? '聊天对象' : '调用类型'}</span><input type="search" id="usageSearch" class="form-control form-control-sm" placeholder="搜索${this.usageView === 'chat' ? '聊天对象' : '中文名称或英文标识'}" value="${this.escapeHtml(this.usageSearch)}"></label><span id="usageRowCount" class="usage-secondary"></span></div>
+        <div id="usageTable"></div>
+        <div class="usage-footnote">${this.renderUsageFootnote()}</div>`;
+        target.querySelector('#usageSearch').addEventListener('input', event => {
+            this.usageSearch = event.target.value;
+            this.usagePage = 1;
+            this.usageExpanded = null;
+            this.renderUsageTable();
         });
+        this.renderUsageTable();
     },
 
-    getStatsAverageTime(stat) {
-        const times = Array.isArray(stat?.response_times)
-            ? stat.response_times.map(Number).filter(Number.isFinite)
-            : [];
-        if (times.length === 0) return null;
-        return times.reduce((sum, value) => sum + value, 0) / times.length;
+    renderUsageFootnote() {
+        const meta = this.currentStats.metadata || {};
+        const notes = [`统计自 ${this.usageDate(meta.chat_tracking_started_at)} 起记录。成功次数不含失败尝试；Token 和费用包含已上报的消耗。Codex 按官方标准 API 单价折算，包含在预估费用中；无逐次用量时按整轮统计。`];
+        if (this.activeStatsType === 'session' && meta.run_started_at) notes.push(`运行开始：${this.usageDate(meta.run_started_at)}。`);
+        if (meta.daily_available_from && ['7d', '30d'].includes(this.activeStatsType) && meta.daily_available_from > meta.range_start) notes.push(`现有每日记录从 ${this.escapeHtml(meta.daily_available_from)} 开始，之前的数据不可拆分。`);
+        notes.push(`日期按服务端时区 ${this.escapeHtml(meta.timezone || '')} 统计。未上报显示 —。`);
+        if (this.routeOwnersUnavailable) notes.push('任务名称暂不可用，刷新后重试。');
+        return notes.join(' ');
     },
 
-    getStatsCacheRate(stat) {
-        const hit = Number(stat?.cache_hit_tokens) || 0;
-        const miss = Number(stat?.cache_miss_tokens) || 0;
-        const total = hit + miss;
-        return total > 0 ? hit / total : null;
-    },
-
-    getStatsLastCallTimestamp(stat) {
-        if (!stat?.last_call) return null;
-        const timestamp = Date.parse(stat.last_call);
-        return Number.isFinite(timestamp) ? timestamp : null;
-    },
-
-    getStatsSortValue(key, stat, field) {
-        switch (field) {
-            case 'plugin':
-                return String(key).toLocaleLowerCase();
-            case 'calls':
-                return Number(stat?.count) || 0;
-            case 'tokens':
-                return Number(stat?.total_tokens) || 0;
-            case 'cost':
-                return Number(stat?.total_cost) || 0;
-            case 'cache':
-                return this.getStatsCacheRate(stat);
-            case 'avg_time':
-                return this.getStatsAverageTime(stat);
-            case 'models': {
-                const models = Object.keys(stat?.model_usage || {}).join(', ').toLocaleLowerCase();
-                return models || null;
-            }
-            case 'last_call':
-                return this.getStatsLastCallTimestamp(stat);
-            default:
-                return null;
-        }
-    },
-
-    getSortedStatsEntries(stats, type) {
-        const sortableFields = ['plugin', 'calls', 'tokens', 'cost', 'cache', 'avg_time', 'models', 'last_call'];
-        const fallback = { field: 'calls', direction: 'desc' };
-        const requested = this.statsSort[type] || fallback;
-        const config = {
-            field: sortableFields.includes(requested.field) ? requested.field : fallback.field,
-            direction: requested.direction === 'asc' ? 'asc' : 'desc',
-        };
-
-        return Object.entries(stats).sort((leftEntry, rightEntry) => {
-            const leftValue = this.getStatsSortValue(leftEntry[0], leftEntry[1], config.field);
-            const rightValue = this.getStatsSortValue(rightEntry[0], rightEntry[1], config.field);
-
-            // Missing values stay at the bottom for both ascending and descending sorts.
-            if (leftValue === null && rightValue !== null) return 1;
-            if (leftValue !== null && rightValue === null) return -1;
-
-            let comparison = 0;
-            if (typeof leftValue === 'string' || typeof rightValue === 'string') {
-                comparison = String(leftValue ?? '').localeCompare(
-                    String(rightValue ?? ''),
-                    undefined,
-                    { numeric: true, sensitivity: 'base' },
-                );
-            } else if (leftValue !== null && rightValue !== null) {
-                comparison = leftValue - rightValue;
-            }
-
-            if (comparison === 0) {
-                return leftEntry[0].localeCompare(rightEntry[0], undefined, {
-                    numeric: true,
-                    sensitivity: 'base',
-                });
-            }
-            return config.direction === 'asc' ? comparison : -comparison;
+    getUsageRows() {
+        const query = this.usageSearch.trim().toLocaleLowerCase();
+        const rows = (this.currentStats.rows || []).filter(row => {
+            const meta = this.usageView === 'task' ? this.getUsageTaskMeta(row.key) : {};
+            return !query || `${row.name} ${row.key} ${meta.label || ''} ${meta.owner || ''}`.toLocaleLowerCase().includes(query);
         });
-    },
-
-    renderStatsSortHeader(type, field, label, alignment = 'text-start') {
-        const config = this.statsSort[type] || { field: 'calls', direction: 'desc' };
-        const isActive = config.field === field;
-        const direction = isActive ? config.direction : null;
-        const icon = direction === 'asc'
-            ? 'bi-arrow-up'
-            : direction === 'desc'
-                ? 'bi-arrow-down'
-                : 'bi-arrow-down-up opacity-50';
-        const ariaSort = direction === 'asc'
-            ? 'ascending'
-            : direction === 'desc'
-                ? 'descending'
-                : 'none';
-        const justify = alignment === 'text-center'
-            ? 'justify-content-center'
-            : alignment === 'text-end'
-                ? 'justify-content-end'
-                : 'justify-content-start';
-        const textField = field === 'plugin' || field === 'models';
-        const nextDirection = isActive
-            ? (direction === 'desc' ? '升序' : '降序')
-            : (textField ? '升序' : '降序');
-
-        return `
-            <th class="${alignment} p-0" aria-sort="${ariaSort}">
-                <button type="button"
-                        class="btn btn-link rounded-0 border-0 text-decoration-none text-body fw-semibold d-inline-flex align-items-center gap-1 w-100 px-2 py-2 ${justify}"
-                        onclick="LLMManager.sortStats('${type}', '${field}')"
-                        title="按 ${this.escapeHtml(label)} ${nextDirection}排列">
-                    <span>${this.escapeHtml(label)}</span>
-                    <i class="bi ${icon} small" aria-hidden="true"></i>
-                </button>
-            </th>
-        `;
-    },
-
-    sortStats(type, field) {
-        const sortableFields = ['plugin', 'calls', 'tokens', 'cost', 'cache', 'avg_time', 'models', 'last_call'];
-        if (!['today', 'session', 'total'].includes(type) || !sortableFields.includes(field)) return;
-
-        const current = this.statsSort[type] || { field: 'calls', direction: 'desc' };
-        const textField = field === 'plugin' || field === 'models';
-        this.statsSort[type] = {
-            field,
-            direction: current.field === field
-                ? (current.direction === 'asc' ? 'desc' : 'asc')
-                : (textField ? 'asc' : 'desc'),
+        const { field, direction } = this.usageSort;
+        const currency = Object.keys(this.currentStats.totals?.costs || {})[0];
+        const value = row => {
+            if (field === 'cost') return row.metrics.costs?.[currency] ?? null;
+            if (field === 'tokens' && !row.metrics.token_calls) return null;
+            return Number(row.metrics[field] || 0);
         };
-        this.activeStatsType = type;
-
-        const pane = document.getElementById(`${type}-stats`);
-        if (pane) {
-            pane.innerHTML = this.renderStatsContent(this.currentStats[type] || {}, type);
-        }
+        const compare = (a, b) => {
+            const left = value(a), right = value(b);
+            if (left === null && right !== null) return 1;
+            if (right === null && left !== null) return -1;
+            return ((left ?? 0) - (right ?? 0)) * (direction === 'desc' ? -1 : 1) || a.key.localeCompare(b.key);
+        };
+        return rows.sort(compare);
     },
 
-    /**
-     * Render stats content for a given dataset
-     */
-    renderStatsContent(stats, type) {
-        if (Object.keys(stats).length === 0) {
-            const label = type === 'today' ? '今日' : type === 'session' ? '本次运行' : '历史';
-            return `
-                <div class="text-center py-5 text-muted">
-                    <i class="bi bi-info-circle fs-1 mb-3 d-block"></i>
-                    <p>暂无${label}统计。</p>
-                </div>
-            `;
+    renderUsageTable() {
+        const target = document.getElementById('usageTable');
+        if (!target) return;
+        const canSortCost = Object.keys(this.currentStats.totals?.costs || {}).length === 1;
+        if (!canSortCost && this.usageSort.field === 'cost') this.usageSort = { field: 'tokens', direction: 'desc' };
+        const rows = this.getUsageRows();
+        const pages = Math.max(1, Math.ceil(rows.length / 20));
+        this.usagePage = Math.min(this.usagePage, pages);
+        document.getElementById('usageRowCount').textContent = `${rows.length} 项${this.usageSearch ? '匹配 · 概览为所选范围合计' : ''}`;
+        if (!rows.length) {
+            target.innerHTML = `<div class="usage-empty">${this.usageSearch ? '没有匹配的记录' : '此范围暂无调用记录'}</div>`;
+            return;
         }
+        const headers = [['successes', '成功次数'], ['tokens', 'Token'], ['cost', '预估费用'], ['failures', '失败']];
+        const pageRows = rows.slice((this.usagePage - 1) * 20, this.usagePage * 20);
+        const kindLabels = { group: '群聊', user: '私聊', unknown: '类型未确认', system: '系统' };
+        target.innerHTML = `<div class="usage-table-scroll"><table class="usage-table"><thead><tr><th>${this.usageView === 'chat' ? '聊天对象' : '调用类型'}</th>
+            ${headers.map(([field, label]) => {
+                const active = this.usageSort.field === field;
+                const sort = active ? (this.usageSort.direction === 'desc' ? 'descending' : 'ascending') : 'none';
+                return `<th aria-sort="${sort}">${field === 'cost' && !canSortCost ? `<span title="不同币种不直接比较">${label}</span>` : `<button type="button" data-usage-sort="${field}">${label}<span class="usage-sort-icon ${active ? 'is-active' : ''}" aria-hidden="true">${active && this.usageSort.direction === 'asc' ? '↑' : '↓'}</span></button>`}</th>`;
+            }).join('')}<th><span class="visually-hidden">操作</span></th></tr></thead><tbody>
+            ${pageRows.map((row, index) => {
+                const meta = this.usageView === 'task' ? this.getUsageTaskMeta(row.key) : null;
+                const expanded = this.usageExpanded === row.key;
+                const label = meta?.label || row.name;
+                return `<tr class=""><td><button type="button" class="usage-name" data-usage-open="${index}" ${this.usageView === 'task' ? `aria-expanded="${expanded}" ${row.children ? '' : `aria-controls="usageDetail${index}"`}` : ''}><span>${this.escapeHtml(label)}</span><small>${this.escapeHtml(meta ? row.key : kindLabels[row.kind] || '聊天对象')}</small></button></td>
+                    <td>${this.usageNumber(row.metrics.successes)}</td><td>${this.usageTokens(row.metrics)}</td><td class="usage-money">${this.usageCosts(row.metrics)}</td><td>${this.usageNumber(row.metrics.failures)}</td>
+                    <td><button type="button" class="usage-row-action" data-usage-open="${index}" aria-label="${this.escapeHtml((expanded ? '收起' : '查看') + label)}" ${meta ? `aria-expanded="${expanded}" ${row.children ? '' : `aria-controls="usageDetail${index}"`}` : ''}>${meta ? expanded ? '收起' : row.children ? '展开' : '详情' : '查看'}</button></td></tr>
+                    ${meta && !row.children ? `<tr id="usageDetail${index}" class="usage-detail-row" ${expanded ? '' : 'hidden'}><td colspan="6">${expanded ? this.renderUsageDetail(row) : ''}</td></tr>` : ''}`;
+            }).join('')}</tbody></table></div>
+            ${pages > 1 ? `<div class="usage-pagination"><button type="button" id="usagePrev" ${this.usagePage === 1 ? 'disabled' : ''}>上一页</button><span>${this.usagePage} / ${pages}</span><button type="button" id="usageNext" ${this.usagePage === pages ? 'disabled' : ''}>下一页</button></div>` : ''}`;
+        target.querySelectorAll('[data-usage-sort]').forEach(button => button.addEventListener('click', () => {
+            const field = button.dataset.usageSort;
+            this.usageSort = { field, direction: this.usageSort.field === field && this.usageSort.direction === 'desc' ? 'asc' : 'desc' };
+            this.usagePage = 1;
+            this.renderUsageTable();
+            target.querySelector(`[data-usage-sort="${field}"]`)?.focus();
+        }));
+        target.querySelectorAll('[data-usage-open]').forEach(button => button.addEventListener('click', () => {
+            const row = pageRows[Number(button.dataset.usageOpen)];
+            if (this.usageView === 'chat') this.openUsageSubject(row.key);
+            else {
+                this.usageExpanded = this.usageExpanded === row.key ? null : row.key;
+                this.renderUsageTable();
+                target.querySelector(`[data-usage-open="${button.dataset.usageOpen}"]`)?.focus();
+            }
+        }));
+        target.querySelector('#usagePrev')?.addEventListener('click', () => { this.usagePage--; this.renderUsageTable(); });
+        target.querySelector('#usageNext')?.addEventListener('click', () => { this.usagePage++; this.renderUsageTable(); });
+        if (this.usageExpanded && target.querySelector('#usageRequestDetails')) this.loadUsageRequests(this.usageExpanded);
+    },
 
-        // Calculate totals
-        let totalCalls = 0;
-        let totalTokens = 0;
-        let totalCost = 0;
-        let totalCacheHit = 0;
-        let totalCacheMiss = 0;
+    renderUsageDetail(row) {
+        const m = row.metrics;
+        const average = m.duration_calls ? `${(m.duration_total / m.duration_calls).toFixed(2)} 秒` : '—';
+        const cache = m.cache_input_tokens > 0 ? `${(m.cached_tokens / m.cache_input_tokens * 100).toFixed(1)}%` : '—';
+        const models = Object.entries(m.models || {}).sort((a, b) => b[1] - a[1]).map(([name, count]) => `${this.escapeHtml(name)} · ${this.usageNumber(count)} 次`).join('<br>') || '—';
+        const facts = [
+            ['请求结果', `成功 ${this.usageNumber(m.successes)} 次 · 失败 ${this.usageNumber(m.failures)} 次<small>共 ${this.usageNumber(m.calls)} 次尝试，包含重试与模型回退</small>`],
+            ['输入 / 输出 Token', `${m.input_calls ? this.usageNumber(m.input_tokens) : '—'} / ${m.output_calls ? this.usageNumber(m.output_tokens) : '—'}`],
+            ['平均耗时', `${average}<small>所选周期内 ${this.usageNumber(m.duration_calls)} 次已记录调用</small>`],
+            ['缓存命中率', `${cache}<small>按输入 Token 加权 · ${this.usageNumber(m.cache_calls)} 次有缓存明细</small>`],
+            ['缓存写入 / 推理 Token', `${this.usageNumber(m.cache_write_tokens)} / ${this.usageNumber(m.reasoning_tokens)}`],
+            ['最近调用', this.usageDate(m.last_call)], ['使用模型', models],
+            ['统计完整性', `${this.usageNumber(m.token_calls)} 次有 Token · ${this.usageNumber(m.cost_calls)} 次有计价${m.estimated_calls ? `<br>${this.usageNumber(m.estimated_calls)} 次 Token 为估算` : ''}`],
+        ];
+        return `<div class="usage-detail-grid">${facts.map(([label, value]) => `<div><small>${label}</small><span>${value}</span></div>`).join('')}</div><div id="usageRequestDetails" class="usage-request-details" aria-live="polite">正在读取计价明细…</div>`;
+    },
 
-        for (const stat of Object.values(stats)) {
-            totalCalls += Number(stat.count) || 0;
-            totalTokens += Number(stat.total_tokens) || 0;
-            totalCost += Number(stat.total_cost) || 0;
-            totalCacheHit += Number(stat.cache_hit_tokens) || 0;
-            totalCacheMiss += Number(stat.cache_miss_tokens) || 0;
+    async loadUsageRequests(task, offset = 0) {
+        const target = document.getElementById('usageRequestDetails');
+        const params = new URLSearchParams({period: this.activeStatsType, task, limit: '10', offset: String(offset)});
+        if (this.usageSubject) params.set('subject', this.usageSubject);
+        try {
+            const response = await fetch(`/api/llm/usage/requests?${params}`);
+            if (!response.ok) throw new Error('计价明细读取失败');
+            const result = await response.json();
+            if (!target?.isConnected || this.usageExpanded !== task) return;
+            const labels = {api_equivalent: 'API 等值估算', estimated: '估算', reported: '供应商上报', free: '免费', included: '订阅包含', rejected: '额度拒绝 · 不计费', unknown: '未知'};
+            const sources = {official_snapshot: '官方价格快照', connection_config: '连接配置', litellm_catalog: 'LiteLLM 价格表', provider_response: '供应商返回', none: '无可用价格', quota_rejection: '额度耗尽，请求被拒绝'};
+            const reasons = {quota_rejected: '额度耗尽且未返回用量，费用为零', unsupported_usage_dimension: '该用量包含尚未支持的独立计价项目', missing_usage_or_currency: '用量或币种不完整', missing_price: '缺少适用单价', tier_requires_configuration: '该阶梯价格尚未配置', context_tier_unavailable: '只有整轮用量，无法确定各请求是否进入长上下文计价'};
+            const buckets = {uncached_input_tokens: '普通输入', completion_tokens: '输出', cached_tokens: '缓存读取', cache_write_tokens: '缓存写入'};
+            target.innerHTML = result.data.rows.map(row => {
+                const p = row.pricing || {}, snapshot = p.snapshot || {};
+                const amount = p.amount === null || p.amount === undefined ? '—' : `${p.currency || ''} ${Number(p.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                const rates = Object.entries(snapshot.rates || {}).map(([key, rate]) => `${buckets[key] || key} ${Number(rate) * 1000000}`).join(' / ');
+                const sourceUrl = /^https:\/\//.test(snapshot.source_url || '') ? snapshot.source_url : '';
+                return `<details><summary>${this.escapeHtml(this.usageDate(row.recorded_at))} · ${this.escapeHtml(row.model)} · ${this.escapeHtml(amount)}</summary><div class="usage-secondary">
+                    ${this.escapeHtml(labels[p.status] || '未知')}<br>
+                    ${this.escapeHtml(sources[snapshot.source] || snapshot.source || '无可用价格')} · ${this.escapeHtml(snapshot.version || '—')}${sourceUrl ? ` · <a href="${this.escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">价格来源</a>` : ''}<br>
+                    ${rates ? `${this.escapeHtml(rates)} ${this.escapeHtml(p.currency || '')} / 百万 Token<br>` : ''}
+                    ${p.reason ? `${this.escapeHtml(reasons[p.reason] || p.reason)}<br>` : ''}${row.usage?.estimated ? 'Token 为本地估算<br>' : ''}${p.notes?.includes('cache_not_reported') ? '未上报缓存明细，输入按普通单价估算<br>' : ''}
+                    ${this.escapeHtml(row.scope === 'codex_turn' ? 'Codex 整轮用量' : '逐次请求')} · ${row.success ? '成功' : '失败'} · 输入 ${this.usageNumber(row.usage?.prompt_tokens)} / 输出 ${this.usageNumber(row.usage?.completion_tokens)} / 缓存 ${this.usageNumber(row.usage?.cached_tokens)}<br>
+                    请求 ${this.escapeHtml(row.id)}<br>业务调用 ${this.escapeHtml(row.logical_id)}</div></details>`;
+            }).join('') || '<span class="usage-secondary">暂无请求明细</span>';
+            target.insertAdjacentHTML('beforeend', `<div class="usage-pagination"><button type="button" data-requests-prev ${offset === 0 ? 'disabled' : ''}>上一页</button><span>${Math.floor(offset / 10) + 1} / ${Math.max(1, Math.ceil(result.data.total / 10))}</span><button type="button" data-requests-next ${offset + 10 >= result.data.total ? 'disabled' : ''}>下一页</button></div>`);
+            target.querySelector('[data-requests-prev]').onclick = () => this.loadUsageRequests(task, offset - 10);
+            target.querySelector('[data-requests-next]').onclick = () => this.loadUsageRequests(task, offset + 10);
+        } catch (error) {
+            if (target?.isConnected) target.textContent = error.message;
         }
-        const totalCacheRate = (totalCacheHit + totalCacheMiss) > 0
-            ? (totalCacheHit / (totalCacheHit + totalCacheMiss) * 100).toFixed(1)
-            : 'N/A';
-
-        let html = `
-            <div class="row g-3 mb-4">
-                <div class="col-md-3">
-                    <div class="card border-0 shadow-sm">
-                        <div class="card-body text-center">
-                            <h3 class="fw-bold text-primary mb-0">${totalCalls}</h3>
-                            <small class="text-muted">总调用次数</small>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-3">
-                    <div class="card border-0 shadow-sm">
-                        <div class="card-body text-center">
-                            <h3 class="fw-bold text-success mb-0">${totalTokens.toLocaleString()}</h3>
-                            <small class="text-muted">总 Token 数</small>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-3">
-                    <div class="card border-0 shadow-sm">
-                        <div class="card-body text-center">
-                            <h3 class="fw-bold text-warning mb-0">${totalCost.toFixed(4)}</h3>
-                            <small class="text-muted">总费用</small>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-3">
-                    <div class="card border-0 shadow-sm">
-                        <div class="card-body text-center">
-                            <h3 class="fw-bold text-info mb-0">${totalCacheRate}</h3>
-                            <small class="text-muted">缓存命中率</small>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        `;
-
-        // Table of individual plugin stats
-        html += `
-            <div class="table-responsive">
-                <table class="table table-hover align-middle">
-                    <thead class="table-light">
-                        <tr>
-                            ${this.renderStatsSortHeader(type, 'plugin', '插件.调用类型')}
-                            ${this.renderStatsSortHeader(type, 'calls', '调用次数', 'text-center')}
-                            ${this.renderStatsSortHeader(type, 'tokens', 'Token 数', 'text-center')}
-                            ${this.renderStatsSortHeader(type, 'cost', '费用', 'text-center')}
-                            ${this.renderStatsSortHeader(type, 'cache', '缓存', 'text-center')}
-                            ${this.renderStatsSortHeader(type, 'avg_time', '平均耗时', 'text-center')}
-                            ${this.renderStatsSortHeader(type, 'models', '使用的模型')}
-                            ${this.renderStatsSortHeader(type, 'last_call', '最近调用', 'text-end')}
-                        </tr>
-                    </thead>
-                    <tbody>
-        `;
-
-        const sortedEntries = this.getSortedStatsEntries(stats, type);
-
-        for (const [key, stat] of sortedEntries) {
-            const models = Object.keys(stat.model_usage || {}).join(', ');
-            const lastCallTimestamp = this.getStatsLastCallTimestamp(stat);
-            const lastCall = lastCallTimestamp !== null
-                ? new Date(lastCallTimestamp).toLocaleString()
-                : 'N/A';
-
-            // Calculate Average Response Time
-            const avgTime = this.getStatsAverageTime(stat);
-            const avgTimeStr = avgTime !== null ? `${avgTime.toFixed(2)}s` : 'N/A';
-            const calls = Number(stat.count) || 0;
-            const tokens = Number(stat.total_tokens) || 0;
-            const cost = Number(stat.total_cost) || 0;
-            const cacheHit = Number(stat.cache_hit_tokens) || 0;
-            const cacheMiss = Number(stat.cache_miss_tokens) || 0;
-            const cacheRateValue = this.getStatsCacheRate(stat);
-            const cacheRate = cacheRateValue !== null
-                ? `${(cacheRateValue * 100).toFixed(1)}%`
-                : 'N/A';
-            const cacheDetail = (cacheHit || cacheMiss)
-                ? `<div>${cacheRate}</div><small class="text-muted">命中 ${cacheHit.toLocaleString()} / 未命中 ${cacheMiss.toLocaleString()}</small>`
-                : '<span class="text-muted">N/A</span>';
-
-            html += `
-                <tr>
-                    <td><code>${this.escapeHtml(key)}</code></td>
-                    <td class="text-center"><span class="badge bg-primary">${calls}</span></td>
-                    <td class="text-center">${tokens.toLocaleString()}</td>
-                    <td class="text-center">${cost.toFixed(4)}</td>
-                    <td class="text-center">${cacheDetail}</td>
-                    <td class="text-center">${avgTimeStr}</td>
-                    <td><small class="text-muted">${this.escapeHtml(models || 'N/A')}</small></td>
-                    <td class="text-end"><small class="text-muted">${lastCall}</small></td>
-                </tr>
-            `;
-        }
-
-        html += `
-                    </tbody>
-                </table>
-            </div>
-        `;
-
-        return html;
     },
 
     /**
@@ -2236,6 +2179,14 @@ const LLMManager = {
         document.getElementById('modelContextWindow').value = config.context_window_tokens ?? config.max_input_tokens ?? '';
         document.getElementById('modelTimeout').value = config.timeout ?? '';
         document.getElementById('modelMaxRetries').value = config.max_retries ?? '';
+        document.getElementById('modelBillingMode').value = config.billing_mode || 'auto';
+        const currencySelect = document.getElementById('modelCostCurrency');
+        const currency = config.cost_currency || 'USD';
+        if (![...currencySelect.options].some(option => option.value === currency)) currencySelect.add(new Option(currency, currency));
+        currencySelect.value = currency;
+        for (const [id, key] of [['modelInputPrice', 'input_cost_per_token'], ['modelOutputPrice', 'output_cost_per_token'], ['modelCacheReadPrice', 'cache_read_input_token_cost'], ['modelCacheWritePrice', 'cache_creation_input_token_cost']]) {
+            document.getElementById(id).value = config[key] == null ? '' : config[key] * 1000000;
+        }
         document.getElementById('modelVision').checked = Boolean(config.supports_vision || config.vision || config.image_input);
         document.getElementById('modelWebSearch').checked = Boolean(config.enable_web_search || config.codex_web_search);
         document.getElementById('modelCodexReasoning').value = config.codex_reasoning_effort || 'medium';
@@ -2333,6 +2284,8 @@ const LLMManager = {
             values.contextWindow = this.parseOptionalNumber('modelContextWindow', '上下文窗口', 1);
             values.timeout = this.parseOptionalNumber('modelTimeout', '超时', 1, 3600);
             values.maxRetries = isCodex ? { value: null, empty: true } : this.parseOptionalNumber('modelMaxRetries', 'SDK 重试次数', 0, 20);
+            values.prices = [['modelInputPrice', 'input_cost_per_token'], ['modelOutputPrice', 'output_cost_per_token'], ['modelCacheReadPrice', 'cache_read_input_token_cost'], ['modelCacheWritePrice', 'cache_creation_input_token_cost']].map(([id, key]) => [key, isCodex ? {empty: true} : this.parseOptionalNumber(id, '单价', 0)]);
+            if (values.prices.some(([, price]) => !price.empty) && (values.prices[0][1].empty || values.prices[1][1].empty)) throw new Error('自定义计价请同时填写输入和输出单价。');
             const extraBody = document.getElementById('modelExtraBody').value.trim();
             values.extraBody = extraBody ? JSON.parse(extraBody) : {};
             if (!values.extraBody || Array.isArray(values.extraBody) || typeof values.extraBody !== 'object') {
@@ -2394,6 +2347,12 @@ const LLMManager = {
             ['max_retries', values.maxRetries],
         ];
         payload.clear_fields = [];
+        payload.billing_mode = values.provider.key === 'local_codex' ? 'auto' : document.getElementById('modelBillingMode').value;
+        payload.cost_currency = document.getElementById('modelCostCurrency').value;
+        for (const [key, parsed] of values.prices) {
+            if (!parsed.empty) payload[key] = parsed.value / 1000000;
+            else if (isEdit && this.currentModels[targetModelId]?.[key] !== undefined) payload.clear_fields.push(key);
+        }
         for (const [key, parsed] of numericFields) {
             if (!parsed.empty) payload[key] = parsed.value;
             else if (isEdit && this.currentModels[targetModelId]?.[key] !== undefined) payload.clear_fields.push(key);
@@ -2877,7 +2836,7 @@ const LLMManager = {
         sourceList.innerHTML = '<div class="text-center text-muted py-4 small"><div class="spinner-border spinner-border-sm me-2"></div>加载中…</div>';
 
         try {
-            const resp = await fetch('/api/llm/call-history/summary');
+            const [resp] = await Promise.all([fetch('/api/llm/call-history/summary'), this.loadRouteOwners()]);
             const data = await resp.json();
             if (data.status !== 'success' || !data.data) {
                 sourceList.innerHTML = '<div class="text-center text-muted py-4 small">暂无调用记录</div>';
@@ -2900,9 +2859,10 @@ const LLMManager = {
             let html = '';
             for (const [plugin, items] of Object.entries(grouped)) {
                 html += `<div class="list-group-item bg-light border-0 py-1 px-3">
-                    <small class="text-muted fw-semibold" style="font-size:0.7rem;">${this.escapeHtml(plugin)}</small>
+                    <small class="text-muted fw-semibold" style="font-size:0.7rem;">${this.escapeHtml(this.currentRouteOwners[plugin]?.display_name || plugin)}</small>
                 </div>`;
                 items.forEach(item => {
+                    const taskMeta = this.getUsageTaskMeta(item.key);
                     const isActive = (this.currentHistorySource === item.key) ? 'active' : '';
                     const statusIcon = item.last_success
                         ? '<i class="bi bi-check-circle-fill text-success"></i>'
@@ -2913,12 +2873,12 @@ const LLMManager = {
                         <div class="d-flex justify-content-between align-items-center">
                             <div>
                                 <span class="me-1">${statusIcon}</span>
-                                <span class="small fw-medium">${this.escapeHtml(item.call_type)}</span>
+                                <span class="small fw-medium">${this.escapeHtml(taskMeta.label)}</span>
                                 <span class="badge bg-secondary-subtle text-secondary ms-1" style="font-size:0.6rem;">${Number(item.count || 0)}条</span>
                             </div>
                             <small class="text-muted" style="font-size:0.65rem;">${timeDisplay}</small>
                         </div>
-                        <small class="text-muted d-block" style="font-size:0.65rem;">${this.escapeHtml(item.last_model || '')}</small>
+                        <small class="call-source-key">${this.escapeHtml(item.key)}</small>
                     </a>`;
                 });
             }
@@ -3006,13 +2966,6 @@ const LLMManager = {
                 ].join(' · ');
                 const reasoningSize = entry.reasoning_size || 0;
                 const tokenUsageHtml = this.renderTokenUsage(entry);
-                const memoryBadge = entry.has_memory_trace
-                    ? `<span class="badge bg-primary-subtle text-primary border fw-normal">
-                        <i class="bi bi-database-check me-1"></i>阶段 ${entry.memory_has_stage ? 1 : 0}
-                        · 事件 ${Number(entry.memory_event_count || 0)}
-                        · 人物 ${Number(entry.memory_people_count || 0)}
-                       </span>`
-                    : '';
                 const chatContext = entry.chat_name
                     ? `<span class="badge bg-light text-dark border fw-normal">
                         <i class="bi bi-chat-dots me-1"></i>${this.escapeHtml(entry.chat_name)}
@@ -3041,17 +2994,13 @@ const LLMManager = {
                                     onclick="LLMManager.toggleCallHistoryBody(${idx}, 'resp')">
                                     <i class="bi bi-box-arrow-up me-1"></i>响应${attachmentCount ? ` · ${attachmentCount} 附件` : ''}
                                 </button>
-                                ${entry.has_memory_trace ? `<button class="btn btn-sm btn-primary py-0 px-2" style="font-size:0.75rem;"
-                                    onclick="LLMManager.toggleCallHistoryBody(${idx}, 'memory')">
-                                    <i class="bi bi-database-check me-1"></i>本轮记忆
-                                </button>` : ''}
+
                             </div>
                         </div>
                         <div class="d-flex flex-wrap align-items-center gap-2 mt-2 pt-2 border-top">
                             <span class="badge bg-light text-secondary border fw-normal"><i class="bi bi-stopwatch me-1"></i>${Number(entry.response_time || 0).toFixed(1)} 秒</span>
                             ${tokenUsageHtml}
                             ${chatContext}
-                            ${memoryBadge}
                         </div>
                     </div>
                     <div class="history-req-body d-none" data-history-index="${idx}" data-history-kind="req">
@@ -3074,13 +3023,7 @@ const LLMManager = {
                         <div class="history-response-attachments d-none px-2 pb-2" aria-label="响应附件">
                         </div>
                     </div>
-                    ${entry.has_memory_trace ? `<div class="history-memory-body d-none border-top" data-history-index="${idx}" data-history-kind="memory">
-                        <div class="px-3 pt-3 d-flex flex-wrap justify-content-between gap-2">
-                            <small class="text-muted fw-semibold"><i class="bi bi-database-check me-1"></i>本轮已注入记忆</small>
-                            ${entry.trace_id ? `<code class="small">${this.escapeHtml(entry.trace_id)}</code>` : ''}
-                        </div>
-                        <div class="history-memory-content m-3"></div>
-                    </div>` : ''}
+
                     ${!entry.success ? `<div class="history-error-body" data-history-index="${idx}" data-history-kind="error">
                         <div class="px-3 pt-2"><small class="text-muted fw-semibold text-danger">❌ 错误</small></div>
                         <div class="m-2 p-2 bg-danger-subtle rounded small text-danger" style="font-size:0.8rem; white-space:pre-wrap;"></div>
@@ -3106,7 +3049,6 @@ const LLMManager = {
             req: '.history-req-body',
             resp: '.history-resp-body',
             reasoning: '.history-reasoning-body',
-            memory: '.history-memory-body',
             error: '.history-error-body'
         };
         const selector = selectorMap[kind];
@@ -3122,7 +3064,6 @@ const LLMManager = {
             req: '.history-req-body',
             resp: '.history-resp-body',
             reasoning: '.history-reasoning-body',
-            memory: '.history-memory-body',
             error: '.history-error-body'
         };
         const selector = selectorMap[kind];
@@ -3132,9 +3073,7 @@ const LLMManager = {
 
         const entry = this.currentHistoryEntries[index] || {};
         let text = '';
-        const target = kind === 'memory'
-            ? body.querySelector('.history-memory-content')
-            : (body.querySelector('pre') || body.querySelector('.rounded'));
+        const target = body.querySelector('pre') || body.querySelector('.rounded');
         if (!target) return;
 
         if (kind === 'error') {
@@ -3150,14 +3089,6 @@ const LLMManager = {
                 if (kind === 'reasoning') text = fullEntry.reasoning_text || '';
                 if (kind === 'resp') {
                     this.renderCallHistoryResponse(body, fullEntry, entry);
-                } else if (kind === 'memory') {
-                    target.innerHTML = (
-                        fullEntry.memory_trace
-                            && typeof App !== 'undefined'
-                            && typeof App.renderMemoryTrace === 'function'
-                            ? App.renderMemoryTrace(fullEntry.memory_trace, `history-${fullEntry.trace_id || index}-${index}`)
-                            : '<div class="text-muted text-center py-3">此记录没有本轮记忆审计数据。</div>'
-                    );
                 } else {
                     target.textContent = text;
                 }
@@ -3444,6 +3375,7 @@ const LLMManager = {
             model_changed: '模型已变更', reasoning_effort_changed: '推理强度已变更', max_turns_reached: '达到轮数上限',
             soft_token_limit: '达到上下文软上限', compaction_limit: '达到压缩次数上限', idle_timeout: '空闲超时',
             message_prefix_changed: '消息前缀已变化', resume_failed: '原线程无法恢复', manual_reset: '手动重置',
+            context_policy_changed: '升级为增量线程', role_instructions_changed: '角色指令已变更', incomplete_turn: '上轮未完成',
             chat_policy_changed: '聊天策略已变更', discarded_followup: '未发送的跟进已丢弃',
         }[String(reason || '')] || String(reason || '-'));
         const fallbackLabel = reason => ({
@@ -3548,8 +3480,8 @@ const LLMManager = {
                 const lifetimeUsage = usageMeta(session.lifetime_usage_accuracy);
                 const contextClass = safePercent >= 90 ? 'danger' : safePercent >= 75 ? 'warning' : '';
                 const contextHtml = contextWindow && contextPercent !== null && Number.isFinite(contextPercent) ? `
-                    <div class="codex-context">
-                        <div class="codex-context-label"><span>${formatK(contextInput)}</span><span>${contextPercent.toFixed(1)}%</span></div>
+                    <div class="codex-context" title="按 Codex CLI 口径估算：最近请求总 Token，扣除 12K 基础开销">
+                        <div class="codex-context-label"><span>${formatK(contextInput)}</span><span>剩余 ${Number(session.context_remaining_percent).toFixed(0)}%</span></div>
                         <div class="codex-context-track ${contextClass}"><i style="width:${safePercent}%"></i></div>
                     </div>` : contextWindow
                     ? `<span class="codex-cell-sub">未知 / ${formatK(contextWindow)}</span>`
@@ -3567,6 +3499,8 @@ const LLMManager = {
                             <div><small>推理 / 搜索</small><span>${this.escapeHtml(this.reasoningEffortLabel(session.reasoning_effort))} · ${session.web_search_mode ? this.escapeHtml(session.web_search_mode) : '关闭'}</span></div>
                             <div><small>运行后端</small><span>${this.escapeHtml(session.backend || '-')} · ${this.escapeHtml(session.runtime_profile || '未标记 Profile')} · ${this.escapeHtml(session.access_mode || '-')}</span></div>
                             <div><small>统计来源</small><span>${this.escapeHtml(session.usage_source || '未提供')}${usage.label ? ` · ${this.escapeHtml(usage.label)}` : ''}</span></div>
+                            <div><small>配置窗口 / 自动压缩</small><span>${session.configured_context_window ? `${formatK(Number(session.configured_context_window))} / ${formatK(Number(session.auto_compact_token_limit))}（90%）` : '下次请求更新'}</span></div>
+                            <div><small>${activeJob ? '运行时有效窗口' : '上次有效窗口'}</small><span>${contextWindow ? formatK(contextWindow) : '未知'}</span></div>
                             <div><small>上下文窗口来源</small><span>${session.model_context_window_source === 'provider_usage' ? '提供方上报' : session.model_context_window_source === 'profile_metadata' ? 'Profile 元数据' : '未知'}</span></div>
                             <div><small>最近轮换</small><span>${this.escapeHtml(rotationLabel(session.last_rotation_reason))}</span></div>
                             <div><small>Exec 回退</small><span>${Number(session.fallback_count || 0)} 次 · ${this.escapeHtml(fallbackLabel(session.last_fallback_reason))}${continuityStatus === 'pending_replay' ? ' · 下一轮自动回放' : ''}</span></div>
@@ -3666,7 +3600,7 @@ const LLMManager = {
                             </div>
                             <div><small>安装方式</small><span>${this.escapeHtml(upgrade.installation?.method_label || '-')}</span></div>
                             <div><small>Worker</small><span>${workerCount} 个进程</span></div>
-                            <div><small>会话轮换</small><span>输入 ${formatK(lifecyclePolicy.rotate_tokens || 0)} · 压缩 ${Number(lifecyclePolicy.max_compactions || 0)} 次 · 空闲 ${Number(lifecyclePolicy.idle_rotate_seconds || 0) ? `${Math.round(Number(lifecyclePolicy.idle_rotate_seconds) / 86400)} 天` : '关闭'}</span></div>
+                            <div><small>聊天线程</small><span>独立复用 · 配置窗口 90% 原生压缩 · 空闲 ${Number(lifecyclePolicy.idle_rotate_seconds || 0) ? `${Math.round(Number(lifecyclePolicy.idle_rotate_seconds) / 86400)} 天` : '关闭'}</span></div>
                             <div><small>Schema</small><span class="codex-mono">${this.escapeHtml(schemaShort)}</span></div>
                             <div><small>可用命令</small><span>${this.escapeHtml(fileToolNames.join(' · ') || '未探测到')}</span></div>
                             <div><small>工具目录</small><span class="codex-mono">${this.escapeHtml(fileToolRoots.join(' · ') || '使用系统工具')}</span></div>

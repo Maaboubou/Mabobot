@@ -746,6 +746,8 @@ def _render_config(profile: dict[str, Any], paths: dict[str, Path]) -> str:
     lines = [
         "# Managed by mabowx in an isolated CODEX_HOME.",
         f"model = {toml(profile['model'])}",
+        f"model_context_window = {profile['context_window']}",
+        f"model_auto_compact_token_limit = {int(profile['context_window']) * 9 // 10}",
         f"model_reasoning_effort = {toml(profile['reasoning_effort'])}",
         'model_reasoning_summary = "none"',
     ]
@@ -771,7 +773,6 @@ def _render_config(profile: dict[str, Any], paths: dict[str, Path]) -> str:
     lines[2:2] = [
         f"model_provider = {toml(provider_id)}",
         f"model_catalog_json = {toml(str(paths['catalog']))}",
-        f"model_context_window = {profile['context_window']}",
     ]
     lines.extend(
         [

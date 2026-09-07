@@ -110,6 +110,8 @@ class _TurnTracker:
     generated_image_paths: List[str] = field(default_factory=list)
     usage: Dict[str, Any] = field(default_factory=dict)
     usage_source: str = ""
+    usage_segments: List[Dict[str, Any]] = field(default_factory=list)
+    usage_signatures: Dict[str, int] = field(default_factory=dict)
     compacted: bool = False
     status: str = "running"
     error: Optional[str] = None
@@ -133,6 +135,8 @@ class _ActiveDynamicToolContext:
     browser: BrowserToolContext
     turn_ids: set[str] = field(default_factory=set)
     call_ids: set[str] = field(default_factory=set)
+    history: Any = None
+    history_exports: List[Path] = field(default_factory=list)
 
 
 def _positive_int(value: Any, default: int) -> int:
@@ -162,7 +166,7 @@ def _message_fingerprint(message: Dict[str, Any]) -> str:
 
 
 def _is_ephemeral_message(message: Dict[str, Any]) -> bool:
-    return str(message.get("name") or "") in {"search_context", "memory_context"}
+    return str(message.get("name") or "") in {"search_context", "history_context"}
 
 
 def _split_message_fingerprints(
@@ -193,6 +197,7 @@ def _plan_message_delta(
     dynamic_tool_signature: str = "",
     max_compactions: int = 0,
     idle_rotate_seconds: int = 0,
+    incremental_context: bool = False,
 ) -> _MessageDelta:
     """Return the unsent message suffix or explain why a new thread is needed."""
     stable, ephemeral = _split_message_fingerprints(messages)
@@ -234,11 +239,23 @@ def _plan_message_delta(
         except (TypeError, ValueError):
             pass
 
+    if incremental_context:
+        systems = [_message_fingerprint(m) for m in messages if m.get("role") in {"system", "developer"}]
+        if state.get("context_policy") != "incremental":
+            return _MessageDelta(list(messages), stable, ephemeral, False, "context_policy_changed")
+        if systems != state.get("incremental_system_fingerprints"):
+            return _MessageDelta(list(messages), stable, ephemeral, False, "role_instructions_changed")
+        suffix = [m for m in messages if m.get("role") not in {"system", "developer"}]
+        if retry:
+            previous = set(state.get("incremental_input_fingerprints") or [])
+            suffix = [m for m in suffix if _message_fingerprint(m) not in previous]
+        return _MessageDelta(suffix, stable, ephemeral, True)
+
     sent_stable = list(state.get("stable_fingerprints") or [])
     if len(stable) < len(sent_stable) or stable[: len(sent_stable)] != sent_stable:
         return _MessageDelta(list(messages), stable, ephemeral, False, "message_prefix_changed")
 
-    # Preserve original order: ephemeral search/memory context normally sits
+    # Preserve original order: ephemeral search/history context normally sits
     # directly before the newly appended user message.
     suffix: List[Dict[str, Any]] = []
     stable_index = 0
@@ -315,6 +332,7 @@ def _normalize_app_server_usage(
     if not isinstance(completion_details, dict):
         completion_details = {}
 
+    cache_write_tokens = number(prompt_details, "cache_write_tokens", "cache_creation_tokens") or number(last, "cacheWriteTokens", "cache_write_tokens", "cache_creation_input_tokens")
     cache_data_available = any(
         key in last
         for key in (
@@ -378,7 +396,7 @@ def _normalize_app_server_usage(
         "completion_tokens": output_tokens,
         "total_tokens": total_tokens,
         "cache_miss_input_tokens": max(input_tokens - cached_tokens, 0),
-        "prompt_tokens_details": {"cached_tokens": cached_tokens},
+        "prompt_tokens_details": {"cached_tokens": cached_tokens, "cache_write_tokens": cache_write_tokens},
         "completion_tokens_details": {"reasoning_tokens": reasoning_tokens},
         "estimated": False,
         "source": str(raw.get("source") or source),
@@ -481,6 +499,17 @@ def _accumulate_usage_total(
     }
 
 
+def _context_remaining_percent(total_tokens: Optional[int], window: int) -> Optional[int]:
+    """Match Codex CLI's user-controllable context estimate (12K baseline)."""
+    if total_tokens is None or window <= 0:
+        return None
+    if window <= 12000:
+        return 0
+    used = max(0, total_tokens - 12000)
+    remaining = max(0, window - 12000 - used)
+    return min(100, int(remaining * 100 / (window - 12000) + 0.5))
+
+
 def _merge_attempt_usage(usages: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     """Merge the provider-reported usage of one logical request's retry turns."""
     attempts = [dict(item) for item in usages if isinstance(item, dict) and item]
@@ -499,6 +528,7 @@ def _merge_attempt_usage(usages: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         int(item.get("cache_miss_input_tokens") or 0) for item in attempts
     )
     merged["prompt_tokens_details"] = {
+        "cache_write_tokens": sum(int((item.get("prompt_tokens_details") or {}).get("cache_write_tokens") or 0) for item in attempts),
         "cached_tokens": sum(
             int((item.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
             for item in attempts
@@ -778,7 +808,9 @@ class CodexAppServerManager:
         self.dynamic_tool_specs = (
             self.browser_tool.dynamic_tool_specs() if self.browser_tool.enabled else []
         )
-        self.dynamic_tool_signature = self.browser_tool.tool_signature()
+        from app.history.tools import dynamic_tool_specs as history_specs
+        self.dynamic_tool_specs += history_specs()
+        self.dynamic_tool_signature = self.browser_tool.tool_signature() + ":history-v4-local-files"
 
         self._lifecycle_lock = threading.RLock()
         self._write_lock = threading.Lock()
@@ -824,6 +856,7 @@ class CodexAppServerManager:
                 runtime_read_roots=permission_read_roots,
             )
         )
+        args.extend(["-c", "features.memories=false", "-c", "features.external_agent_memory_import=false"])
         return build_codex_runtime_command(
             args,
             use_wsl=self.use_wsl,
@@ -909,18 +942,15 @@ class CodexAppServerManager:
                 else session_total
             )
             last_input = int(state.get("last_input_tokens") or 0)
-            context_input = int(
-                state.get("thread_input_tokens")
-                if state.get("thread_input_tokens") is not None
-                else last_input
-                or 0
-            )
+            # Old states used aggregate billing here. Never present that as context.
+            context_total = active.get("context_total_tokens") if active else state.get("context_total_tokens")
+            context_input = int(context_total or 0)
             last_cached = min(int(state.get("last_cached_input_tokens") or 0), last_input)
             last_completion = int(
                 state.get("last_completion_tokens")
                 or max(int(state.get("last_total_tokens") or 0) - last_input, 0)
             )
-            context_window = int(state.get("model_context_window") or 0)
+            context_window = int(active.get("model_context_window") or state.get("model_context_window") or 0)
             usage_accuracy = str(state.get("usage_accuracy") or "").strip().lower()
             if usage_accuracy not in {"reported", "estimated", "unknown"}:
                 usage_accuracy = (
@@ -934,11 +964,8 @@ class CodexAppServerManager:
             thread_usage_accuracy = str(
                 state.get("thread_usage_accuracy") or usage_accuracy
             ).strip().lower()
-            context_usage_percent = (
-                round(context_input / context_window * 100, 2)
-                if context_window > 0 and thread_usage_accuracy != "unknown"
-                else None
-            )
+            context_remaining_percent = _context_remaining_percent(context_total, context_window)
+            context_usage_percent = 100 - context_remaining_percent if context_remaining_percent is not None else None
             cache_hit_rate = (
                 round(last_cached / last_input, 6)
                 if last_input > 0 and cache_available
@@ -978,6 +1005,10 @@ class CodexAppServerManager:
                     "model_context_window": context_window or None,
                     "model_context_window_source": state.get("model_context_window_source"),
                     "context_usage_percent": context_usage_percent,
+                    "context_remaining_percent": context_remaining_percent,
+                    "context_total_tokens": context_total,
+                    "configured_context_window": state.get("configured_context_window"),
+                    "auto_compact_token_limit": state.get("auto_compact_token_limit"),
                     "session_total": session_total,
                     "lifetime_total": lifetime_total,
                     "usage_source": state.get("usage_source"),
@@ -1353,12 +1384,21 @@ class CodexAppServerManager:
                     part for part in (str(namespace or ""), str(tool or "")) if part
                 ),
             )
-            result = self.browser_tool.execute(
-                namespace=namespace,
-                tool=tool,
-                arguments=params.get("arguments"),
-                context=active.browser,
-            )
+            normalized_tool = str(tool or "")
+            if str(namespace or "") == "history" or normalized_tool.startswith("history."):
+                if active.history is None:
+                    raise CodexBrowserToolError("history is unavailable for this task")
+                try:
+                    result = active.history.execute(normalized_tool.removeprefix("history."), params.get("arguments"))
+                except (ValueError, TypeError) as exc:
+                    raise CodexBrowserToolError(str(exc)) from exc
+            else:
+                result = self.browser_tool.execute(
+                    namespace=namespace,
+                    tool=tool,
+                    arguments=params.get("arguments"),
+                    context=active.browser,
+                )
             output_text = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
             success = True
         except CodexBrowserToolError as exc:
@@ -1780,6 +1820,19 @@ class CodexAppServerManager:
                 tracker.usage,
                 source=tracker.usage_source,
             )
+            # last is one model request; total is cumulative across the thread.
+            # Repeated notifications for the same total must not be charged twice.
+            cumulative = normalized.get("session_total") or {}
+            identity = cumulative or normalized
+            signature = json.dumps([identity.get(key) for key in ("input_tokens", "prompt_tokens", "output_tokens", "completion_tokens", "total_tokens")])
+            if normalized:
+                segment = {**normalized, "billing_scope": "request" if cumulative else "codex_turn"}
+                existing = tracker.usage_signatures.get(signature)
+                if existing is None:
+                    tracker.usage_signatures[signature] = len(tracker.usage_segments)
+                    tracker.usage_segments.append(segment)
+                else:
+                    tracker.usage_segments[existing] = segment
             self._record_turn_event(
                 tracker,
                 "token_usage",
@@ -1788,6 +1841,8 @@ class CodexAppServerManager:
                     "completion_tokens": normalized.get("completion_tokens", 0),
                     "total_tokens": normalized.get("total_tokens", 0),
                 },
+                context_total_tokens=normalized.get("total_tokens") if normalized else None,
+                model_context_window=normalized.get("model_context_window"),
                 prompt_tokens=normalized.get("prompt_tokens", 0),
                 completion_tokens=normalized.get("completion_tokens", 0),
                 total_tokens=normalized.get("total_tokens", 0),
@@ -1927,6 +1982,10 @@ class CodexAppServerManager:
         *,
         thread_id: str,
         browser_context: BrowserToolContext,
+        history_enabled: bool = False,
+        history_request_id: str = "",
+        history_max_calls: int = 0,
+        history_max_bytes: int = 0,
     ) -> str:
         if not self.dynamic_tool_specs:
             return ""
@@ -1938,6 +1997,25 @@ class CodexAppServerManager:
                 token=token,
                 browser=browser_context,
             )
+            if history_enabled:
+                from app.history.tools import history_session_for
+                from app.history.files import prepare_files
+
+                def files_provider(store, chat):
+                    if not _artifact_request_dir_is_safe(browser_context.request_dir):
+                        raise CodexAppServerError("History request directory failed safety validation")
+                    result = prepare_files(store, chat, browser_context.request_dir)
+                    self._dynamic_tool_contexts[thread_id].history_exports.append(Path(result['directory']))
+                    result['directory'] = _as_runtime_path(Path(result['directory']), self.use_wsl)
+                    result['instructions'] = ('Use native shell: read README.md in this directory, then run python3 archive.py overview. '
+                                              'archive.sqlite3 contains all archived messages for this chat; use Python/SQL for complete analysis. '
+                                              'Print only selected evidence or aggregates. members.json contains current names and aliases. '
+                                              'These inputs are removed after this reply; save deliverable reports in the provided artifact output directory.')
+                    return result
+
+                self._dynamic_tool_contexts[thread_id].history = history_session_for(
+                    browser_context.chat_id, history_request_id, browser_context.request_id,
+                    max_calls=history_max_calls, max_bytes=history_max_bytes, files_provider=files_provider)
         return token
 
     def _bind_dynamic_tool_turn(self, thread_id: str, turn_id: str) -> None:
@@ -1958,6 +2036,14 @@ class CodexAppServerManager:
                 self._dynamic_tool_condition.notify_all()
         if active is None:
             return
+        for folder in active.history_exports:
+            try:
+                if (_artifact_request_dir_is_safe(active.browser.request_dir)
+                        and not _is_link_like(folder)
+                        and folder.parent.resolve(strict=True) == active.browser.request_dir.resolve(strict=True)):
+                    shutil.rmtree(folder)
+            except OSError:
+                logger.warning("Could not clean history working copy: %s", folder)
         scratch_root = active.browser.scratch_root
         request_dir = active.browser.request_dir
         try:
@@ -1985,6 +2071,8 @@ class CodexAppServerManager:
             "model_reasoning_effort": reasoning_effort,
             "web_search": web_search_mode,
             "approvals_reviewer": CODEX_APPROVALS_REVIEWER,
+            "features.memories": False,
+            "features.external_agent_memory_import": False,
         }
         if reasoning_summary != "inherit":
             config["model_reasoning_summary"] = reasoning_summary
@@ -2227,7 +2315,7 @@ class CodexAppServerManager:
                 role_name=role_name,
                 retry=retry,
                 max_turns=max(0, int(max_turns or 0)),
-                ephemeral=False,
+                ephemeral=bool(request.get("mabobot_fresh_context")),
             )
 
     def run(self, request: Dict[str, Any], *, profile_name: str = "batch") -> Dict[str, Any]:
@@ -2385,7 +2473,8 @@ class CodexAppServerManager:
         )
 
         runtime_profile = str(request.get("codex_runtime_profile") or "").strip()
-        state = None if ephemeral else self.state_store.get(chat_id)
+        state = self.state_store.get(chat_id)
+        incremental_context = bool(request.get("mabobot_incremental_context")) and not ephemeral
         access_signature = str(request.get("codex_access_signature") or "").strip()
         context_window_hint = _nonnegative_int(
             request.get(
@@ -2419,17 +2508,18 @@ class CodexAppServerManager:
             )
         delta = _plan_message_delta(
             messages,
-            state,
+            None if ephemeral else state,
             model=model,
             reasoning_effort=reasoning_effort,
             retry=retry,
-            rotate_tokens=effective_rotate_tokens,
+            rotate_tokens=0 if incremental_context else effective_rotate_tokens,
             max_turns=max_turns,
             runtime_profile=runtime_profile,
             access_signature=access_signature,
             dynamic_tool_signature=self.dynamic_tool_signature,
-            max_compactions=self.max_compactions,
+            max_compactions=0 if incremental_context else self.max_compactions,
             idle_rotate_seconds=self.idle_rotate_seconds,
+            incremental_context=incremental_context,
         )
         thread_id = str(state.get("thread_id") or "") if delta.resume and state else ""
         if thread_id:
@@ -2462,6 +2552,30 @@ class CodexAppServerManager:
                     "resume_failed",
                 )
                 thread_id = ""
+
+        archive_cursor = None
+        if incremental_context:
+            from app.history.tools import get_archive
+            from app.history.context import render_recent
+            from app.assistant.context_manager import ChatContextManager
+
+            archive_cursor, archive_rows, omitted = get_archive().context_snapshot(
+                chat_id, after=(state or {}).get("archive_cursor") if delta.resume else None
+            )
+            history_text = render_recent(archive_rows, ChatContextManager(), limit=None)
+            if omitted:
+                history_text = "新增/修订记录超过注入上限，以下仅为最近部分，需要时查完整档案。\n" + history_text
+            # Keep the current request, search context and attachments untouched.
+            # Replace only the rolling history block; the archive cursor never
+            # enters the model prompt or advances before successful completion.
+            delta.messages = [m for m in delta.messages if m.get("name") != "history_context"]
+            if archive_rows:
+                history = {"role": "user", "name": "history_context", "content": history_text}
+                position = next((i for i, m in enumerate(delta.messages) if m.get("role") not in {"system", "developer"}), len(delta.messages))
+                delta.messages.insert(position, history)
+            elif not delta.resume:
+                fallback_history = [m for m in messages if m.get("name") == "history_context"]
+                delta.messages = fallback_history + delta.messages
 
         previous_generation = int((state or {}).get("thread_generation") or 0)
         if previous_generation <= 0 and state and state.get("thread_id"):
@@ -2676,6 +2790,10 @@ class CodexAppServerManager:
                 dynamic_context_token = self._activate_dynamic_tool_context(
                     thread_id=thread_id,
                     browser_context=browser_context,
+                    history_enabled=bool(request.get("mabobot_history_enabled")),
+                    history_request_id=str(request.get("mabobot_history_request_id") or ""),
+                    history_max_calls=int(request.get("mabobot_history_max_calls") or 0),
+                    history_max_bytes=int(request.get("mabobot_history_max_bytes") or 0),
                 )
             turn_id, tracker = self._start_tracked_turn(
                 request_id=request_id,
@@ -2818,16 +2936,16 @@ class CodexAppServerManager:
                         "Codex App Server returned an empty response after same-profile retry"
                     )
 
-            usage = _merge_attempt_usage(
-                _normalize_app_server_usage(
-                    attempt_tracker.usage,
-                    source=(
-                        attempt_tracker.usage_source
-                        or "codex_app_server.thread/tokenUsage/updated"
-                    ),
-                )
-                for attempt_tracker in turn_trackers
-            )
+            usage_segments = []
+            for attempt_tracker in turn_trackers:
+                usage_segments.extend(attempt_tracker.usage_segments or [
+                    _normalize_app_server_usage(attempt_tracker.usage,
+                                                source=attempt_tracker.usage_source or "codex_app_server.turn")])
+            # Keep the latest model request independent of total billable usage.
+            final_context_usage = _normalize_app_server_usage(
+                turn_trackers[-1].usage, source="codex_app_server.latest_request"
+            ) if turn_trackers else {}
+            usage = _merge_attempt_usage(usage_segments)
             if not usage:
                 usage = estimate_codex_usage(
                     "\n\n".join(part for part in (prompt, recovery_prompt) if part),
@@ -2956,7 +3074,10 @@ class CodexAppServerManager:
                     else None
                 ),
                 "last_input_tokens": int(usage.get("prompt_tokens") or 0),
-                "thread_input_tokens": int(usage.get("prompt_tokens") or 0),
+                "thread_input_tokens": int(final_context_usage.get("prompt_tokens") or 0),
+                "context_total_tokens": final_context_usage.get("total_tokens"),
+                "configured_context_window": context_window_hint or None,
+                "auto_compact_token_limit": context_window_hint * 9 // 10 if context_window_hint else None,
                 "last_cached_input_tokens": int(prompt_details.get("cached_tokens") or 0),
                 "last_cache_miss_input_tokens": int(usage.get("cache_miss_input_tokens") or 0),
                 "last_completion_tokens": int(usage.get("completion_tokens") or 0),
@@ -3018,7 +3139,21 @@ class CodexAppServerManager:
                 "created_at": (state or {}).get("created_at") or now_iso,
                 "updated_at": now_iso,
             }
-            if not ephemeral:
+            if incremental_context:
+                state_payload.update({
+                    "context_policy": "incremental",
+                    "thread_reusable": True,
+                    "archive_cursor": archive_cursor,
+                    "incremental_system_fingerprints": [_message_fingerprint(m) for m in messages if m.get("role") in {"system", "developer"}],
+                    "incremental_input_fingerprints": [_message_fingerprint(m) for m in messages if m.get("role") not in {"system", "developer"}],
+                })
+            if request.get("mabobot_fresh_context"):
+                # Keep the last reply visible in the dashboard without making
+                # its thread resumable on the next reply.
+                state_payload["context_policy"] = "fresh"
+                state_payload["thread_reusable"] = False
+                self.state_store.put(chat_id, state_payload)
+            elif not ephemeral:
                 self.state_store.put(chat_id, state_payload)
             codex_job_manager.update(
                 request_id,
@@ -3077,9 +3212,18 @@ class CodexAppServerManager:
                     }
                 ],
                 "usage": usage,
+                "billing_usage_segments": usage_segments,
                 "attachments": attachments,
             }
         except Exception as exc:
+            if incremental_context:
+                self.invalidate_chat(chat_id, reason="incomplete_turn")
+            partial = []
+            for tracker in turn_trackers:
+                partial.extend(tracker.usage_segments or [_normalize_app_server_usage(tracker.usage)])
+            if any(partial):
+                exc.billing_response = {"model": model, "usage": _merge_attempt_usage(partial),
+                                        "billing_usage_segments": partial}
             codex_job_manager.update(request_id, error=str(exc))
             codex_job_manager.record_event(
                 request_id,
@@ -3089,6 +3233,12 @@ class CodexAppServerManager:
             raise
         finally:
             self._deactivate_dynamic_tool_context(thread_id, dynamic_context_token)
+            if ephemeral:
+                self._loaded_threads.pop(thread_id, None)
+                try:
+                    self._request("thread/unsubscribe", {"threadId": thread_id}, timeout=10)
+                except Exception:
+                    logger.debug("Could not unload completed ephemeral thread %s", thread_id, exc_info=True)
             if turn_ids:
                 with self._turn_lock:
                     for tracked_turn_id in turn_ids:

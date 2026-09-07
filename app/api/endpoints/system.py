@@ -242,11 +242,16 @@ async def readiness_check(request: Request) -> Dict[str, Any]:
 @router.get("/health/details")
 async def health_details(request: Request) -> Dict[str, Any]:
     readiness = await readiness_check(request)
+    return await asyncio.to_thread(_health_details_snapshot, readiness)
+
+
+def _health_details_snapshot(readiness: Dict[str, Any]) -> Dict[str, Any]:
+    """Health probes and disk/DB-backed summaries must not occupy the ASGI loop."""
     from app.services.backup_service import get_backup_service
     from app.services.plugin_runtime import get_plugin_runtime_registry
     from app.services.runtime_operations import get_runtime_operation_service
 
-    runtime_plugins = get_plugin_runtime_registry().snapshot()
+    runtime_plugins = get_plugin_runtime_registry().snapshot(include_storage=False)
     try:
         from app.services.llm_manager import get_llm_manager
 

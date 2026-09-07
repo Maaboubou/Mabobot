@@ -142,6 +142,22 @@ def get_db():
         db.close()
 
 
+def drop_legacy_memory_columns(bind=None):
+    """Remove configuration columns for the deleted generated-memory engine."""
+    active_engine = bind or engine
+    inspector = inspect(active_engine)
+    quote = active_engine.dialect.identifier_preparer.quote
+    removed = []
+    with active_engine.begin() as connection:
+        for table in ("user_permissions", "assistant_chat_policies"):
+            if inspector.has_table(table) and "memory_profile" in {
+                column["name"] for column in inspector.get_columns(table)
+            }:
+                connection.execute(text(f"ALTER TABLE {quote(table)} DROP COLUMN memory_profile"))
+                removed.append(table)
+    return removed
+
+
 def create_tables():
     """创建所有表"""
     # 导入所有模型以确保它们被注册
@@ -152,6 +168,7 @@ def create_tables():
     from . import assistant_policy
 
     Base.metadata.create_all(bind=engine)
+    drop_legacy_memory_columns()
     drop_legacy_knowledge_base_columns(engine)
     ensure_wechat_user_access_columns(engine)
     ensure_assistant_policy_columns(engine)

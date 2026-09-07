@@ -13,6 +13,12 @@ import os
 import ssl
 import time
 import threading
+import uuid
+from contextvars import ContextVar
+from importlib.metadata import version as package_version
+from app.services.llm_pricing import normalize_usage, price_usage, raw_usage, read, decimal
+
+_usage_call = ContextVar("llm_billing_call", default=None)
 from typing import List, Dict, Optional, Any
 from pathlib import Path
 from datetime import datetime
@@ -28,12 +34,6 @@ except ImportError:
     _requests = None
 
 from app.services.config_service import get_setting
-from app.assistant.memory_tasks import (
-    MEMORY_ROUTE_PROFILES,
-    default_memory_route_mappings,
-    migrate_memory_route_mappings,
-    resolve_memory_mapping,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +145,7 @@ def _is_google_only_tool(tool: dict) -> bool:
 
 class LLMManager:
     """统一大模型管理服务"""
-    
+
     def __init__(
         self,
         config_dir: str = "data",
@@ -161,8 +161,6 @@ class LLMManager:
             if telemetry_dir is not None
             else Path("data")
         )
-        self.stats_path = telemetry_root / "llm_stats.json"
-        self.daily_stats_path = telemetry_root / "llm_daily_stats.json"
         self.call_history_path = telemetry_root / "llm_call_history.jsonl"
         self.config = {"models": {}, "plugin_mappings": {}}
         self.session_stats = {}
@@ -181,8 +179,10 @@ class LLMManager:
         self._proxy_cache_dirty: bool = True          # True = 需要重新读 DB
 
         self.load_config()
-        self.load_stats()
-        self.load_daily_stats()
+        from app.services.llm_usage_service import LLMUsageService
+        self.usage_service = LLMUsageService(
+            telemetry_root / "llm_usage_v2.sqlite3",
+        )
         self.load_call_history()
 
         litellm.set_verbose = False
@@ -333,8 +333,8 @@ class LLMManager:
                 mtime = self.models_path.stat().st_mtime
                 if self._last_models_mtime is None or mtime > self._last_models_mtime:
                     modified = True
-            
-            # 检查映射配置 
+
+            # 检查映射配置
             if self.mappings_path.exists():
                 mtime = self.mappings_path.stat().st_mtime
                 if self._last_mappings_mtime is None or mtime > self._last_mappings_mtime:
@@ -379,7 +379,7 @@ class LLMManager:
                     self.config["models"] = legacy_data["models"]
                 if not self.mappings_path.exists() and "plugin_mappings" in legacy_data:
                     self.config["plugin_mappings"] = legacy_data["plugin_mappings"]
-                
+
                 migration_needed = True
             except Exception as e:
                 logger.error(f"❌ 迁移旧版配置失败: {e}")
@@ -518,72 +518,6 @@ class LLMManager:
             }
             modified = True
 
-        # Memory route profiles are independent from article summarization.
-        # That model choice is only a first-install default.
-        article_summary_mapping = (
-            self.config.get("plugin_mappings", {})
-            .get("summary_plus", {})
-            .get("summary", {})
-        )
-        default_memory_primary = (
-            article_summary_mapping.get("primary")
-            or "gemini-flash"
-        )
-        default_memory_fallback = list(
-            article_summary_mapping.get("fallback")
-            or ["deepseek"]
-        )
-        preferred_memory_primary = (
-            "codex-memory"
-            if "codex-memory" in self.config.get("models", {})
-            else default_memory_primary
-        )
-        preferred_memory_high = (
-            "codex-memory-high"
-            if "codex-memory-high" in self.config.get("models", {})
-            else preferred_memory_primary
-        )
-        preferred_memory_fallback = (
-            ["deepseek"]
-            if (
-                preferred_memory_primary == "codex-memory"
-                and "deepseek" in self.config.get("models", {})
-            )
-            else list(default_memory_fallback)
-        )
-        memory_dedup_primary = (
-            "deepseek-followup"
-            if "deepseek-followup" in self.config.get("models", {})
-            else default_memory_primary
-        )
-        memory_dedup_fallback = (
-            [default_memory_primary]
-            if default_memory_primary != memory_dedup_primary
-            else list(default_memory_fallback)
-        )
-        memory_defaults = default_memory_route_mappings(
-            generate_primary=preferred_memory_primary,
-            review_primary=memory_dedup_primary,
-            synthesize_primary=preferred_memory_high,
-            generate_fallback=list(preferred_memory_fallback),
-            review_fallback=list(memory_dedup_fallback),
-            synthesize_fallback=list(preferred_memory_fallback),
-        )
-        if migrate_memory_route_mappings(assistant_mappings, memory_defaults):
-            modified = True
-        for call_type in MEMORY_ROUTE_PROFILES:
-            current = assistant_mappings[call_type]
-            primary = str(current.get("primary") or "").strip()
-            fallback = []
-            for model_id in current.get("fallback") or []:
-                normalized = str(model_id or "").strip()
-                if normalized and normalized != primary and normalized not in fallback:
-                    fallback.append(normalized)
-            if fallback != list(current.get("fallback") or []):
-                current["fallback"] = fallback
-                modified = True
-            current.setdefault("override_params", {})
-
         if "summary_plus" in self.config.get("plugin_mappings", {}):
             summary_mappings = self.config["plugin_mappings"]["summary_plus"]
             if "bilibili_mindmap" not in summary_mappings:
@@ -630,7 +564,7 @@ class LLMManager:
             atomic_write(self.mappings_path, mappings)
             self._last_models_mtime = self.models_path.stat().st_mtime
             self._last_mappings_mtime = self.mappings_path.stat().st_mtime
-            
+
         logger.info(f"💾 配置已保存到 {self.models_path} 和 {self.mappings_path}")
 
     def get_model_name(self, plugin_name: str, call_type: str) -> str:
@@ -834,7 +768,7 @@ class LLMManager:
         # ── 响应格式与额外参数 ──
         # 优先级：extra_kwargs > model_cfg
         # 关键修复：确保 extra_body 永远是字典，且 response_format 只有在非 None 时才设置
-        
+
         # 1. response_format
         if extra_kwargs and "response_format" in extra_kwargs:
             val = extra_kwargs["response_format"]
@@ -848,7 +782,7 @@ class LLMManager:
             params["extra_body"] = copy.deepcopy(extra_kwargs["extra_body"]) or {}
         else:
             params["extra_body"] = copy.deepcopy(model_cfg.get("extra_body")) or {}
-        
+
         if params["extra_body"] is None:
             params["extra_body"] = {}
 
@@ -1007,7 +941,27 @@ class LLMManager:
 
     # ─────────────────────────── 主调用接口 ──────────────────────────
 
-    def call(
+    def call(self, plugin_name: str, call_type: str, messages: List[Dict], **kwargs) -> str:
+        if plugin_name in {"assistant", "builtin_chatbot"} and str(call_type).startswith("memory_"):
+            raise RuntimeError("Generated chat memory is retired; no model call was made")
+        started = time.monotonic()
+        context = {"id": uuid.uuid4().hex, "plugin": plugin_name, "task": call_type, "attempts": 0,
+                   "metadata": {"chat_name": kwargs.get("_mabobot_chat_name") or kwargs.get("_mabobot_chat_id"),
+                                "user_id": kwargs.get("_mabobot_user_id"), "chat_type": kwargs.get("_mabobot_chat_type"),
+                                "usage_scope": kwargs.get("_mabobot_usage_scope")}}
+        token = _usage_call.set(context)
+        try:
+            return self._call_impl(plugin_name, call_type, messages, **kwargs)
+        except Exception as exc:
+            if not context["attempts"]:
+                mapping = getattr(self, "config", {}).get("plugin_mappings", {}).get(plugin_name, {}).get(call_type, {})
+                self._record_usage(plugin_name, call_type, str(mapping.get("primary") or "unknown"),
+                                   None, time.monotonic() - started, success=False, metadata=context["metadata"], error=str(exc))
+            raise
+        finally:
+            _usage_call.reset(token)
+
+    def _call_impl(
         self,
         plugin_name: str,
         call_type: str,
@@ -1064,7 +1018,6 @@ class LLMManager:
         history_chat_name   = str(
             kwargs.get("_mabobot_chat_name") or codex_chat_id
         ).strip()
-        memory_trace        = kwargs.get("_mabobot_memory_trace")
         history_mode        = str(
             kwargs.get("_mabobot_history_mode") or "full"
         ).strip().lower()
@@ -1076,17 +1029,10 @@ class LLMManager:
         )
         history_metadata = {
             "chat_name": history_chat_name,
+            "user_id": kwargs.get("_mabobot_user_id"),
+            "chat_type": kwargs.get("_mabobot_chat_type"),
+            "usage_scope": kwargs.get("_mabobot_usage_scope"),
             "role_name": codex_role_name,
-            "trace_id": (
-                str(memory_trace.get("trace_id") or "")
-                if isinstance(memory_trace, dict)
-                else ""
-            ),
-            "memory_trace": (
-                copy.deepcopy(memory_trace)
-                if isinstance(memory_trace, dict)
-                else None
-            ),
             "history_mode": history_mode,
             "input_file_count": len(input_files),
             "_usage_capture": usage_capture,
@@ -1125,8 +1071,10 @@ class LLMManager:
             "_mabobot_disable_model_web_search",
             "_mabobot_chat_id",
             "_mabobot_chat_name",
+            "_mabobot_user_id",
+            "_mabobot_chat_type",
+            "_mabobot_usage_scope",
             "_mabobot_role_name",
-            "_mabobot_memory_trace",
             "_mabobot_history_mode",
             "_mabobot_usage_capture",
             "_mabobot_codex_output_schema",
@@ -1190,7 +1138,8 @@ class LLMManager:
                     for entry in fallback_entries
                 )
                 use_litellm_native_fallbacks = (
-                    not self._is_local_codex_model(model_config)
+                    not getattr(self, "usage_service", None)
+                    and not self._is_local_codex_model(model_config)
                     and not has_local_codex_fallback
                 )
                 if (
@@ -1221,7 +1170,7 @@ class LLMManager:
             f"{primary_model_id} ({model_config['model']}) [timeout={timeout_label}]"
         )
 
-        def _do_call(params: dict) -> tuple:
+        def _do_call(params: dict, billing_config=None) -> tuple:
             """
             单次 litellm.completion() 调用。
             深拷贝 params 防止 LiteLLM 的 fallback 机制污染原始参数字典。
@@ -1252,7 +1201,7 @@ class LLMManager:
                         safe_params["messages"] = self._strip_images_from_messages(
                             safe_params["messages"]
                         )
-                
+
                 # 处理 fallback 模型
                 if "fallbacks" in safe_params and isinstance(safe_params["fallbacks"], list):
                     for fb in safe_params["fallbacks"]:
@@ -1262,11 +1211,11 @@ class LLMManager:
                             fb_supports_vision = fb_configured_supports_vision or litellm.supports_vision(fb_model) or "grok" in fb_model.lower()
                         except Exception:
                             fb_supports_vision = fb_configured_supports_vision or "grok" in fb_model.lower()
-                        
+
                         if "perplexity/" in fb_model or not fb_supports_vision:
                             if "messages" in fb and fb["messages"]:
                                 fb["messages"] = self._strip_images_from_messages(fb["messages"])
-                        
+
                         # 特殊处理：Grok 视觉格式转换 (自建反向 Grok 兼容性)
                         if "grok" in fb_model.lower():
                              if "messages" in fb and fb["messages"]:
@@ -1279,7 +1228,7 @@ class LLMManager:
                         safe_params["messages"]
                     )
 
-            resp = litellm.completion(**safe_params)
+            resp = self._usage_completion(_billing_config=billing_config, **safe_params)
             return resp, time.time() - t0
 
         def _try_single_params(
@@ -1292,7 +1241,7 @@ class LLMManager:
 
             for attempt in range(max_empty_retries):
                 try:
-                    response, response_time = _do_call(params)
+                    response, response_time = _do_call(params, active_model_config)
                 except Exception as direct_exc:
                     proxy_url = self._get_proxy_url()
                     if proxy_url and self._is_network_error(direct_exc):
@@ -1300,7 +1249,7 @@ class LLMManager:
                             f"⚠️ 直连失败 ({type(direct_exc).__name__}: {str(direct_exc)[:80]})，"
                             "代理已通过环境变量配置（地址已隐藏），重试中..."
                         )
-                        response, response_time = _do_call(params)
+                        response, response_time = _do_call(params, active_model_config)
                         logger.info(f"✅ 代理重试成功 ({response_time:.2f}s)")
                     else:
                         raise
@@ -1321,7 +1270,7 @@ class LLMManager:
                         primary_params=params,
                         call_timeout=params.get("timeout"),
                     )
-                
+
                 if self._is_retriable_content_failure(result):
                     actual_model = self._resolve_actual_model(response, active_model_config)
                     logger.warning(
@@ -1332,10 +1281,10 @@ class LLMManager:
 
                 if result:
                     return response, response_time, result
-                
+
                 # 记录最后一次结果供兜底返回
                 last_resp, last_time, last_result = response, response_time, result
-                
+
                 if attempt < max_empty_retries - 1:
                     actual_model = self._resolve_actual_model(response, active_model_config)
                     logger.warning(
@@ -1343,7 +1292,7 @@ class LLMManager:
                         f"正在进行第 {attempt + 2}/{max_empty_retries} 次重试..."
                     )
                     time.sleep(1)  # 增加 1 秒延迟，避免过于频繁地请求不稳定服务器
-            
+
             return last_resp, last_time, last_result
 
         def _complete_fallback_success(
@@ -1369,10 +1318,10 @@ class LLMManager:
             self._record_stats(
                 plugin_name,
                 call_type,
-                primary_model_id,
+                entry["model_id"],
                 response,
                 response_time,
-                token_usage=token_usage,
+                token_usage=token_usage, metadata=history_metadata,
             )
             self._record_call_history(
                 plugin_name,
@@ -1415,7 +1364,7 @@ class LLMManager:
                 )
                 try:
                     if self._is_local_codex_model(candidate_config):
-                        response, response_time, result = self._call_local_codex(
+                        response, response_time, result = self._usage_local_codex(
                             model_config=candidate_config,
                             messages=messages,
                             params=candidate_params,
@@ -1460,9 +1409,16 @@ class LLMManager:
                     )
             return None
 
+        if (getattr(self, "usage_service", None) and fallback_entries
+                and self._model_circuit_open(str(primary_params.get("model") or primary_model_id))):
+            fallback_result = _attempt_managed_fallbacks(fallback_entries)
+            if fallback_result is not None:
+                return fallback_result
+            raise RuntimeError("Primary model circuit is open and all fallback models failed")
+
         if self._is_local_codex_model(model_config):
             try:
-                response, response_time, result = self._call_local_codex(
+                response, response_time, result = self._usage_local_codex(
                     model_config=model_config,
                     messages=messages,
                     params=primary_params,
@@ -1494,7 +1450,7 @@ class LLMManager:
                     primary_model_id,
                     response,
                     response_time,
-                    token_usage=token_usage,
+                    token_usage=token_usage, metadata=history_metadata,
                 )
                 self._record_call_history(
                     plugin_name,
@@ -1547,17 +1503,17 @@ class LLMManager:
             except Exception:
                 # LiteLLM 不认识项目内部的 local_codex_cli provider。
                 # 只要链上含本地 Codex，就由应用层按配置顺序调度全部 fallback。
-                if has_local_codex_fallback:
+                if has_local_codex_fallback or getattr(self, "usage_service", None):
                     fallback_result = _attempt_managed_fallbacks(fallback_entries)
                     if fallback_result is not None:
                         return fallback_result
                 raise
-            
+
             # 2. 如果结果依然为空，说明 API 成功但没有内容或返回了可重试错误文本，手动执行一次 fallback
             if not result:
                 actual_model = self._resolve_actual_model(response, model_config)
                 logger.warning(f"⚠️ LLM 成功返回但内容不可用 [{actual_model}]，准备执行手动 fallback...")
-                
+
                 fallback_result = _attempt_managed_fallbacks(fallback_entries)
                 if fallback_result is not None:
                     return fallback_result
@@ -1580,7 +1536,7 @@ class LLMManager:
             token_usage = self._extract_token_usage(response)
             self._record_stats(
                 plugin_name, call_type, primary_model_id,
-                response, response_time, token_usage=token_usage
+                response, response_time, token_usage=token_usage, metadata=history_metadata,
             )
 
             # 记录调用历史（请求+响应，最多若干条/来源）
@@ -1683,7 +1639,7 @@ class LLMManager:
             # 非流式调用会在 _do_call 中清理，流式补救也必须遵循同一边界。
             self._strip_internal_provider_params(stream_params)
 
-            chunks = litellm.completion(**stream_params)
+            chunks = self._usage_completion(_billing_config=model_config, **stream_params)
             parts = []
             for chunk in chunks:
                 if not getattr(chunk, "choices", None):
@@ -1778,11 +1734,11 @@ class LLMManager:
         )
 
         try:
-            resp = litellm.completion(**kimi_params)
+            resp = self._usage_completion(**kimi_params)
         except Exception as exc1:
             logger.warning(f"⚠️ Kimi 第二阶段失败 ({type(exc1).__name__}: {str(exc1)[:80]})，重试一次...")
             try:
-                resp = litellm.completion(**kimi_params)
+                resp = self._usage_completion(**kimi_params)
             except Exception as exc2:
                 logger.error(f"❌ Kimi 第二阶段彻底失败，降级为空结果: {exc2}")
                 # 构造最小化的合法 ModelResponse 避免上层崩溃
@@ -1854,12 +1810,12 @@ class LLMManager:
     def _transform_messages_for_grok(messages: List[Dict]) -> List[Dict]:
         """
         针对自建 Grok 模型转换消息格式。
-        将 {"type": "image_url", "image_url": {"url": "data:..."}} 
+        将 {"type": "image_url", "image_url": {"url": "data:..."}}
         转换为 {"type": "file", "file": {"file_data": "data:..."}}
         """
         if not messages:
             return messages
-            
+
         new_messages = copy.deepcopy(messages)
         transformed_count = 0
         for msg in new_messages:
@@ -1873,7 +1829,7 @@ class LLMManager:
                             item["file"] = {"file_data": img_url}
                             item.pop("image_url", None)
                             transformed_count += 1
-        
+
         if transformed_count > 0:
             logger.info(f"✨ Transformed {transformed_count} vision items for Grok format")
         return new_messages
@@ -1901,10 +1857,6 @@ class LLMManager:
     def _get_mapping(self, plugin_name: str, call_type: str) -> Optional[Dict]:
         """获取插件调用映射"""
         plugin_mappings = self.config.get("plugin_mappings", {}).get(plugin_name, {})
-        if plugin_name in {"assistant", "builtin_chatbot"}:
-            memory_mapping = resolve_memory_mapping(plugin_mappings, call_type)
-            if memory_mapping is not None:
-                return memory_mapping
         return plugin_mappings.get(call_type)
 
     def _get_proxy_url(self) -> Optional[str]:
@@ -2098,7 +2050,7 @@ class LLMManager:
         runtime = get_agent_runtime()
         response = runtime.run(
             payload,
-            profile_name="memory" if codex_output_schema else "batch",
+            profile_name="batch",
             allow_exec_fallback=codex_exec_fallback,
         )
         response_time = time.time() - t0
@@ -2353,6 +2305,7 @@ class LLMManager:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Record first-class Codex replies without routing them through LiteLLM."""
+        metadata = {**(metadata or {}), "billing_codex": True}
         safe_response = response if isinstance(response, dict) else {}
         token_usage = self._extract_token_usage(safe_response)
         response_attachments = self._extract_attachments_from_response(safe_response)
@@ -2364,10 +2317,12 @@ class LLMManager:
                 str(model_id or "unknown"),
                 safe_response,
                 max(0.0, float(response_time or 0.0)),
-                token_usage=token_usage,
+                token_usage=token_usage, metadata=metadata,
             )
         else:
             self._record_error("assistant", "chat", str(model_id or "unknown"))
+            self._record_usage("assistant", "chat", str(model_id or "unknown"),
+                               safe_response, response_time, success=False, metadata=metadata, error=error)
         self._record_call_history(
             "assistant",
             "chat",
@@ -2427,11 +2382,6 @@ class LLMManager:
             "chat_name": str(safe_metadata.get("chat_name") or ""),
             "role_name": str(safe_metadata.get("role_name") or ""),
             "trace_id": str(safe_metadata.get("trace_id") or ""),
-            "memory_trace": (
-                safe_metadata.get("memory_trace")
-                if isinstance(safe_metadata.get("memory_trace"), dict)
-                else None
-            ),
         })
         if isinstance(usage_capture, list):
             usage_capture.append(
@@ -2514,7 +2464,6 @@ class LLMManager:
             "response_text",
             "response_attachments",
             "reasoning_text",
-            "memory_trace",
             "error",
         ):
             if key in sanitized:
@@ -2554,22 +2503,6 @@ class LLMManager:
             or str(item.get("mime_type") or "").lower().startswith("image/")
         )
         reasoning_text = entry.get("reasoning_text") or ""
-        memory_trace = (
-            entry.get("memory_trace")
-            if isinstance(entry.get("memory_trace"), dict)
-            else None
-        )
-        has_memory_trace = bool(
-            memory_trace
-            and (
-                memory_trace.get("events")
-                or memory_trace.get("people")
-                or (
-                    isinstance(memory_trace.get("stage"), dict)
-                    and memory_trace["stage"].get("included")
-                )
-            )
-        )
         return {
             "index": index,
             "timestamp": entry.get("timestamp"),
@@ -2593,14 +2526,6 @@ class LLMManager:
             "chat_name": entry.get("chat_name") or "",
             "role_name": entry.get("role_name") or "",
             "trace_id": entry.get("trace_id") or "",
-            "has_memory_trace": has_memory_trace,
-            "memory_event_count": len(memory_trace.get("events") or []) if memory_trace else 0,
-            "memory_people_count": len(memory_trace.get("people") or []) if memory_trace else 0,
-            "memory_has_stage": bool(
-                memory_trace
-                and isinstance(memory_trace.get("stage"), dict)
-                and memory_trace["stage"].get("included")
-            ),
             "response_preview": response_text[:240],
             "error_preview": (entry.get("error") or "")[:240],
         }
@@ -2670,7 +2595,7 @@ class LLMManager:
     @staticmethod
     def _empty_stats_entry() -> dict:
         return {
-            "count": 0, "total_tokens": 0, "total_cost": 0.0,
+            "count": 0, "total_tokens": 0,
             "model_usage": {}, "last_call": None,
             "response_times": [], "error_count": 0,
             "cache_hit_tokens": 0, "cache_miss_tokens": 0,
@@ -2714,88 +2639,140 @@ class LLMManager:
             return obj.get(key, default) or default
         return getattr(obj, key, default) or default
 
-    def _calculate_configured_cost(self, model_id: str, response) -> float:
-        """在 LiteLLM 未返回 response_cost 时，按本地模型配置估算费用。"""
-        if not response or not getattr(response, "usage", None):
-            return 0.0
+    def _usage_connection(self, params):
+        configs = getattr(self, "config", {}).get("models", {})
+        model = str(params.get("model") or "unknown")
+        matches = [(key, cfg) for key, cfg in configs.items()
+                   if str(cfg.get("model")) == model
+                   and str(self._resolve_env(cfg.get("api_base")) or "") == str(params.get("api_base") or "")]
+        key, config = matches[0] if len(matches) == 1 else (model, {})
+        # Effective parameters, never credentials, are used for the price snapshot.
+        config = {**config, **{k: params[k] for k in ("model", "api_base", "custom_llm_provider", "service_tier") if k in params}}
+        return key, copy.deepcopy(config)
 
-        model_config = self.config.get("models", {}).get(model_id, {})
-        pricing = self._resolve_cost_pricing(model_config)
-        input_cost = pricing.get("input_cost_per_token")
-        output_cost = pricing.get("output_cost_per_token")
-        if input_cost is None and output_cost is None:
-            return 0.0
+    def _usage_completion(self, _billing_config=None, **params):
+        context = _usage_call.get()
+        if not context or not getattr(self, "usage_service", None):
+            return litellm.completion(**params)
+        model_id, config = self._usage_connection(params)
+        if _billing_config is not None:
+            config = copy.deepcopy(_billing_config)
+            config['api_base'] = params.get('api_base')
+            config['service_tier'] = params.get('service_tier')
+            model_id = next((key for key, value in self.config.get('models', {}).items() if value == _billing_config), model_id)
+        # Make SDK retries observable; network/429/5xx retries retain the configured limit.
+        retries = int(params.get("max_retries", params.get("num_retries", 2)) or 0)
+        params = {**params, "max_retries": 0, "num_retries": 0}
+        params.pop("fallbacks", None)
+        if params.get("stream"):
+            params["stream_options"] = {**(params.get("stream_options") or {}), "include_usage": True}
+        for retry in range(retries + 1):
+            started, at = time.monotonic(), datetime.now().astimezone()
+            context["attempts"] += 1
+            try:
+                response = litellm.completion(**params)
+            except Exception as exc:
+                self._record_usage(context["plugin"], context["task"], model_id, getattr(exc, "response", None),
+                                   time.monotonic() - started, success=False, metadata=context["metadata"], config=config, at=at, error=str(exc))
+                code = getattr(exc, "status_code", None)
+                if retry < retries and (self._is_network_error(exc) or code in {408, 409, 429} or isinstance(code, int) and code >= 500):
+                    time.sleep(min(2 ** retry, 8))
+                    continue
+                raise
+            if params.get("stream"):
+                def tracked_stream():
+                    last = None
+                    ok = False
+                    try:
+                        for chunk in response:
+                            if read(chunk, "usage") is not None:
+                                last = chunk
+                            yield chunk
+                        ok = True
+                    finally:
+                        self._record_usage(context["plugin"], context["task"], model_id, last,
+                                           time.monotonic() - started, success=ok, metadata=context["metadata"], config=config, at=at)
+                return tracked_stream()
+            self._record_usage(context["plugin"], context["task"], model_id, response,
+                               time.monotonic() - started, success=True, metadata=context["metadata"], config=config, at=at)
+            return response
 
-        usage = response.usage
-        prompt_tokens = self._usage_value(usage, "prompt_tokens")
-        completion_tokens = self._usage_value(usage, "completion_tokens")
+    def _usage_local_codex(self, **kwargs):
+        context = _usage_call.get()
+        started, at = time.monotonic(), datetime.now().astimezone()
+        config = copy.deepcopy(kwargs["model_config"])
+        config["model"] = kwargs["params"].get("model") or config.get("model")
+        if context:
+            context["attempts"] += 1
+        response, ok, failure = None, False, ""
+        try:
+            response, duration, result = self._call_local_codex(**kwargs)
+            ok = bool(result)
+            return response, duration, result
+        except Exception as exc:
+            response = getattr(exc, "billing_response", None)
+            failure = str(exc)
+            raise
+        finally:
+            if context:
+                self._record_usage(context["plugin"], context["task"], str(config.get("model")), response,
+                                   time.monotonic() - started, success=ok,
+                                   metadata={**context["metadata"], "billing_codex": True}, config=config, at=at, error=failure)
 
-        # 兼容不同提供商/LiteLLM 版本可能使用的字段名。
-        if not prompt_tokens:
-            prompt_tokens = self._usage_value(usage, "input_tokens")
-        if not completion_tokens:
-            completion_tokens = self._usage_value(usage, "output_tokens")
-
-        details = self._usage_value(usage, "prompt_tokens_details", {}) or {}
-        cached_tokens = (
-            self._usage_value(details, "cached_tokens")
-            or self._usage_value(usage, "cached_tokens")
-            or self._usage_value(usage, "cache_read_input_tokens")
-            or self._usage_value(usage, "prompt_cache_hit_tokens")
-        )
-        cache_miss_tokens = self._usage_value(usage, "prompt_cache_miss_tokens")
-        if cache_miss_tokens:
-            non_cached_prompt_tokens = cache_miss_tokens
-        else:
-            non_cached_prompt_tokens = max(prompt_tokens - cached_tokens, 0)
-
-        cost = 0.0
-        if input_cost is not None:
-            cost += non_cached_prompt_tokens * float(input_cost)
-        cache_read_cost = pricing.get("cache_read_input_token_cost")
-        if cache_read_cost is not None and cached_tokens:
-            cost += cached_tokens * float(cache_read_cost)
-        elif input_cost is not None and cached_tokens:
-            cost += cached_tokens * float(input_cost)
-        if output_cost is not None:
-            cost += completion_tokens * float(output_cost)
-        return cost
-
-    def _resolve_cost_pricing(self, model_config: dict) -> dict:
-        pricing = {
-            "input_cost_per_token": model_config.get("input_cost_per_token"),
-            "output_cost_per_token": model_config.get("output_cost_per_token"),
-            "cache_read_input_token_cost": model_config.get("cache_read_input_token_cost"),
-        }
-        if any(value is not None for value in pricing.values()):
-            return pricing
-
-        model_name = str(model_config.get("model", "")).lower()
-        provider = str(model_config.get("custom_llm_provider") or model_config.get("provider") or "").lower()
-        api_base = str(self._resolve_env(model_config.get("api_base", "")) or "").lower()
-        is_official_deepseek = (
-            model_name.startswith("deepseek/")
-            and (not provider or provider == "deepseek")
-            and ("openrouter" not in api_base)
-        )
-        if not is_official_deepseek:
-            return pricing
-
-        # DeepSeek 官方价格，单位：CNY/token（文档按 CNY/百万 tokens 标价）。
-        # deepseek-chat / deepseek-reasoner 是 deepseek-v4-flash 的兼容模型名。
-        if "v4-pro" in model_name:
-            return {
-                "input_cost_per_token": 3 / 1_000_000,
-                "output_cost_per_token": 6 / 1_000_000,
-                "cache_read_input_token_cost": 0.025 / 1_000_000,
-            }
-        if "v4-flash" in model_name or "deepseek-chat" in model_name or "deepseek-reasoner" in model_name:
-            return {
-                "input_cost_per_token": 1 / 1_000_000,
-                "output_cost_per_token": 2 / 1_000_000,
-                "cache_read_input_token_cost": 0.02 / 1_000_000,
-            }
-        return pricing
+    def _record_usage(self, plugin_name, call_type, model_id, response, duration, *, success, metadata=None, config=None, at=None, error=""):
+        """Best-effort accounting must never turn a successful reply into a failure."""
+        service = getattr(self, "usage_service", None)
+        if service is None or call_type == "reply_latency":
+            return
+        try:
+            from app.services.llm_usage_context import resolve_usage_subject
+            at = at or datetime.now().astimezone()
+            config = copy.deepcopy(config if config is not None else self.config.get("models", {}).get(model_id, {}))
+            if config.get("api_base"):
+                config["api_base"] = self._resolve_env(config["api_base"])
+            actual = str(read(response, "model") or config.get("model") or model_id)
+            if read(response, "service_tier"):
+                config["service_tier"] = read(response, "service_tier")
+            provider = str(config.get("custom_llm_provider") or config.get("provider") or "")
+            codex = bool((metadata or {}).get("billing_codex")) or self._is_local_codex_model(config)
+            segments = read(response, "billing_usage_segments")
+            if codex and segments and any(segments):
+                shared = {**(metadata or {}), "billing_logical_id": uuid.uuid4().hex, "billing_scope": "codex_turn"}
+                for index, segment in enumerate(segments):
+                    self._record_usage(plugin_name, call_type, model_id,
+                                       {"model": actual, "usage": segment, "id": f"{read(response, 'id', '')}:{index}"},
+                                       duration if index == len(segments) - 1 else None,
+                                       success=success, metadata={**shared, "billing_scope": segment.get("billing_scope", "codex_turn")}, config=config, at=at)
+                return
+            raw = read(response, "usage")
+            usage = normalize_usage(raw, provider)
+            pricing = price_usage(config, actual, usage, codex=codex, at=at,
+                                  catalog=litellm.model_cost, catalog_version=package_version("litellm"))
+            if codex and (metadata or {}).get("billing_scope") != "request" and usage.get("prompt_tokens", 0) > 272_000:
+                # A turn total may contain many short requests; it cannot determine a per-request tier.
+                pricing.update(amount=None, status="unknown", reason="context_tier_unavailable")
+            # Explicit provider monetary metadata is distinct from LiteLLM's calculated response_cost.
+            explicit_cost = decimal(read(raw, "cost"))
+            explicit_currency = read(raw, "cost_currency") or read(raw, "currency")
+            if not codex and explicit_cost is not None and explicit_currency:
+                pricing = {"amount": str(explicit_cost), "currency": str(explicit_currency).upper(),
+                           "status": "reported", "snapshot": {"source": "provider_response", "model": actual}}
+            if not success and codex and not raw and any(marker in str(error).lower() for marker in (
+                "you've hit your usage limit", "insufficient_quota", "quota_exceeded",
+            )):
+                pricing = {"amount": "0", "currency": "USD", "status": "rejected",
+                           "reason": "quota_rejected", "snapshot": {"source": "quota_rejection", "model": actual}}
+            context = _usage_call.get()
+            from urllib.parse import urlsplit
+            base = urlsplit(str(config.get("api_base") or ""))
+            connection = {"id": model_id, "provider": provider, "host": base.hostname or "", "codex": codex}
+            service.record(task=f"{plugin_name}.{call_type}", subject=resolve_usage_subject(metadata), model=actual,
+                           success=success, usage=usage, duration=duration, pricing=pricing, raw=raw_usage(raw),
+                           connection=connection, logical_id=context["id"] if context else (metadata or {}).get("billing_logical_id"),
+                           provider_request_id=str(read(response, "id") or "")[:200],
+                           scope=(metadata or {}).get("billing_scope") or ("codex_turn" if codex else "request"))
+        except Exception:
+            logger.exception("Failed to record LLM request usage")
 
     def _record_stats(
         self,
@@ -2805,6 +2782,7 @@ class LLMManager:
         response,
         response_time: float = 0.0,
         token_usage: dict = None,
+        metadata: dict = None,
     ):
         """记录调用统计"""
         with self._stats_lock:
@@ -2816,6 +2794,10 @@ class LLMManager:
                 response_time,
                 token_usage,
             )
+
+        if not _usage_call.get():
+            self._record_usage(plugin_name, call_type, model_id, response, response_time,
+                               success=True, metadata=metadata)
 
     def _record_stats_unlocked(
         self,
@@ -2831,20 +2813,12 @@ class LLMManager:
         for stats_dict in [self.session_stats, self.total_stats, today_stats]:
             if key not in stats_dict:
                 stats_dict[key] = self._empty_stats_entry()
-            # 向后兼容（旧数据可能缺字段）
-            for fk, fv in self._empty_stats_entry().items():
-                stats_dict[key].setdefault(fk, fv)
 
         tokens = 0
-        cost = 0.0
         if isinstance(response, dict) and response.get("usage"):
             tokens = int(self._usage_value(response.get("usage"), "total_tokens") or 0)
         elif not isinstance(response, dict) and hasattr(response, "usage") and response.usage:
             tokens = getattr(response.usage, "total_tokens", 0) or 0
-        if not isinstance(response, dict) and hasattr(response, "_hidden_params") and "response_cost" in response._hidden_params:
-            cost = response._hidden_params.get("response_cost") or 0.0
-        if cost == 0.0:
-            cost = self._calculate_configured_cost(model_id, response)
         usage = token_usage or self._extract_token_usage(response)
         cached_tokens = int(usage.get("cached_tokens", 0) or 0)
         cache_miss_tokens = int(usage.get("cache_miss_tokens", 0) or 0)
@@ -2853,7 +2827,6 @@ class LLMManager:
         for stats_dict in [self.session_stats, self.total_stats, today_stats]:
             stats_dict[key]["count"] += 1
             stats_dict[key]["total_tokens"] += tokens
-            stats_dict[key]["total_cost"] += cost
             stats_dict[key]["last_call"] = timestamp
             if cached_tokens or cache_miss_tokens:
                 stats_dict[key]["cache_hit_tokens"] += cached_tokens
@@ -2906,43 +2879,9 @@ class LLMManager:
 
     # ─────────────────────── 持久化统计 ───────────────────────
 
-    def load_stats(self):
-        """加载历史统计数据"""
-        if self.stats_path.exists():
-            try:
-                with open(self.stats_path, "r", encoding="utf-8") as f:
-                    self.total_stats = json.load(f)
-                logger.info(f"📊 已加载历史统计: {len(self.total_stats)} 项")
-            except Exception as e:
-                logger.error(f"❌ 加载统计数据失败: {e}")
-                self.total_stats = {}
-        else:
-            logger.info("📊 未找到历史统计文件，从空白开始")
-            self.total_stats = {}
-
-    def load_daily_stats(self):
-        """加载按自然日聚合的统计数据"""
-        if self.daily_stats_path.exists():
-            try:
-                with open(self.daily_stats_path, "r", encoding="utf-8") as f:
-                    self.daily_stats = json.load(f)
-                logger.info(f"📊 已加载每日统计: {len(self.daily_stats)} 天")
-            except Exception as e:
-                logger.error(f"❌ 加载每日统计失败: {e}")
-                self.daily_stats = {}
-        else:
-            self.daily_stats = {}
-
     def save_stats(self):
-        """保存统计数据到文件"""
-        try:
-            self.stats_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.stats_path, "w", encoding="utf-8") as f:
-                json.dump(self.total_stats, f, indent=2, ensure_ascii=False)
-            with open(self.daily_stats_path, "w", encoding="utf-8") as f:
-                json.dump(self.daily_stats, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            logger.error(f"❌ 保存统计数据失败: {e}")
+        """Health/latency counters are ephemeral; durable usage lives in the request ledger."""
+        return
 
     def get_stats(self) -> Dict:
         """获取统计数据"""
@@ -3141,21 +3080,6 @@ class LLMManager:
                             "timeout": 15,
                             "response_format": {"type": "json_object"},
                         },
-                    },
-                    "memory_generate": {
-                        "primary": "gemini-flash",
-                        "fallback": ["deepseek"],
-                        "override_params": {},
-                    },
-                    "memory_review": {
-                        "primary": "deepseek-followup",
-                        "fallback": ["gemini-flash"],
-                        "override_params": {},
-                    },
-                    "memory_synthesize": {
-                        "primary": "gemini-flash",
-                        "fallback": ["deepseek"],
-                        "override_params": {},
                     },
                 },
                 "builtin_chat_logger": {

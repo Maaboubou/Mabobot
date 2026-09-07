@@ -23,7 +23,7 @@ import pytz
 from PIL import Image, JpegImagePlugin  # noqa: F401 - registers JPEG PDF encoder
 
 from app.core.event_bus import Event, EventType
-from app.services.agent_runtime import get_agent_runtime
+from app.services.codex_profile_service import get_codex_runtime_registry
 from app.utils.plugin_config import get_config
 
 logger = logging.getLogger(__name__)
@@ -598,24 +598,16 @@ def _extract_json_object(text: str) -> dict[str, Any]:
         raise
 
 
-async def _codex_chat_async(prompt: str, *, timeout: int, model: str) -> dict[str, Any]:
-    return await asyncio.to_thread(
-        get_agent_runtime().run,
-        {
-            "model": model,
-            "timeout": timeout,
-            "messages": [{"role": "user", "content": prompt}],
-            "extra_body": {
-                "reasoning_effort": "high",
-                "web_search": True,
-            },
-        },
-        profile_name="weekly",
-    )
+async def _codex_chat_async(prompt: str, *, timeout: int) -> dict[str, Any]:
+    return await asyncio.to_thread(_codex_chat, prompt, timeout=timeout)
 
 
-def _codex_chat(prompt: str, *, timeout: int, model: str) -> dict[str, Any]:
-    return get_agent_runtime().run(
+def _codex_chat(prompt: str, *, timeout: int) -> dict[str, Any]:
+    runtime, profile = get_codex_runtime_registry().resolve()
+    model = str((profile or {}).get("model") or "").strip()
+    if not model:
+        raise WeeklyGenerationError("默认 Codex Profile 未配置模型")
+    return runtime.run(
         {
             "model": model,
             "timeout": timeout,
@@ -655,8 +647,7 @@ def _create_weekly_plan(
         len(prompt),
     )
     timeout = _cfg_int("WEEKLY_CODEX_TIMEOUT_SECONDS", 900, minimum=60)
-    model = _cfg_str("WEEKLY_CODEX_MODEL", "gpt-5.6-sol")
-    response = _codex_chat(prompt, timeout=timeout, model=model)
+    response = _codex_chat(prompt, timeout=timeout)
     content = response["choices"][0]["message"].get("content") or ""
     (run_dir / "plan_response.txt").write_text(content, encoding="utf-8")
     plan = _extract_json_object(content)
@@ -822,14 +813,13 @@ def _generate_pages_with_codex_subagents(plan: dict[str, Any], run_dir: Path) ->
     prompt = _build_batch_image_prompt(plan)
     (run_dir / "batch_image_prompt.txt").write_text(prompt, encoding="utf-8")
     timeout = _cfg_int("WEEKLY_IMAGE_BATCH_TIMEOUT_SECONDS", 3600, minimum=300)
-    model = _cfg_str("WEEKLY_CODEX_MODEL", "gpt-5.6-sol")
     logger.info(
         "🗞️ Weekly: 启动 Codex 子代理批量生图 pages=%s prompt_chars=%s timeout=%ss",
         len(pages),
         len(prompt),
         timeout,
     )
-    response = _codex_chat(prompt, timeout=timeout, model=model)
+    response = _codex_chat(prompt, timeout=timeout)
     text = response["choices"][0]["message"].get("content") or ""
     (run_dir / "batch_image_response.txt").write_text(text, encoding="utf-8")
     image_attachments = _extract_image_attachments(response)

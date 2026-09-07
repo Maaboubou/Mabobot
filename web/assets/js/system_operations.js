@@ -164,8 +164,8 @@ const SystemOperations = {
 
     renderStorage(storage) {
         const labels = {
-            models: '本地模型', memory_snapshots: '记忆快照', generated: '生成内容',
-            chat_and_memory: '聊天与记忆', diagnostics: '日志与诊断', managed_plugins: '插件数据',
+            models: '本地模型', generated: '生成内容',
+            chat_archive: '聊天档案', diagnostics: '日志与诊断', managed_plugins: '插件数据',
             temporary: '临时文件', backups: '备份'
         };
         const categories = storage.categories || [];

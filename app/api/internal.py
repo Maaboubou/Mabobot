@@ -93,6 +93,8 @@ class WeChatMessage(BaseModel):
     tickle_to: Optional[str] = None
     tickle_suffix: Optional[str] = None
     timestamp: float
+    archive_message_id: Optional[str] = None
+    archive_source: Optional[str] = None
 
 @router.post("/wechat_message")
 async def receive_wechat_message(
@@ -145,6 +147,8 @@ async def receive_wechat_message(
             source="wx_bot_internal",
             data={
                 "message": message.content,
+                "archive_message_id": message.archive_message_id,
+                "archive_source": message.archive_source,
                 "sender": message.sender,
                 "sender_id": message.sender_id,
                 "sender_remark": message.sender_remark,
@@ -206,6 +210,8 @@ async def receive_wechat_message(
         source="wx_bot_internal",
         data={
             "message": message.content,
+            "archive_message_id": message.archive_message_id,
+            "archive_source": message.archive_source,
             "sender": message.sender,
             "sender_id": message.sender_id,
             "sender_remark": message.sender_remark,

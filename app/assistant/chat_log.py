@@ -29,6 +29,15 @@ class ChatLogManager:
         self.counts_path = Path("data/chat_log_counts.json")
         logger.info(f"📝 ChatLogManager初始化，日志目录: {self.log_dir}")
 
+    @property
+    def archive(self):
+        from app.history.store import ArchiveStore
+        root = (self.log_dir.parent / "chat_archive").resolve()
+        if getattr(self, "_archive_root", None) != root:
+            self._archive_store = ArchiveStore(root)
+            self._archive_root = root
+        return self._archive_store
+
     def _load_counts(self) -> Dict[str, int]:
         with _COUNTS_LOCK:
             if not self.counts_path.exists():
@@ -168,6 +177,7 @@ class ChatLogManager:
             int(_COUNT_HIGH_WATER.get(chat_name, 0) or 0),
             self._count_log_lines(chat_name),
             self._retained_sequence_high_water(chat_name),
+            self.archive.live_high_water(chat_name),
         )
         return counts, current_count + 1
 
@@ -199,12 +209,15 @@ class ChatLogManager:
         is_bot: bool = False,
         message_type: str = "",
         source_message_id: str = "",
+        source_id_namespace: str = "wx_action",
+        occurred_at: str = "",
+        received_at: str = "",
         metadata: Optional[Dict[str, Any]] = None,
         image_enrichment: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
         """保存聊天消息到 jsonl 文件"""
         log_path = self.log_dir / f"{chat_name}.jsonl"
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = received_at or time.strftime("%Y-%m-%d %H:%M:%S")
         row_id = uuid.uuid4().hex
 
         with _COUNTS_LOCK:
@@ -232,10 +245,17 @@ class ChatLogManager:
                         row["message_type"] = str(message_type).strip()
                     if str(source_message_id or "").strip():
                         row["source_message_id"] = str(source_message_id).strip()
+                        row["source_id_namespace"] = source_id_namespace
                     if metadata:
                         row["metadata"] = dict(metadata)
                     if image_enrichment:
                         row["image_enrichment"] = dict(image_enrichment)
+                    if occurred_at:
+                        row["occurred_at"] = occurred_at
+                    row["time_source"] = "platform" if occurred_at else "received"
+                    # Archive is authoritative. The legacy JSONL remains a
+                    # compatibility projection for existing cursor consumers.
+                    self.archive.append(chat_name, row)
                     f.write(json.dumps(row, ensure_ascii=False) + "\n")
                     f.flush()
 
@@ -266,6 +286,10 @@ class ChatLogManager:
         normalized_status = str(status or "completed").strip() or "completed"
         normalized_description = str(description or "").strip()
         normalized_error = str(error or "").strip()
+        self.archive.revise(chat_name, target_id, image_enrichment={
+            "description": str(description or ""), "status": normalized_status,
+            "error": normalized_error,
+        })
         temp_path = log_path.with_name(
             f"{log_path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
         )
@@ -359,6 +383,15 @@ class ChatLogManager:
 
     def get_context_messages(self, chat_name: str, limit: int = 100) -> List[Dict]:
         """获取上下文消息"""
+        archived = self.archive.recent(chat_name, limit)
+        if archived:
+            for row in archived:
+                description = str((row.get("image_enrichment") or {}).get("description") or "")
+                if description and description not in row["content"]:
+                    row["content"] += "\n图片识别（非原话）：" + description
+                if row.get("correction"):
+                    row["content"] += "\n人工更正：" + json.dumps(row["correction"], ensure_ascii=False)
+            return [row for row in archived if not self._is_internal_action_message(row)]
         log_path = self.log_dir / f"{chat_name}.jsonl"
 
         if not log_path.exists():
@@ -648,6 +681,22 @@ class ChatLogManager:
             max_days: 保留的天数，None表示不限制
             max_size_mb: 单个文件最大大小(MB)，None表示不限制
         """
+        # Archive retention is independent of compatibility log retention.
+        # Import every retained row before any legacy cleanup can remove it.
+        for path in self.log_dir.glob("*.jsonl"):
+            batch = []
+            with path.open(encoding="utf-8") as source:
+                for index, line in enumerate(source, 1):
+                    if not line.strip():
+                        continue
+                    row = json.loads(line)
+                    row["_source_record_id"] = str(row.get("id") or f"{path.name}:{index}")
+                    batch.append(row)
+                    if len(batch) >= 1000:
+                        self.archive.append_many(path.stem, batch, source="legacy_chat_log")
+                        batch = []
+                if batch:
+                    self.archive.append_many(path.stem, batch, source="legacy_chat_log")
         import datetime
 
         now = datetime.datetime.now()

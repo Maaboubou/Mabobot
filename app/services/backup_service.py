@@ -68,6 +68,7 @@ class BackupService:
     STATE_ROOT_FILES = {".env"}
     STATE_DATA_DIRECTORIES = {
         "chat_logs",
+        "chat_archive",
         "chat_summaries",
         "chatbot_anchor_contexts",
         "codex_chat_scopes",
@@ -603,6 +604,17 @@ class BackupService:
             with tempfile.TemporaryDirectory(prefix="backup-stage-", dir=self.backup_root) as staging_name:
                 staging = Path(staging_name)
                 try:
+                    archive_snapshot_names = {}
+                    raw_archive = self.project_root / "data" / "chat_archive"
+                    if (raw_archive / "index.sqlite3").exists():
+                        from app.history.store import ArchiveStore
+                        snapshot_root = staging / "chat-archive-snapshot"
+                        ArchiveStore(raw_archive).snapshot_to(snapshot_root)
+                        sources = [source for source in sources if not source.is_relative_to(raw_archive)]
+                        for source in sorted(snapshot_root.rglob("*")):
+                            if source.is_file():
+                                sources.append(source)
+                                archive_snapshot_names[source] = "data/chat_archive/" + source.relative_to(snapshot_root).as_posix()
                     with zipfile.ZipFile(
                         temporary,
                         "w",
@@ -613,8 +625,10 @@ class BackupService:
                         for index, source in enumerate(sources, 1):
                             if operation:
                                 operation.check_cancelled()
-                            relative = self._relative(source)
+                            relative = archive_snapshot_names.get(source) or self._relative(source)
                             prepared, consistency = self._prepared_source(source, staging)
+                            if source in archive_snapshot_names:
+                                consistency = "archive_committed_prefix"
                             size = prepared.stat().st_size
                             classification = self._classification(relative)
                             record = {
@@ -1259,6 +1273,24 @@ class BackupService:
             applied: List[str] = []
             removed: List[str] = []
             try:
+                if "data/chat_archive/snapshot.json" in relatives:
+                    # A journal snapshot replaces the archive as a unit. A
+                    # later index/WAL or extra journal shard must not survive
+                    # restoration of an earlier committed prefix.
+                    archive_root = self.project_root / "data" / "chat_archive"
+                    archived_paths = set(relatives)
+                    for stale_path in sorted(archive_root.rglob("*")):
+                        if stale_path.is_symlink():
+                            raise BackupError("聊天档案目录包含符号链接，无法安全恢复")
+                        if not stale_path.is_file():
+                            continue
+                        relative = self._relative(stale_path)
+                        if relative not in archived_paths:
+                            previous = rollback / Path(*PurePosixPath(relative).parts)
+                            previous.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(stale_path, previous)
+                            stale_path.unlink()
+                            removed.append(relative)
                 if manifest.get("profile") == "migration":
                     for stale_path in self._migration_stale_files(set(relatives)):
                         relative = self._relative(stale_path)

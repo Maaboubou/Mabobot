@@ -5,8 +5,8 @@ LLM 配置管理 API
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, SecretStr
-from typing import Dict, List, Optional, Any
+from pydantic import BaseModel, SecretStr, Field
+from typing import Dict, List, Optional, Any, Literal
 import asyncio
 from datetime import date
 from importlib.metadata import PackageNotFoundError, version as package_version
@@ -492,10 +492,12 @@ class ModelConfig(BaseModel):
     timeout: Optional[int] = None
     max_retries: Optional[int] = None
     supports_vision: Optional[bool] = None
-    input_cost_per_token: Optional[float] = None
-    output_cost_per_token: Optional[float] = None
-    cache_read_input_token_cost: Optional[float] = None
-    cache_creation_input_token_cost: Optional[float] = None
+    billing_mode: Optional[Literal["auto", "free", "included", "unknown"]] = None
+    cost_currency: Optional[str] = Field(default=None, pattern=r"^[A-Z]{3}$")
+    input_cost_per_token: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    output_cost_per_token: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    cache_read_input_token_cost: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    cache_creation_input_token_cost: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
     extra_body: Optional[Dict[str, Any]] = None
     enable_web_search: Optional[bool] = False
     response_format: Optional[Dict[str, Any]] = None
@@ -1337,6 +1339,28 @@ async def get_config():
 
 
 # ==================== 统计接口 ====================
+
+@router.get("/usage/requests")
+def get_usage_requests(
+    period: str = Query("today", pattern="^(today|7d|30d|session|total)$"),
+    subject: Optional[str] = None, task: Optional[str] = None,
+    limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0),
+):
+    return {"status": "success", "data": get_llm_manager().usage_service.requests(
+        period=period, subject=subject, task=task, limit=limit, offset=offset)}
+
+
+@router.get("/usage")
+def get_usage(
+    period: str = Query("today", pattern="^(today|7d|30d|session|total)$"),
+    view: str = Query("task", pattern="^(task|chat)$"),
+    subject: Optional[str] = Query(None, max_length=500),
+):
+    """Read durable usage aggregates, independent of bounded call history."""
+    return {"status": "success", "data": get_llm_manager().usage_service.query(
+        period=period, view=view, subject=subject,
+    )}
+
 
 @router.get("/stats")
 async def get_stats():

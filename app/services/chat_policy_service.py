@@ -11,14 +11,13 @@ from app.models.assistant_policy import AssistantChatPolicy
 from app.models.chatbot_judge import UserChatBotJudge
 from app.models.chatbot_role import UserChatBotRole
 from app.models.user_permission import UserPermission, WeChatUser
-from app.services.assistant_console_service import AssistantConsoleService, _json_list, _memory_summary
+from app.services.assistant_console_service import AssistantConsoleService, _json_list
 from app.services.codex_access_service import (
     ISOLATED_ACCESS,
     OWNER_FULL_ACCESS,
     CodexAccessService,
     normalize_codex_access_mode,
 )
-from app.services.memory_console_service import MemoryConsoleService
 
 
 RESERVED_PLUGIN_GRANTS = {"assistant", "builtin_chatbot"}
@@ -86,7 +85,6 @@ class ChatPolicyService:
         except Exception:
             active = []
         active_names = set(active.keys() if isinstance(active, dict) else active or [])
-        global_memory = MemoryConsoleService.global_memory_config()
         codex = CodexAccessService().for_user(user, ensure=False).public()
         grants = [
             {
@@ -119,7 +117,6 @@ class ChatPolicyService:
                 "followup_max_turns": int(policy.followup_max_turns or 3) if policy else 3,
                 "ignored_senders": _json_list(policy.ignored_senders if policy else None),
                 "codex_profile_id": policy.codex_profile_id if policy else None,
-                "memory": _memory_summary(policy, global_memory),
                 "role_id": role.role_id if role else None,
                 "judge_id": judge.judge_id if judge else None,
             },

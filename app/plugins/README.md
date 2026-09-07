@@ -344,3 +344,11 @@ event_bus.release_session_permission(chat_name, "my_plugin")
 - 插件停止或重载后不得残留线程、HTTP session、浏览器进程、计划任务或临时文件。
 - 不写 `priority`、`routing_overrides`、`block_after_handling`，也不假设目录扫描顺序。
 - 修改后至少运行插件管理、路由服务、Web 契约和插件自身测试；再重启 Web 进程确认所有插件加载成功。
+
+### 用量与调用来源名称
+
+用量页和调用记录左侧的调用来源复用 `ui.llm_tasks`：第一行展示 `label`，第二行保留 `组件.call_type`。无需维护前端翻译表。未声明的历史调用显示“自定义任务”。
+
+只记录用量、不可通过辅助任务路由配置的调用，可在声明中设置 `"routable": false`（例如核心助手的 `chat`）。目录接口的 `usage_tasks` 包含全部声明，`tasks` 仅包含可配置路由。
+
+消息事件处理器以及通过 `context.operations` / 托管 worker 启动的后台任务自动继承聊天归属。脱离事件上下文的调用应传入 `_mabobot_chat_name`；可额外提供 `_mabobot_user_id`（系统聊天对象 ID）、`_mabobot_chat_type`（`group` / `user`）。这些参数不发送给模型。无聊天归属的系统任务可显式传入 `_mabobot_usage_scope="system"`；未提供归属的调用归入“未归属”。

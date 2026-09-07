@@ -7,6 +7,7 @@ import base64
 import logging
 import os
 import time
+from datetime import datetime
 from app.core.event_bus import Event, EventType
 from app.assistant.chat_log import ChatLogManager
 from app.plugins.builtin_chat_logger.image_understanding import understand_image
@@ -17,6 +18,28 @@ logger = logging.getLogger(__name__)
 
 class ChatLoggerPlugin:
     """聊天记录插件主类"""
+
+    @staticmethod
+    def _archive_fields(event):
+        data = event.data
+        fields = {"source_message_id": str(data.get("archive_message_id") or data.get("message_id") or event.id),
+                  "source_id_namespace": str(data.get("archive_source") or ("wx_action" if data.get("message_id") else "event_bus"))}
+        if data.get("timestamp"):
+            fields["received_at"] = datetime.fromtimestamp(float(data["timestamp"])).strftime("%Y-%m-%d %H:%M:%S")
+        return fields
+
+    def handle_other_message(self, event):
+        data = event.data
+        kind = str(data.get("message_type") or event.type.value.removesuffix("_message_received"))
+        if not data.get("chat_name"):
+            return False
+        self.chat_log_manager.save_message(
+            data["chat_name"], str(data.get("sender") or "系统"),
+            str(data.get("message") or f"[{kind}]"),
+            sender_id=str(data.get("sender_id") or ""), message_type=kind,
+            metadata={key: data[key] for key in ("file_id", "file_name", "file_path", "file_size", "file_sha256", "file_status") if data.get(key) is not None},
+            **self._archive_fields(event))
+        return False
 
     def __init__(self, context):
         self.context = context
@@ -113,6 +136,8 @@ class ChatLoggerPlugin:
                 content,
                 sender_id=sender_id,
                 sender_remark=sender_remark,
+                message_type="text",
+                **self._archive_fields(event),
             )
             logger.debug(f"📝 记录文本消息: {chat_name} - {sender}")
 
@@ -149,7 +174,7 @@ class ChatLoggerPlugin:
                 sender_id=sender_id,
                 sender_remark=sender_remark,
                 message_type="image",
-                source_message_id=message_id,
+                **self._archive_fields(event),
                 image_enrichment={"status": "pending"} if enrichment_enabled else {"status": "disabled"},
             )
             logger.debug(f"📝 记录图片消息: {chat_name} - {sender}")
@@ -239,6 +264,8 @@ class ChatLoggerPlugin:
                 f"[分享链接] {content}",
                 sender_id=sender_id,
                 sender_remark=sender_remark,
+                message_type="link",
+                **self._archive_fields(event),
             )
             logger.debug(f"📝 记录链接消息: {chat_name} - {sender}")
 
@@ -277,7 +304,10 @@ class ChatLoggerPlugin:
                 log_content,
                 sender_id=sender_id,
                 sender_remark=sender_remark,
-                metadata={"quote_nickname": quote_nickname} if quote_nickname else None,
+                message_type="quote",
+                metadata={"quote_nickname": quote_nickname, "quote_content": quote_content,
+                          "reply_to": event.data.get("quote_message_id")},
+                **self._archive_fields(event),
             )
             logger.debug(f"📝 记录引用消息: {chat_name} - {sender}")
 
@@ -363,6 +393,12 @@ def handle_quote_message(event: Event):
     return False
 
 
+def handle_other_message(event: Event):
+    if chat_logger_plugin:
+        return chat_logger_plugin.handle_other_message(event)
+    return False
+
+
 def register(event_bus, subscribe, context):
     """插件注册函数"""
     global chat_logger_plugin
@@ -407,6 +443,14 @@ def register(event_bus, subscribe, context):
     )
 
     logger.info("✅ ChatLogger 插件注册成功")
+    for event_type in (
+        EventType.EMOTION_MESSAGE_RECEIVED, EventType.VOICE_MESSAGE_RECEIVED,
+        EventType.VIDEO_MESSAGE_RECEIVED, EventType.FILE_MESSAGE_RECEIVED,
+        EventType.LOCATION_MESSAGE_RECEIVED, EventType.MERGE_MESSAGE_RECEIVED,
+        EventType.PERSONAL_CARD_MESSAGE_RECEIVED, EventType.NOTE_MESSAGE_RECEIVED,
+        EventType.TICKLE_MESSAGE_RECEIVED, EventType.OTHER_MESSAGE_RECEIVED,
+    ):
+        subscribe(event_type=event_type, handler=handle_other_message)
 
 
 def unregister():

@@ -75,7 +75,6 @@ class UserPermission(Base):
     followup_merge_seconds = Column(Integer, default=3)  # 连续消息合并等待
     followup_max_turns = Column(Integer, default=3)  # 最多连续无 @ 回复轮数
 
-    memory_profile = Column(Text, nullable=True)  # builtin_chatbot 每群记忆覆盖配置（JSON）
     ignored_senders = Column(Text, nullable=True)  # builtin_chatbot 每群 sender 黑名单（JSON array）
 
     user = relationship("WeChatUser", back_populates="permissions")

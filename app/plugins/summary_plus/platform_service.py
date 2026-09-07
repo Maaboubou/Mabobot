@@ -109,7 +109,8 @@ def _handle_douyin_async(
             logger.info("ℹ️ 未找到 wx 上下文，跳过抖音视频下载")
             return
 
-        duration = svc._check_douyin_duration(share_url)
+        video_info = {}
+        duration = svc._check_douyin_duration(share_url, metadata_capture=video_info)
         max_download_duration = max(
             1,
             int(getattr(svc, "douyin_max_download_duration", 300)),
@@ -160,7 +161,9 @@ def _handle_douyin_async(
                 max_download_duration,
             )
 
-        video_path = svc._download_douyin_with_ytdlp(share_url, timeout_sec=180)
+        video_path = svc._download_douyin_with_ytdlp(
+            share_url, timeout_sec=180, video_info=video_info or None,
+        )
         if video_path:
             _send_files(wx, chat_name, video_path, logger, svc)
             return

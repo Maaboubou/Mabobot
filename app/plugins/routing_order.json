@@ -27,7 +27,35 @@
       "ebook_downloader:quote_text_message_received:handle_session_reply"
     ],
     "quote_image_message_received": [],
-    "other_message_received": [],
-    "tickle_message_received": []
+    "other_message_received": [
+      "builtin_chat_logger:other_message_received:handle_other_message"
+    ],
+    "tickle_message_received": [
+      "builtin_chat_logger:tickle_message_received:handle_other_message"
+    ],
+    "emotion_message_received": [
+      "builtin_chat_logger:emotion_message_received:handle_other_message"
+    ],
+    "voice_message_received": [
+      "builtin_chat_logger:voice_message_received:handle_other_message"
+    ],
+    "video_message_received": [
+      "builtin_chat_logger:video_message_received:handle_other_message"
+    ],
+    "file_message_received": [
+      "builtin_chat_logger:file_message_received:handle_other_message"
+    ],
+    "location_message_received": [
+      "builtin_chat_logger:location_message_received:handle_other_message"
+    ],
+    "merge_message_received": [
+      "builtin_chat_logger:merge_message_received:handle_other_message"
+    ],
+    "personal_card_message_received": [
+      "builtin_chat_logger:personal_card_message_received:handle_other_message"
+    ],
+    "note_message_received": [
+      "builtin_chat_logger:note_message_received:handle_other_message"
+    ]
   }
 }

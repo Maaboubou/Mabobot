@@ -1,7 +1,7 @@
 """Token-budgeted context helpers for the core Assistant.
 
-This module intentionally has no memory persistence. Durable memory lives in
-``memory_store.py`` and is selected per turn by ``memory_service.py``.
+This module renders bounded context. Durable raw messages live in
+``app.history.store`` and are retrieved on demand.
 """
 
 from __future__ import annotations

@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+from contextvars import copy_context
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
@@ -287,7 +288,8 @@ class OwnerWorkerFacade:
                     self._completed += 1
 
         thread = threading.Thread(
-            target=_runner,
+            target=copy_context().run,
+            args=(_runner,),
             name=f"plugin-{_safe_plugin_id(self.plugin_id)}-{worker_name}",
             daemon=daemon,
         )
@@ -512,7 +514,7 @@ class PluginRuntimeRegistry:
             record = self._records.get(plugin_id)
             return record.context if record else None
 
-    def snapshot(self) -> List[Dict[str, Any]]:
+    def snapshot(self, *, include_storage: bool = True) -> List[Dict[str, Any]]:
         with self._lock:
             records = list(self._records.values())
         result = []
@@ -523,7 +525,7 @@ class PluginRuntimeRegistry:
                     "api_version": record.api_version,
                     "registered_at": record.registered_at,
                     "health": record.context.health_snapshot(),
-                    "storage": record.context.storage.inventory(),
+                    "storage": record.context.storage.inventory() if include_storage else None,
                     "active_tasks": len(
                         [item for item in record.context.tasks.list(limit=100) if item.get("status") not in {"completed", "failed", "cancelled", "interrupted"}]
                     ),

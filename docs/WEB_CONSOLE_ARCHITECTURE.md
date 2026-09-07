@@ -11,7 +11,7 @@ The console is organized around operator tasks, not backend modules:
 1. **Overview** — health, WeChat connection, issues and recent activity.
 2. **Chats** — group/private-chat configuration and effective capabilities.
 3. **AI Assistant** — first-class Chatbot configuration, roles, Judge, models,
-   memory and diagnostics.
+   chat archives and diagnostics.
 4. **Automations** — all other user-facing capabilities.
 5. **AI Resources** — model connections, task routing, usage, Codex sessions,
    call diagnostics and network tools.

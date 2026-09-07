@@ -87,6 +87,8 @@ def normalize_llm_task_descriptors(config: Mapping[str, Any]) -> Dict[str, Dict[
             "category": category,
             "order": max(-10000, min(order, 10000)),
         }
+        if raw_descriptor.get("routable") is False:
+            descriptor["routable"] = False
         if raw_descriptor.get("advanced") is True:
             descriptor["advanced"] = True
         tasks[task_id] = descriptor
@@ -100,7 +102,6 @@ GROUP_META = OrderedDict(
         ("model", {"title": "模型与提示词", "description": "模型选择和任务提示词", "order": 40}),
         ("tools", {"title": "工具与理解", "description": "网页搜索、图片理解与其他辅助能力", "order": 45}),
         ("context", {"title": "上下文", "description": "上下文窗口与消息预算", "order": 50}),
-        ("memory", {"title": "长期记忆", "description": "记忆总开关、人物证据与检索策略", "order": 60}),
         ("schedule", {"title": "计划任务", "description": "定时执行与推送计划", "order": 70}),
         ("media", {"title": "媒体处理", "description": "图片、视频、字幕与输出文件", "order": 80}),
         ("browser", {"title": "浏览器", "description": "浏览器自动化与页面提取", "order": 90}),
@@ -123,12 +124,10 @@ ASSISTANT_GROUP_FIELDS = {
         "context_window_strategy",
         "anchor_message_count",
         "anchor_rollover_prompt_tokens",
-        "memory_context_ratio",
         "recent_context_ratio",
         "ephemeral_context_ratio",
         "ephemeral_context_max_tokens",
     },
-    "memory": set(),
     "model": {
         "codex_persistent_session_enabled",
         "codex_reasoning_effort",
@@ -156,14 +155,6 @@ ASSISTANT_BASIC_FIELDS = {
     "codex_web_search_mode",
     "context_window_auto_detect",
     "context_window_strategy",
-    "memory_enabled",
-    "memory_background_enabled",
-    "memory_verification_enabled",
-    "memory_person_enabled",
-    "memory_person_include_high_sensitivity",
-    "memory_embedding_enabled",
-    "memory_retention_days",
-    "memory_retrieval_top_k",
     "search_enabled",
 }
 
@@ -241,14 +232,6 @@ FIELD_TITLE_OVERRIDES = {
     "image_enrichment_enabled": "启用图片内容补充",
     "image_understanding_prompt": "图片理解提示词",
     "allow_mention_trigger": "允许群聊 @ 触发",
-    "memory_enabled": "长期记忆总开关",
-    "memory_background_enabled": "后台生成记忆",
-    "memory_verification_enabled": "高风险证据复核",
-    "memory_person_enabled": "人物记忆",
-    "memory_person_include_high_sensitivity": "回答中使用高敏感人物记忆",
-    "memory_embedding_enabled": "本地向量检索",
-    "memory_retention_days": "记忆检索范围",
-    "memory_retrieval_top_k": "每次最多召回的事件",
     "request_timeout": "请求超时",
     "page_load_timeout": "页面加载超时",
     "chrome_path": "Chrome 路径",
@@ -401,8 +384,6 @@ def _infer_group(plugin_id: str, key: str, field: Mapping[str, Any]) -> str:
         return str(declared)
 
     if plugin_id == CORE_ASSISTANT_ID:
-        if key.startswith("memory_"):
-            return "memory"
         for group_id, keys in ASSISTANT_GROUP_FIELDS.items():
             if key in keys:
                 return group_id
@@ -464,6 +445,8 @@ def normalize_settings_descriptor(plugin_id: str, config: Mapping[str, Any]) -> 
 
     for key, raw_field in schema.items():
         field = raw_field if isinstance(raw_field, dict) else {}
+        if field.get("level") == "hidden":
+            continue
         normalized_type, control = _normalize_type(field)
         group_id = _infer_group(plugin_id, key, field)
         level = _infer_level(plugin_id, key, group_id, field)

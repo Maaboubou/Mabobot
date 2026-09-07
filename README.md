@@ -1,8 +1,8 @@
 # Mabobot
 
-Mabobot 是运行在 Windows 上的本地微信自动化与 AI 助手。它使用内置 `mabowx` 连接微信，并提供 Web 控制台、AI 助手、插件、模型路由、记忆与文件处理能力。
+Mabobot 是运行在 Windows 上的本地微信自动化与 AI 助手。它使用内置 `mabowx` 连接微信，并提供 Web 控制台、AI 助手、插件、模型路由、聊天档案与文件处理能力。
 
-当前版本：`3.1.0`
+当前版本：`3.2.0`
 
 ## 启动
 
@@ -49,7 +49,7 @@ cd Mabobot
 1. 保持微信在线，在 Web 控制台的“聊天”页面同步会话；
 2. 开启需要监听的聊天，并配置 AI 助手或插件；
 3. 在“Codex”页面确认 CLI 框架可用，并创建或选择模型 Profile；
-4. 按需配置回复策略、长期记忆与辅助模型；
+4. 按需配置回复策略、聊天档案与辅助模型；
 5. 回到“运行与日志”确认服务状态正常。
 
 大部分设置都在 Web 控制台中完成。`.env` 用于端口、运行参数和外部服务凭据；未使用的项目可以留空。
@@ -101,6 +101,8 @@ tests/             自动化测试
 
 - [mabowx 与主程序边界](docs/MABOWX_BOUNDARY.md)
 - [Web 控制台架构](docs/WEB_CONSOLE_ARCHITECTURE.md)
+- [聊天档案与线程上下文](docs/CHAT_ARCHIVE_OPERATIONS.md)
+- [模型用量与计价](docs/LLM_USAGE.md)
 - [安全策略](SECURITY.md)
 
 项目主体使用 [MIT License](LICENSE)，内置第三方代码许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

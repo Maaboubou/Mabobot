@@ -29,6 +29,11 @@ from sqlalchemy import text
 import uvicorn
 from typing import Optional
 
+# An explicit one-shot cleanup runs before any telemetry singleton is loaded.
+from pathlib import Path
+from .history.cleanup_legacy import run_pending_cleanup
+run_pending_cleanup(Path(__file__).resolve().parents[1])
+
 from .core.event_bus import get_event_bus, EventType
 from .core.plugin_manager import PluginManager
 from .core.wechat_manager import WeChatManager
@@ -207,7 +212,6 @@ def _ensure_user_permission_extension_columns(db: SessionLocal):
             for row in db.execute(text("PRAGMA table_info(user_permissions)")).fetchall()
         }
         columns = {
-            "memory_profile": "TEXT",
             "ignored_senders": "TEXT",
             "followup_enabled": "BOOLEAN NOT NULL DEFAULT 0",
             "followup_window_seconds": "INTEGER NOT NULL DEFAULT 60",
@@ -510,23 +514,9 @@ async def lifespan(app: FastAPI):
         os.makedirs("data", exist_ok=True)
         os.makedirs("data/chat_logs", exist_ok=True)
 
-        # Run the separate memory database migrations before plugins or API
-        # requests can access it. Component versions make this idempotent and
-        # safe across restarts and multiple store instances.
-        try:
-            from app.assistant.memory_store import MemoryStore
-            from app.assistant.person_memory import PersonMemoryStore
-
-            memory_store = MemoryStore()
-            PersonMemoryStore(memory_store)
-            logger.info("Memory database schema ready: %s", memory_store.schema_versions())
-        except Exception as exc:
-            # Memory is an optional assistant enhancement.  Its storage must
-            # never prevent independent plugins from starting.
-            logger.exception(
-                "Assistant memory schema is unavailable; continuing without blocking plugins: %s",
-                exc,
-            )
+        # Recover committed raw history before plugins begin recording messages.
+        from app.history.tools import get_archive
+        get_archive()
 
         # 1. 初始化数据库
         create_tables()
@@ -736,6 +726,8 @@ app.include_router(internal_api.router, prefix="/api/internal", tags=["internal"
 app.include_router(codex_proxy.router)
 app.include_router(codex_jobs.router)
 app.include_router(permissions.router, prefix="/api/permissions", tags=["permissions"])
+from .api.endpoints import history
+app.include_router(history.router, prefix="/api/history", tags=["history"])
 app.include_router(assistant_roles.router, prefix="/api/assistant/roles", tags=["assistant_roles"])
 app.include_router(assistant_judges.router, prefix="/api/assistant/judges", tags=["assistant_judges"])
 app.include_router(dashboard.router, prefix="/api/dashboard", tags=["dashboard"])

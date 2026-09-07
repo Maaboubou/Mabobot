@@ -49,39 +49,6 @@ def _json_list(value: Any) -> List[str]:
     return list(dict.fromkeys(str(item or "").strip() for item in parsed if str(item or "").strip()))
 
 
-def _memory_summary(
-    permission: Optional[AssistantChatPolicy],
-    global_config: Mapping[str, Any],
-) -> Dict[str, Any]:
-    profile = _json_object(permission.memory_profile if permission else None)
-    raw_overrides = profile.get("overrides")
-    overrides = raw_overrides if isinstance(raw_overrides, dict) else {
-        key: value
-        for key, value in profile.items()
-        if str(key).startswith("memory_")
-    }
-    overrides = {
-        key: value
-        for key, value in overrides.items()
-        if key in global_config
-    }
-    if not bool(profile.get("enabled")):
-        mode = "inherit"
-        effective_enabled = bool(global_config.get("memory_enabled", True))
-    elif overrides.get("memory_enabled") is False:
-        mode = "off"
-        effective_enabled = False
-    else:
-        mode = "custom"
-        effective_enabled = bool(overrides.get("memory_enabled", True))
-    return {
-        "mode": mode,
-        "source": "global" if mode == "inherit" else "chat",
-        "effective_enabled": effective_enabled,
-        "overrides": overrides,
-    }
-
-
 class AssistantConsoleService:
     def __init__(self, plugin_manager: Any, wechat_manager: Any, db: Session):
         self.plugin_manager = plugin_manager
@@ -177,9 +144,6 @@ class AssistantConsoleService:
         auxiliary_tasks = {
             "judge",
             "followup_judge",
-            "memory_generate",
-            "memory_review",
-            "memory_synthesize",
         }
         public_mappings = {
             call_type: {
@@ -208,9 +172,7 @@ class AssistantConsoleService:
         )
         default_role = next((role for role in roles if role["name"] == default_role_name), None)
         global_bot_name = str(get_setting("WECHAT_BOT_NAME", "刘局") or "刘局")
-        from app.services.memory_console_service import MemoryConsoleService
 
-        global_memory_config = MemoryConsoleService.global_memory_config()
 
         users = (
             self.db.query(WeChatUser)
@@ -226,8 +188,6 @@ class AssistantConsoleService:
             permission = user.assistant_policy
             role_id = role_bindings.get(user.id)
             judge_id = judge_bindings.get(user.id)
-            profile = _json_object(permission.memory_profile if permission else None)
-            memory_override_enabled = bool(profile.get("enabled"))
             bot_names = bot_names_for_user(user, global_bot_name)
             chats.append(
                 {
@@ -242,8 +202,6 @@ class AssistantConsoleService:
                     "followup_merge_seconds": int(permission.followup_merge_seconds or 3) if permission else 3,
                     "followup_max_turns": int(permission.followup_max_turns or 3) if permission else 3,
                     "ignored_senders": _json_list(permission.ignored_senders if permission else None),
-                    "memory_override_enabled": memory_override_enabled,
-                    "memory": _memory_summary(permission, global_memory_config),
                     "role": roles_by_id.get(role_id) or default_role,
                     "role_source": "chat" if role_id else "global",
                     "judge": judges_by_id.get(judge_id),
@@ -260,7 +218,6 @@ class AssistantConsoleService:
         global_flags = {
             "default_role": default_role_name,
             "allow_mention_trigger": bool(get_plugin_setting("assistant", "allow_mention_trigger", True)),
-            "memory_enabled": bool(get_plugin_setting("assistant", "memory_enabled", True)),
             "search_enabled": bool(get_plugin_setting("assistant", "search_enabled", True)),
             "image_enrichment_enabled": bool(
                 get_plugin_setting(
@@ -269,7 +226,6 @@ class AssistantConsoleService:
                     True,
                 )
             ),
-            "memory": global_memory_config,
         }
         enabled_chats = sum(1 for chat in chats if chat["enabled"])
         return {
@@ -300,9 +256,6 @@ class AssistantConsoleService:
             raise AssistantConsoleError("聊天不存在")
 
         changes = dict(changes)
-        memory_mode = changes.get("memory_mode")
-        if memory_mode is not None and memory_mode not in {"inherit", "off", "custom"}:
-            raise AssistantConsoleError("不支持的记忆模式")
         nickname_fields = {"bot_group_nickname", "bot_group_nickname_auto_enabled"}
         if nickname_fields.intersection(changes) and not user.is_group:
             raise AssistantConsoleError("群内机器人昵称只能配置于群聊")
@@ -384,12 +337,6 @@ class AssistantConsoleService:
                 )
             )
         )
-        if (
-            permission is None
-            and memory_mode in {"off", "custom"}
-            and changes.get("enabled") is not True
-        ):
-            raise AssistantConsoleError("请先为该聊天启用 AI 助手，再设置独立记忆模式")
         if should_enable and permission is None:
             permission = AssistantChatPolicy(user_id=user_id, enabled=True)
             self.db.add(permission)
@@ -414,37 +361,6 @@ class AssistantConsoleService:
                     if changes["ignored_senders"]
                     else None
                 )
-            if memory_mode is not None:
-                if memory_mode == "inherit":
-                    permission.memory_profile = None
-                elif memory_mode == "off":
-                    permission.memory_profile = json.dumps(
-                        {
-                            "enabled": True,
-                            "overrides": {"memory_enabled": False},
-                        },
-                        ensure_ascii=False,
-                    )
-                else:
-                    from app.services.memory_console_service import MemoryConsoleService
-
-                    requested = changes.get("memory_overrides")
-                    if not isinstance(requested, dict):
-                        requested = _json_object(permission.memory_profile).get(
-                            "overrides",
-                            {},
-                        )
-                    try:
-                        overrides = MemoryConsoleService.validate_memory_overrides(
-                            requested
-                        )
-                    except ValueError as exc:
-                        raise AssistantConsoleError(str(exc)) from exc
-                    overrides["memory_enabled"] = True
-                    permission.memory_profile = json.dumps(
-                        {"enabled": True, "overrides": overrides},
-                        ensure_ascii=False,
-                    )
             permission.version = int(permission.version or 0) + 1
 
         reload_roles = False
@@ -479,7 +395,6 @@ class AssistantConsoleService:
             "chat_name": user.chat_name,
             "reload_roles": reload_roles,
             "reload_judges": reload_judges,
-            "invalidate_memory": memory_mode is not None,
         }
         if not commit:
             return effect
@@ -512,13 +427,4 @@ class AssistantConsoleService:
             except Exception:
                 # The database is authoritative; a future request or plugin
                 # restart will refresh the in-memory cache.
-                pass
-        if effect.get("invalidate_memory"):
-            try:
-                from app.assistant.runtime import get_assistant_handler
-
-                handler = get_assistant_handler()
-                if handler:
-                    handler.invalidate_memory_context(str(effect.get("chat_name") or ""))
-            except Exception:
                 pass

@@ -3,7 +3,7 @@
   "component_kind": "core",
   "display_name": "AI 助手",
   "version": "2.0.0",
-  "description": "由 Codex 驱动的核心 AI 助手，支持角色、Judge 与长期记忆",
+  "description": "由 Codex 驱动的核心 AI 助手，支持角色、Judge 与原始聊天档案",
   "author": "Project Contributors",
   "category": "ai",
   "requires": [
@@ -13,6 +13,20 @@
   "ui": {
     "icon": "bi-robot",
     "llm_tasks": {
+      "chat": {
+        "label": "日常对话",
+        "description": "通过 Codex 回复通道生成助手的最终回复",
+        "category": "对话",
+        "order": 0,
+        "routable": false
+      },
+      "reply_latency": {
+        "label": "回复耗时",
+        "description": "历史回复延迟记录，不计入模型用量",
+        "category": "历史记录",
+        "order": 900,
+        "routable": false
+      },
       "judge": {
         "label": "主动回复判断",
         "description": "判断 AI 是否应该主动参与当前群聊",
@@ -24,25 +38,6 @@
         "description": "判断未再次 @ 的跟进消息是否应继续回复",
         "category": "对话",
         "order": 30
-      },
-      "memory_generate": {
-        "label": "记忆生成模型",
-        "description": "负责从原始消息提取事件和人物证据",
-        "category": "记忆",
-        "order": 100
-      },
-      "memory_review": {
-        "label": "记忆审核模型",
-        "description": "负责证据复核、事件关系判断和人物投影审计",
-        "category": "记忆",
-        "order": 110
-      },
-      "memory_synthesize": {
-        "label": "记忆归纳模型",
-        "description": "高级覆盖：负责阶段摘要和人物资料整合；默认继承生成模型",
-        "category": "记忆",
-        "order": 120,
-        "advanced": true
       }
     },
     "settings_notice": "这里是 AI 助手的全局默认值。聊天卡片上的“继承全局”会自动跟随这里；聊天配置只负责少量必要的单独覆盖。",
@@ -51,11 +46,6 @@
         "title": "基础与触发",
         "description": "选择默认角色，并决定群聊中允许哪些被动触发方式",
         "order": 10
-      },
-      "memory": {
-        "title": "长期记忆",
-        "description": "先决定是否开启，再配置证据、人物与检索策略；聊天默认继承这里",
-        "order": 20
       },
       "model": {
         "title": "Codex 回复行为",
@@ -83,7 +73,8 @@
     "codex_persistent_session_enabled": {
       "type": "boolean",
       "description": "Codex 回复是否按聊天对象复用持久会话",
-      "default": true
+      "default": true,
+      "level": "hidden"
     },
     "codex_reasoning_effort": {
       "type": "string",
@@ -165,388 +156,10 @@
       "description": "Codex 运行时不可用时是否允许使用独立执行后端",
       "default": true
     },
-    "context_limit": {
-      "type": "integer",
-      "description": "短上下文消息数量限制（主要用于网络搜索和裁判）",
-      "default": 20
-    },
-    "max_context_tokens": {
-      "type": "integer",
-      "description": "聊天回复输入 Token 硬上限；开启自动识别后还会受模型真实窗口约束",
-      "default": 220000
-    },
     "context_window_auto_detect": {
       "type": "boolean",
       "description": "优先读取 Codex 运行时或 LLM 模型配置中的真实上下文窗口",
       "default": true
-    },
-    "context_safety_margin_tokens": {
-      "type": "integer",
-      "description": "在输出预留之外，为推理、图片和 Token 估算误差额外保留的空间",
-      "default": 24576
-    },
-    "reserved_output_tokens": {
-      "type": "integer",
-      "description": "为模型输出和估算误差预留的 Token 数",
-      "default": 8192
-    },
-    "context_message_fetch_limit": {
-      "type": "integer",
-      "description": "从本地聊天日志最多读取多少条消息用于预算裁剪",
-      "default": 300
-    },
-    "context_window_strategy": {
-      "type": "string",
-      "description": "聊天上下文窗口策略：sliding=每次取最近消息；anchored_append=冷启动取锚点消息后尾部追加，利于前缀缓存",
-      "default": "anchored_append",
-      "enum": [
-        "anchored_append",
-        "sliding"
-      ],
-      "enum_labels": {
-        "anchored_append": "锚定追加（推荐）",
-        "sliding": "滑动窗口"
-      }
-    },
-    "anchor_message_count": {
-      "type": "integer",
-      "description": "anchored_append 策略冷启动或重置时保留的最近消息条数",
-      "default": 300
-    },
-    "anchor_rollover_prompt_tokens": {
-      "type": "integer",
-      "description": "anchored_append 达到该输入 Token 后，用冻结记忆检查点开启新锚点",
-      "default": 205000
-    },
-    "memory_context_ratio": {
-      "type": "number",
-      "description": "滑动窗口中分配给检索记忆的相对比例",
-      "default": 0.1
-    },
-    "recent_context_ratio": {
-      "type": "number",
-      "description": "可用持久上下文中分配给最近原始聊天的比例",
-      "default": 0.35
-    },
-    "ephemeral_context_ratio": {
-      "type": "number",
-      "description": "可用上下文中给本轮搜索、当前图片和当前问题预留的比例",
-      "default": 0.1
-    },
-    "ephemeral_context_max_tokens": {
-      "type": "integer",
-      "description": "单轮搜索和当前图片临时资料的绝对 Token 上限",
-      "default": 16000
-    },
-    "memory_enabled": {
-      "type": "boolean",
-      "description": "是否启用事件卡片、阶段记忆和本地检索",
-      "default": false
-    },
-    "memory_background_enabled": {
-      "type": "boolean",
-      "description": "在后台生成事件卡片和阶段记忆，不阻塞普通回复",
-      "default": false
-    },
-    "memory_event_min_messages": {
-      "type": "integer",
-      "description": "不足该消息数时不生成事件卡片",
-      "default": 20,
-      "minimum": 5,
-      "maximum": 200
-    },
-    "memory_event_target_messages": {
-      "type": "integer",
-      "description": "日常每批送入事件抽取模型的目标消息数",
-      "default": 40,
-      "minimum": 5,
-      "maximum": 500
-    },
-    "memory_event_max_messages": {
-      "type": "integer",
-      "description": "事件抽取单批核心消息数硬上限；不含前后重叠证据",
-      "default": 60,
-      "minimum": 5,
-      "maximum": 1000
-    },
-    "memory_event_context_before_messages": {
-      "type": "integer",
-      "description": "每批核心消息前额外读取的消歧消息数；只作证据，不单独触发事件",
-      "default": 12,
-      "minimum": 0,
-      "maximum": 100
-    },
-    "memory_event_context_after_messages": {
-      "type": "integer",
-      "description": "每批核心消息后等待并额外读取的消歧消息数；只作证据，不单独触发事件",
-      "default": 12,
-      "minimum": 0,
-      "maximum": 100
-    },
-    "memory_event_max_cards": {
-      "type": "integer",
-      "description": "一次核心批次最多生成的事件卡数量",
-      "default": 6,
-      "minimum": 1,
-      "maximum": 12
-    },
-    "memory_event_input_token_budget": {
-      "type": "integer",
-      "description": "事件抽取单批核心与重叠证据合计 Token 上限",
-      "default": 16000,
-      "minimum": 1024,
-      "maximum": 100000
-    },
-    "memory_initial_backfill_messages": {
-      "type": "integer",
-      "description": "首次启用时从现有日志回溯的消息数；0 表示只处理新消息",
-      "default": 2000,
-      "minimum": 0,
-      "maximum": 100000
-    },
-    "memory_max_chunks_per_run": {
-      "type": "integer",
-      "description": "单次后台任务最多处理的事件批次数，限制补历史时的突发调用",
-      "default": 3,
-      "minimum": 1,
-      "maximum": 20
-    },
-    "memory_stage_event_threshold": {
-      "type": "integer",
-      "description": "累计多少个新事件后刷新阶段记忆",
-      "default": 40,
-      "minimum": 5,
-      "maximum": 500
-    },
-    "memory_stage_input_event_limit": {
-      "type": "integer",
-      "description": "阶段记忆单次最多读取的新事件数",
-      "default": 80,
-      "minimum": 5,
-      "maximum": 500
-    },
-    "memory_stage_input_token_budget": {
-      "type": "integer",
-      "description": "阶段记忆单次输入 Token 上限",
-      "default": 24000,
-      "minimum": 2048,
-      "maximum": 200000
-    },
-    "memory_stage_char_limit": {
-      "type": "integer",
-      "description": "阶段记忆保存字符上限",
-      "default": 6000,
-      "minimum": 1000,
-      "maximum": 20000
-    },
-    "memory_retrieval_top_k": {
-      "type": "integer",
-      "description": "每轮回复最多注入多少张相关事件卡",
-      "default": 6,
-      "minimum": 1,
-      "maximum": 20
-    },
-    "memory_query_recent_messages": {
-      "type": "integer",
-      "description": "构造检索查询时参考的最近消息数",
-      "default": 12,
-      "minimum": 1,
-      "maximum": 100
-    },
-    "memory_context_max_tokens": {
-      "type": "integer",
-      "description": "单轮回复中阶段记忆、人物资料和事件卡的总 Token 上限",
-      "default": 6000,
-      "minimum": 512,
-      "maximum": 20000
-    },
-    "memory_person_enabled": {
-      "type": "boolean",
-      "description": "启用直接从原消息生成证据观察、事实版本、长期模式和人物快照的人物记忆",
-      "default": true
-    },
-    "memory_person_index_target_messages": {
-      "type": "integer",
-      "description": "人物消息索引独立累计多少条原消息后启动，不再受事件记忆批次控制",
-      "default": 20,
-      "minimum": 5,
-      "maximum": 500
-    },
-    "memory_person_min_pending_messages": {
-      "type": "integer",
-      "description": "单个人物累计多少条本人或明确提及消息后启动一次增量炼化",
-      "default": 30,
-      "minimum": 5,
-      "maximum": 500
-    },
-    "memory_person_batch_related_messages": {
-      "type": "integer",
-      "description": "单次人物中心炼化最多读取多少条该人物相关消息",
-      "default": 80,
-      "minimum": 8,
-      "maximum": 500
-    },
-    "memory_person_max_batch_people": {
-      "type": "integer",
-      "description": "单次后台任务最多处理多少个人物的相关消息队列",
-      "default": 4,
-      "minimum": 1,
-      "maximum": 20
-    },
-    "memory_person_max_observations_per_batch": {
-      "type": "integer",
-      "description": "单次人物中心炼化最多生成多少条候选观察，候选仍需独立证据核验",
-      "default": 16,
-      "minimum": 4,
-      "maximum": 30
-    },
-    "memory_person_input_token_budget": {
-      "type": "integer",
-      "description": "单次人物中心炼化的原消息与邻近上下文输入 Token 上限",
-      "default": 24000,
-      "minimum": 4000,
-      "maximum": 100000
-    },
-    "memory_person_candidate_memory_value": {
-      "type": "number",
-      "description": "高召回候选的最低长期价值；候选不会未经证据核验直接进入人物画像",
-      "default": 0.58,
-      "minimum": 0.35,
-      "maximum": 0.95
-    },
-    "memory_person_refresh_threshold": {
-      "type": "integer",
-      "description": "单个人物累计多少条新观察后刷新事实、模式、关系与人物快照",
-      "default": 10,
-      "minimum": 1,
-      "maximum": 100
-    },
-    "memory_person_max_refresh_people": {
-      "type": "integer",
-      "description": "单次后台记忆任务最多刷新多少个人物快照",
-      "default": 4,
-      "minimum": 1,
-      "maximum": 20
-    },
-    "memory_person_retrieval_max_people": {
-      "type": "integer",
-      "description": "单轮回复最多注入多少个直接相关人物的资料",
-      "default": 3,
-      "minimum": 1,
-      "maximum": 6
-    },
-    "memory_person_retrieval_max_items": {
-      "type": "integer",
-      "description": "单个人物在一轮回复中最多注入多少条相关快照项目",
-      "default": 12,
-      "minimum": 3,
-      "maximum": 20
-    },
-    "memory_person_include_high_sensitivity": {
-      "type": "boolean",
-      "description": "普通回复是否允许自动注入高敏感人物记忆；默认关闭",
-      "default": false
-    },
-    "memory_embedding_enabled": {
-      "type": "boolean",
-      "description": "启用本地 BGE 向量检索；关闭或模型不可用时退化为关键词检索",
-      "default": true
-    },
-    "memory_embedding_model": {
-      "type": "string",
-      "description": "FastEmbed 本地向量模型",
-      "default": "BAAI/bge-small-zh-v1.5",
-      "enum": [
-        "BAAI/bge-small-zh-v1.5"
-      ],
-      "enum_labels": {
-        "BAAI/bge-small-zh-v1.5": "BGE Small 中文 v1.5（CPU 推荐）"
-      }
-    },
-    "memory_embedding_threads": {
-      "type": "integer",
-      "description": "本地 Embedding 使用的 CPU 线程数",
-      "default": 4,
-      "minimum": 1,
-      "maximum": 8
-    },
-    "memory_embedding_batch_size": {
-      "type": "integer",
-      "description": "后台补向量时的批量大小",
-      "default": 8,
-      "minimum": 1,
-      "maximum": 64
-    },
-    "memory_dedup_enabled": {
-      "type": "boolean",
-      "description": "写入事件时使用本地向量候选和轻量模型识别重复或同话题更新",
-      "default": true
-    },
-    "memory_verification_enabled": {
-      "type": "boolean",
-      "description": "对人物自述、第三方归因和医疗等高风险事件执行逐项证据复核；失败时隔离事件",
-      "default": true
-    },
-    "memory_dedup_lookback_days": {
-      "type": "integer",
-      "description": "事件语义去重回看天数；同话题超过该时间通常视为新的发生",
-      "default": 30,
-      "minimum": 1,
-      "maximum": 3650
-    },
-    "memory_dedup_candidate_threshold": {
-      "type": "number",
-      "description": "进入语义去重判定的最低余弦相似度",
-      "default": 0.78,
-      "minimum": 0.5,
-      "maximum": 0.99
-    },
-    "memory_duplicate_similarity_threshold": {
-      "type": "number",
-      "description": "允许跳过纯重复事件的最低余弦相似度；仍需轻量模型确认没有新信息",
-      "default": 0.9,
-      "minimum": 0.6,
-      "maximum": 0.999
-    },
-    "memory_retrieval_mmr_lambda": {
-      "type": "number",
-      "description": "检索多样化中相关性权重；越高越偏向相似度，越低越避免同话题重复",
-      "default": 0.72,
-      "minimum": 0.1,
-      "maximum": 1
-    },
-    "memory_retrieval_diversity_threshold": {
-      "type": "number",
-      "description": "检索结果间超过该相似度时只保留排名更高的一张",
-      "default": 0.92,
-      "minimum": 0.6,
-      "maximum": 0.999
-    },
-    "memory_checkpoint_max_tokens": {
-      "type": "integer",
-      "description": "锚点轮换时冻结注入的新线程阶段记忆 Token 上限",
-      "default": 4000
-    },
-    "memory_retention_days": {
-      "type": "integer",
-      "description": "回复检索最多回看多少天；0 表示不限。该设置不会删除存储内容",
-      "default": 0,
-      "minimum": 0,
-      "maximum": 3650
-    },
-    "memory_candidate_retention_days": {
-      "type": "integer",
-      "description": "已拒绝的人物候选保留天数；候选不是正式记忆，过期后可安全清理",
-      "default": 90,
-      "minimum": 7,
-      "maximum": 3650
-    },
-    "memory_maintenance_interval_hours": {
-      "type": "integer",
-      "description": "每个聊天执行一次轻量记忆生命周期维护的最短间隔",
-      "default": 24,
-      "minimum": 1,
-      "maximum": 720
     },
     "search_enabled": {
       "type": "boolean",
@@ -578,39 +191,6 @@
       "type": "string",
       "description": "主动回复裁判的系统提示词（支持{chat_text}占位符）",
       "default": "## Role\n你是一个谨慎的聊天群组观察员，负责判断 AI 助手是否应该参与当前对话。\n\n## Context\n以下是最近的聊天记录：\n[对话开始]\n{chat_text}\n[对话结束]\n\n## Rules\n- 明确提到机器人、请求帮助或提出适合 AI 回答的问题时，可以回复。\n- 纯表情、复读、礼貌收尾或参与会打扰正常交流时，不回复。\n- 不确定时优先不主动介入。\n\n## Output\n仅输出 JSON：\n{\n  \"atmosphere\": \"当前聊天氛围\",\n  \"should_reply\": true,\n  \"reason\": \"简短说明判断理由\"\n}"
-    },
-    "memory_person_stale_pending_days": {
-      "type": "integer",
-      "description": "人物相关消息长期未达到常规门槛时，最多等待多少天后自动炼化",
-      "default": 14,
-      "minimum": 1,
-      "maximum": 180
-    },
-    "memory_person_stale_pending_min_messages": {
-      "type": "integer",
-      "description": "启用超时自动炼化所需的最少人物相关消息数",
-      "default": 8,
-      "minimum": 1,
-      "maximum": 100
-    },
-    "memory_person_auto_merge_stable_identities": {
-      "type": "boolean",
-      "description": "稳定 sender_id 已确认昵称与旧无ID身份重合时自动合并，并保留可撤销审计",
-      "default": true
-    },
-    "memory_person_refresh_max_age_days": {
-      "type": "integer",
-      "description": "人物已有未投影观察时，最多等待多少天后自动刷新人物资料",
-      "default": 7,
-      "minimum": 1,
-      "maximum": 90
-    },
-    "memory_automation_poll_minutes": {
-      "type": "integer",
-      "description": "无人操作时自动扫描人物积压与投影刷新的间隔（分钟）",
-      "default": 15,
-      "minimum": 1,
-      "maximum": 1440
     }
   },
   "config": {
@@ -622,75 +202,12 @@
     "codex_turn_timeout_seconds": 1800,
     "codex_max_turns_per_thread": 0,
     "codex_exec_fallback_enabled": true,
-    "context_limit": 20,
-    "max_context_tokens": 220000,
     "context_window_auto_detect": true,
-    "context_safety_margin_tokens": 24576,
-    "reserved_output_tokens": 8192,
-    "context_message_fetch_limit": 300,
-    "context_window_strategy": "anchored_append",
-    "anchor_message_count": 300,
-    "anchor_rollover_prompt_tokens": 205000,
-    "memory_context_ratio": 0.1,
-    "recent_context_ratio": 0.35,
-    "ephemeral_context_ratio": 0.1,
-    "ephemeral_context_max_tokens": 16000,
-    "memory_enabled": false,
-    "memory_background_enabled": false,
-    "memory_event_min_messages": 20,
-    "memory_event_target_messages": 40,
-    "memory_event_max_messages": 60,
-    "memory_event_context_before_messages": 12,
-    "memory_event_context_after_messages": 12,
-    "memory_event_max_cards": 6,
-    "memory_event_input_token_budget": 16000,
-    "memory_initial_backfill_messages": 2000,
-    "memory_max_chunks_per_run": 3,
-    "memory_stage_event_threshold": 40,
-    "memory_stage_input_event_limit": 80,
-    "memory_stage_input_token_budget": 24000,
-    "memory_stage_char_limit": 6000,
-    "memory_retrieval_top_k": 6,
-    "memory_query_recent_messages": 12,
-    "memory_context_max_tokens": 6000,
-    "memory_person_enabled": true,
-    "memory_person_index_target_messages": 20,
-    "memory_person_min_pending_messages": 30,
-    "memory_person_batch_related_messages": 80,
-    "memory_person_max_batch_people": 4,
-    "memory_person_max_observations_per_batch": 16,
-    "memory_person_input_token_budget": 24000,
-    "memory_person_candidate_memory_value": 0.58,
-    "memory_person_refresh_threshold": 10,
-    "memory_person_max_refresh_people": 4,
-    "memory_person_retrieval_max_people": 3,
-    "memory_person_retrieval_max_items": 12,
-    "memory_person_include_high_sensitivity": false,
-    "memory_embedding_enabled": true,
-    "memory_embedding_model": "BAAI/bge-small-zh-v1.5",
-    "memory_embedding_threads": 4,
-    "memory_embedding_batch_size": 8,
-    "memory_dedup_enabled": true,
-    "memory_verification_enabled": true,
-    "memory_dedup_lookback_days": 30,
-    "memory_dedup_candidate_threshold": 0.78,
-    "memory_duplicate_similarity_threshold": 0.9,
-    "memory_retrieval_mmr_lambda": 0.72,
-    "memory_retrieval_diversity_threshold": 0.92,
-    "memory_checkpoint_max_tokens": 4000,
-    "memory_retention_days": 0,
-    "memory_candidate_retention_days": 90,
-    "memory_maintenance_interval_hours": 24,
     "search_enabled": true,
     "allow_mention_trigger": true,
     "proactive_interval_minutes": 1,
     "proactive_msg_threshold": 5,
     "proactive_judge_model": "deepseek-chat",
-    "proactive_judge_prompt": "## Role\n你是一个谨慎的聊天群组观察员，负责判断 AI 助手是否应该参与当前对话。\n\n## Context\n以下是最近的聊天记录：\n[对话开始]\n{chat_text}\n[对话结束]\n\n## Rules\n- 明确提到机器人、请求帮助或提出适合 AI 回答的问题时，可以回复。\n- 纯表情、复读、礼貌收尾或参与会打扰正常交流时，不回复。\n- 不确定时优先不主动介入。\n\n## Output\n仅输出 JSON：\n{\n  \"atmosphere\": \"当前聊天氛围\",\n  \"should_reply\": true,\n  \"reason\": \"简短说明判断理由\"\n}",
-    "memory_person_stale_pending_days": 14,
-    "memory_person_stale_pending_min_messages": 8,
-    "memory_person_auto_merge_stable_identities": true,
-    "memory_person_refresh_max_age_days": 7,
-    "memory_automation_poll_minutes": 15
+    "proactive_judge_prompt": "## Role\n你是一个谨慎的聊天群组观察员，负责判断 AI 助手是否应该参与当前对话。\n\n## Context\n以下是最近的聊天记录：\n[对话开始]\n{chat_text}\n[对话结束]\n\n## Rules\n- 明确提到机器人、请求帮助或提出适合 AI 回答的问题时，可以回复。\n- 纯表情、复读、礼貌收尾或参与会打扰正常交流时，不回复。\n- 不确定时优先不主动介入。\n\n## Output\n仅输出 JSON：\n{\n  \"atmosphere\": \"当前聊天氛围\",\n  \"should_reply\": true,\n  \"reason\": \"简短说明判断理由\"\n}"
   }
 }

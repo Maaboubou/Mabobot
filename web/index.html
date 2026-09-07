@@ -40,7 +40,7 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
 
     <!-- App CSS -->
-    <link href="/static/assets/css/style.css?v=3.6.41" rel="stylesheet">
+    <link href="/static/assets/css/style.css?v=3.6.46-archive-only" rel="stylesheet">
     <link href="/static/assets/css/dashboard.css?v=3.5.3" rel="stylesheet">
     <link rel="stylesheet" href="/notification-assets/email_notifications.css?v=2">
 </head>
@@ -112,6 +112,13 @@
                     </a>
                 </li>
 
+                <li class="nav-item">
+                    <a href="/usage" class="nav-link" data-tab="usage">
+                        <i class="bi bi-graph-up"></i>
+                        <span>用量统计</span>
+                    </a>
+                </li>
+
                 <div class="sidebar-section-label">管理</div>
                 <li class="nav-item">
                     <a href="/operations/logs" class="nav-link" data-tab="logs">
@@ -128,7 +135,7 @@
             </div>
 
             <div class="sidebar-footer p-3 border-top border-secondary border-opacity-25">
-                <small class="text-muted d-block mb-1">版本：3.1.0</small>
+                <small class="text-muted d-block mb-1">版本：3.2.0</small>
                 <div class="d-flex align-items-center text-muted gap-2">
                     <button id="themeToggle" type="button" class="sidebar-theme-toggle"
                         aria-label="切换到暗色模式" aria-pressed="false" title="切换到暗色模式">
@@ -210,7 +217,7 @@
                             <article class="dashboard-kpi"><span class="dashboard-kpi-label"><i class="bi bi-robot"></i>AI 回复</span><strong id="statAiReplies">-</strong></article>
                             <article class="dashboard-kpi"><span class="dashboard-kpi-label"><i class="bi bi-lightning-charge"></i>模型调用</span><strong id="dashboardModelCalls">-</strong><em id="dashboardCallsMeta">本次运行</em></article>
                             <article class="dashboard-kpi"><span class="dashboard-kpi-label"><i class="bi bi-braces"></i>Token</span><strong id="statTokenUsage">-</strong></article>
-                            <a class="dashboard-kpi dashboard-kpi-action" href="/ai/calls" onclick="event.preventDefault(); App.openDashboardErrors()"><span class="dashboard-kpi-label"><i class="bi bi-exclamation-triangle"></i>调用错误</span><strong id="dashboardErrors">-</strong><i class="bi bi-arrow-up-right dashboard-kpi-arrow" aria-hidden="true"></i></a>
+                            <a class="dashboard-kpi dashboard-kpi-action" href="/usage/calls" onclick="event.preventDefault(); App.openDashboardErrors()"><span class="dashboard-kpi-label"><i class="bi bi-exclamation-triangle"></i>调用错误</span><strong id="dashboardErrors">-</strong><i class="bi bi-arrow-up-right dashboard-kpi-arrow" aria-hidden="true"></i></a>
                         </div>
                     </section>
 
@@ -228,10 +235,10 @@
                         <aside class="modern-card dashboard-side-panel fade-in">
                             <section class="dashboard-panel-section" id="codexCard">
                                 <div class="dashboard-section-heading">
-                                    <h6>Codex 额度</h6>
+                                    <h6>默认助手模型</h6>
                                     <button class="dashboard-icon-button" id="refreshCodexUsageBtn" onclick="App.refreshCodexUsage()" title="刷新 Codex 用量" aria-label="刷新 Codex 用量"><i class="bi bi-arrow-clockwise"></i></button>
                                 </div>
-                                <div class="dashboard-side-body" id="codexStatusOutput"><div class="loading-wrapper small">正在读取额度…</div></div>
+                                <div class="dashboard-side-body" id="codexStatusOutput"><div class="loading-wrapper small">正在读取配置与额度…</div></div>
                             </section>
 
                             <section class="dashboard-panel-section">
@@ -351,7 +358,7 @@
                                     <div class="col-12 codex-profile-api-field d-none"><label class="form-label" for="codexProfileApiKey">API Key</label><div class="input-group"><input class="form-control" id="codexProfileApiKey" name="api_key" type="password" maxlength="4096" autocomplete="new-password" required><button class="btn btn-outline-secondary" type="button" onclick="UI.togglePassword('codexProfileApiKey')" aria-label="显示或隐藏 API Key"><i class="bi bi-eye"></i></button></div><div class="form-text" id="codexProfileApiKeyHint">密钥通过标准输入交给 WSL，并存入权限为 0600 的独立文件；不会写入 Profile 清单或返回网页。</div></div>
                                     <div class="col-md-4 codex-profile-final-config-field"><label class="form-label">推理强度</label><select class="form-select" name="reasoning_effort"><option>minimal</option><option>low</option><option>medium</option><option selected>high</option><option>xhigh</option><option>max</option></select></div>
                                     <div class="col-md-4 codex-profile-final-config-field"><label class="form-label">输出详细度</label><select class="form-select" name="model_verbosity"><option selected>inherit</option><option>low</option><option>medium</option><option>high</option></select></div>
-                                    <div class="col-md-4 codex-profile-final-config-field"><label class="form-label">上下文窗口</label><input class="form-control" name="context_window" type="number" min="4096" max="10000000" value="128000"></div>
+                                    <div class="col-md-4 codex-profile-final-config-field"><label class="form-label">上下文窗口（Token）</label><input class="form-control" name="context_window" type="number" min="4096" max="10000000" value="128000"><div class="form-text">官方登录和 API 均生效；自动压缩阈值为此值的 90%。运行时可用窗口可能扣除预留空间。</div></div>
                                     <div class="col-12 codex-profile-final-config-field"><label class="form-check form-switch"><input class="form-check-input" type="checkbox" name="make_default" checked><span class="form-check-label">设为 Assistant 默认 Profile</span></label></div>
                                 </form>
                             </div>
@@ -542,8 +549,8 @@
                             <button type="button" class="btn btn-surface" onclick="App.showAddUserModal()">
                                 <i class="bi bi-plus-lg me-1"></i>添加聊天
                             </button>
-                            <button type="button" class="btn btn-surface chat-toolbar-icon" id="chatMemoryButton"
-                                onclick="App.openSelectedChatMemory()" title="打开当前聊天记忆库" aria-label="打开当前聊天记忆库" disabled>
+                            <button type="button" class="btn btn-surface chat-toolbar-icon" id="chatArchiveButton"
+                                onclick="App.openSelectedChatArchive()" title="打开当前聊天档案" aria-label="打开当前聊天档案" disabled>
                                 <i class="bi bi-database-gear"></i>
                             </button>
                             <button type="button" class="btn btn-surface chat-toolbar-icon text-danger" id="chatDeleteButton"
@@ -603,7 +610,7 @@
                                     <input class="form-check-input" type="checkbox" name="assistant_enabled" checked>
                                     <span class="form-check-label"><strong>同时启用 AI 助手</strong><br><small class="text-muted">使用 Codex 默认 Profile 回复；插件权限稍后可独立调整。</small></span>
                                 </label>
-                                <div class="form-text mt-3">添加后将直接进入聊天工作台；记忆、黑名单与插件在该处统一维护。</div>
+                                <div class="form-text mt-3">添加后将直接进入聊天工作台；聊天档案、黑名单与插件在该处统一维护。</div>
                             </form>
                         </div>
                         <div class="modal-footer">
@@ -632,8 +639,8 @@
                         </button>
                     </div>
                     <div class="assistant-command-actions">
-                        <button type="button" class="btn btn-light border" onclick="App.openMemoryLibraryHub()">
-                            <i class="bi bi-database-gear me-1"></i>记忆库
+                        <button type="button" class="btn btn-light border" onclick="App.openChatArchiveHub()">
+                            <i class="bi bi-database-gear me-1"></i>聊天档案
                         </button>
                         <button type="button" class="btn btn-primary" onclick="App.showAssistantGlobalSettings()">
                             <i class="bi bi-sliders me-1"></i>全局设置
@@ -661,7 +668,7 @@
                                 <div>
                                     <h5><i class="bi bi-cpu me-2"></i>模型路由</h5>
                                 </div>
-                                <button class="btn btn-sm btn-outline-primary" onclick="UI.switchTab('llm')">管理模型与调用</button>
+                                <button class="btn btn-sm btn-outline-primary" onclick="UI.switchTab('llm')">管理模型配置</button>
                             </div>
                             <div id="assistantModelSummary" class="assistant-summary-list"></div>
                         </section>
@@ -714,46 +721,37 @@
             </div>
 
             <!-- Tab: LLM Management -->
-            <div id="llm" class="tab-content d-none workspace-page">
-                <!-- Sub-navigation -->
+            <div id="usage" class="tab-content d-none workspace-page">
                 <ul class="nav nav-pills console-subnav workspace-subnav" role="tablist">
                     <li class="nav-item" role="presentation">
-                        <button class="nav-link active" id="llm-models-tab" data-bs-toggle="pill" data-bs-target="#llm-models"
+                        <button class="nav-link active" id="llm-stats-tab" data-bs-toggle="pill" data-bs-target="#llm-stats"
                             type="button">
-                            <i class="bi bi-boxes me-1"></i> 模型连接
+                            <i class="bi bi-graph-up me-1"></i> 用量
                         </button>
                     </li>
-                    <li class="nav-item" role="presentation">
-                        <button class="nav-link" id="llm-mappings-tab" data-bs-toggle="pill"
-                            data-bs-target="#llm-mappings" type="button">
-                            <i class="bi bi-diagram-3 me-1"></i> 任务路由
-                        </button>
-                    </li>
-
                     <li class="nav-item" role="presentation">
                         <button class="nav-link" id="llm-history-tab" data-bs-toggle="pill"
                             data-bs-target="#llm-history" type="button">
                             <i class="bi bi-journal-text me-1"></i> 调用记录
                         </button>
                     </li>
-
-                    <li class="nav-item" role="presentation">
-                        <button class="nav-link" id="llm-stats-tab" data-bs-toggle="pill" data-bs-target="#llm-stats"
-                            type="button">
-                            <i class="bi bi-graph-up me-1"></i> 用量
-                        </button>
-                    </li>
-
-                    <li class="nav-item" role="presentation">
-                        <button class="nav-link" id="llm-proxy-tab" data-bs-toggle="pill" data-bs-target="#llm-proxy"
-                            type="button">
-                            <i class="bi bi-globe me-1"></i> 网络
-                        </button>
-                    </li>
                 </ul>
-
                 <div class="tab-content">
-                    <!-- Call History Sub-Tab -->
+                    <div class="tab-pane fade show active workspace-section" id="llm-stats">
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <h5 class="fw-bold text-secondary mb-0"><i class="bi bi-graph-up me-2"></i>用量统计
+                            </h5>
+                            <button class="btn btn-outline-secondary btn-sm" onclick="LLMManager.refreshStats()">
+                                <i class="bi bi-arrow-clockwise me-1"></i> 刷新
+                            </button>
+                        </div>
+                        <div id="llmStatsList">
+                            <div class="col-12 text-center py-5">
+                                <div class="spinner-border text-primary" role="status"></div>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="tab-pane fade d-none workspace-section" id="llm-history">
                         <div class="d-flex justify-content-between align-items-center mb-3">
                             <h5 class="fw-bold text-secondary mb-0">
@@ -789,6 +787,39 @@
                         </div>
                     </div>
 
+                </div>
+            </div>
+
+            <div id="llm" class="tab-content d-none workspace-page">
+                <!-- Sub-navigation -->
+                <ul class="nav nav-pills console-subnav workspace-subnav" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="llm-models-tab" data-bs-toggle="pill" data-bs-target="#llm-models"
+                            type="button">
+                            <i class="bi bi-boxes me-1"></i> 模型连接
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="llm-mappings-tab" data-bs-toggle="pill"
+                            data-bs-target="#llm-mappings" type="button">
+                            <i class="bi bi-diagram-3 me-1"></i> 任务路由
+                        </button>
+                    </li>
+
+
+
+
+
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="llm-proxy-tab" data-bs-toggle="pill" data-bs-target="#llm-proxy"
+                            type="button">
+                            <i class="bi bi-globe me-1"></i> 网络
+                        </button>
+                    </li>
+                </ul>
+
+                <div class="tab-content">
+                    <!-- Call History Sub-Tab -->
                     <!-- Models Section -->
                     <div class="tab-pane fade show active workspace-section" id="llm-models">
                         <div class="llm-model-toolbar workspace-toolbar">
@@ -837,21 +868,6 @@
 
 
                     <!-- Statistics Section -->
-                    <div class="tab-pane fade d-none workspace-section" id="llm-stats">
-                        <div class="d-flex justify-content-between align-items-center mb-3">
-                            <h5 class="fw-bold text-secondary mb-0"><i class="bi bi-graph-up me-2"></i>用量统计
-                            </h5>
-                            <button class="btn btn-outline-secondary btn-sm" onclick="LLMManager.refreshStats()">
-                                <i class="bi bi-arrow-clockwise me-1"></i> 刷新
-                            </button>
-                        </div>
-                        <div id="llmStatsList">
-                            <div class="col-12 text-center py-5">
-                                <div class="spinner-border text-primary" role="status"></div>
-                            </div>
-                        </div>
-                    </div>
-
                     <!-- Proxy Settings Section -->
                     <div class="tab-pane fade d-none workspace-section" id="llm-proxy">
                         <div class="d-flex justify-content-between align-items-center mb-3">
@@ -1031,176 +1047,6 @@
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
                     <button type="button" class="btn btn-primary" id="configModalSaveBtn">保存更改</button>
                 </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Chat Memory Library Pro-Console Modal -->
-    <div class="modal fade" id="memoryLibraryModal" tabindex="-1" aria-labelledby="memoryLibraryModalTitle"
-        aria-hidden="true">
-        <div class="modal-dialog modal-fullscreen">
-            <div class="modal-content bg-body-tertiary">
-                <div class="modal-header border-bottom py-2 px-4 bg-body">
-                    <div class="memory-library-heading">
-                        <h5 class="modal-title fw-bold m-0 d-flex align-items-center" id="memoryLibraryModalTitle">
-                            <span class="d-inline-flex align-items-center justify-content-center bg-primary-subtle text-primary rounded-3 me-2" style="width:34px; height:34px;">
-                                <i class="bi bi-database-gear"></i>
-                            </span>
-                            记忆库
-                        </h5>
-                        <div class="dropdown memory-user-switcher">
-                            <button class="memory-user-switcher-toggle" type="button" id="memoryLibraryUserSwitcher"
-                                data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
-                                <span class="memory-user-switcher-icon"><i class="bi bi-person-circle"></i></span>
-                                <span class="memory-user-switcher-copy">
-                                    <small>当前记忆库</small>
-                                    <strong id="memoryLibraryChatName">选择用户</strong>
-                                </span>
-                                <i class="bi bi-chevron-down memory-user-switcher-chevron"></i>
-                            </button>
-                            <div class="dropdown-menu memory-user-switcher-menu" aria-labelledby="memoryLibraryUserSwitcher">
-                                <div class="memory-user-switcher-search">
-                                    <i class="bi bi-search"></i>
-                                    <input type="search" id="memoryLibraryUserQuery" autocomplete="off"
-                                        placeholder="搜索用户或群聊" aria-label="搜索用户或群聊"
-                                        oninput="App.filterMemoryLibraryUsers()">
-                                </div>
-                                <div class="memory-user-switcher-options" id="memoryLibraryUserOptions"></div>
-                                <div class="memory-user-switcher-empty d-none" id="memoryLibraryUserEmpty">
-                                    没有匹配的用户
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
-                </div>
-
-                <div class="modal-body p-3">
-                    <div id="memoryLibrarySummary" class="mb-3"></div>
-
-                    <div class="memory-workbench-root">
-
-                        <aside class="memory-sidebar-left">
-                            <div class="memory-sidebar-top">
-                                <div class="nav-title">分类</div>
-                                <div class="memory-nav-list">
-                                    <button class="memory-nav-btn active" data-bs-target="#memoryLibraryOverviewPane" type="button"
-                                        onclick="App.switchMemoryTab(this, '#memoryLibraryOverviewPane')">
-                                        <span><i class="bi bi-speedometer2"></i>概览</span>
-                                    </button>
-                                    <button class="memory-nav-btn" data-bs-target="#memoryLibraryEventsPane" type="button"
-                                        onclick="App.switchMemoryTab(this, '#memoryLibraryEventsPane')">
-                                        <span><i class="bi bi-clock-history"></i>记忆</span>
-                                        <span class="memory-nav-badge" id="memoryLibraryEventCount">0</span>
-                                    </button>
-                                    <button class="memory-nav-btn" data-bs-target="#memoryLibraryPeoplePane" type="button"
-                                        onclick="App.switchMemoryTab(this, '#memoryLibraryPeoplePane')">
-                                        <span><i class="bi bi-person-lines-fill"></i>人物</span>
-                                        <span class="memory-nav-badge" id="memoryLibraryPeopleCount">0</span>
-                                    </button>
-                                    <button class="memory-nav-btn" data-bs-target="#memoryLibraryReviewsPane" type="button"
-                                        onclick="App.switchMemoryTab(this, '#memoryLibraryReviewsPane')">
-                                        <span><i class="bi bi-shield-exclamation"></i>自动隔离</span>
-                                        <span class="memory-nav-badge" id="memoryLibraryReviewCount">0</span>
-                                    </button>
-                                    <button class="memory-nav-btn" data-bs-target="#memoryLibraryChangesPane" type="button"
-                                        onclick="App.switchMemoryTab(this, '#memoryLibraryChangesPane')">
-                                        <span><i class="bi bi-journal-check"></i>变更记录</span>
-                                    </button>
-                                    <button class="memory-nav-btn" data-bs-target="#memoryLibraryMaintenancePane" type="button"
-                                        onclick="App.switchMemoryTab(this, '#memoryLibraryMaintenancePane')">
-                                        <span><i class="bi bi-tools"></i>维护</span>
-                                    </button>
-                                </div>
-                            </div>
-                        </aside>
-
-                        <main class="memory-main-feed">
-                            <div class="mem-pane" id="memoryLibraryOverviewPane" style="display:flex; flex-direction:column;">
-                                <div class="mem-feed-body" id="memoryLibraryOverviewContent"></div>
-                            </div>
-
-                            <div class="mem-pane" id="memoryLibraryEventsPane" style="display:none; flex-direction:column;">
-                                <div class="mem-feed-header">
-                                    <div class="mem-feed-controls">
-                                        <div class="mem-feed-search">
-                                            <i class="bi bi-search"></i>
-                                            <input id="memoryLibraryQuery" placeholder="搜索标题、摘要、参与者或关键词"
-                                                onkeydown="if(event.key === 'Enter'){ event.preventDefault(); App.searchMemoryLibraryEvents(); }">
-                                        </div>
-                                        <select class="mem-feed-select" id="memoryLibraryStatus" onchange="App.searchMemoryLibraryEvents()">
-                                            <option value="all">全部版本</option>
-                                            <option value="active">当前有效</option>
-                                            <option value="quarantined">自动隔离（不参与回答）</option>
-                                            <option value="superseded">已被替代</option>
-                                            <option value="invalidated">已作废</option>
-                                        </select>
-                                        <div class="d-inline-flex align-items-center gap-1 small text-muted">
-                                            <span>从</span>
-                                            <input type="date" class="form-control form-control-sm px-1 py-1 text-center" id="memoryLibraryDateFrom" style="width:120px;" onchange="App.searchMemoryLibraryEvents()">
-                                            <span>到</span>
-                                            <input type="date" class="form-control form-control-sm px-1 py-1 text-center" id="memoryLibraryDateTo" style="width:120px;" onchange="App.searchMemoryLibraryEvents()">
-                                        </div>
-                                        <button class="btn btn-sm btn-primary px-3 fw-medium" type="button" onclick="App.searchMemoryLibraryEvents()">
-                                            <i class="bi bi-search me-1"></i>搜索
-                                        </button>
-                                    </div>
-                                </div>
-                                <div class="px-4 pt-2 small text-muted" id="memoryLibraryEventStatus"></div>
-                                <div class="mem-feed-body" id="memoryLibraryEventList"></div>
-                                <div class="d-flex justify-content-between align-items-center px-4 py-2 bg-body border-top" id="memoryLibraryPagination"></div>
-                            </div>
-
-                            <div class="mem-pane" id="memoryLibraryPeoplePane" style="display:none; flex-direction:column;">
-                                <div class="mem-feed-header">
-                                    <div class="mem-feed-search" style="max-width:360px;">
-                                        <i class="bi bi-person-bounding-box"></i>
-                                        <input id="memoryLibraryPeopleQuery" placeholder="筛选人物姓名或资料"
-                                            onkeydown="if(event.key === 'Enter'){ event.preventDefault(); App.searchMemoryLibraryPeople(); }">
-                                    </div>
-                                    <button class="btn btn-sm btn-primary" type="button" onclick="App.searchMemoryLibraryPeople()">
-                                        <i class="bi bi-search me-1"></i>搜索
-                                    </button>
-                                </div>
-                                <div class="mem-feed-body" id="memoryLibraryPeopleList"></div>
-                                <div class="d-flex justify-content-between align-items-center px-4 py-2 bg-body border-top" id="memoryLibraryPeoplePagination"></div>
-                            </div>
-
-                            <div class="mem-pane" id="memoryLibraryReviewsPane" style="display:none; flex-direction:column;">
-                                <div class="mem-feed-body" id="memoryLibraryReviewsContent"></div>
-                                <div class="d-flex justify-content-between align-items-center px-4 py-2 bg-body border-top" id="memoryLibraryReviewsPagination"></div>
-                            </div>
-
-                            <div class="mem-pane" id="memoryLibraryChangesPane" style="display:none; flex-direction:column;">
-                                <div class="mem-feed-body" id="memoryLibraryChangesContent"></div>
-                                <div class="d-flex justify-content-between align-items-center px-4 py-2 bg-body border-top" id="memoryLibraryChangesPagination"></div>
-                            </div>
-
-                            <div class="mem-pane" id="memoryLibraryMaintenancePane" style="display:none; flex-direction:column;">
-                                <div class="mem-feed-body" id="memoryLibraryMaintenanceContent"></div>
-                            </div>
-                        </main>
-
-                        <aside class="memory-inspect-drawer" id="memoryLibraryInspectDrawer">
-                            <div class="mem-drawer-header">
-                                <div class="mem-drawer-header-title" id="memDrawerTitle">
-                                    <i class="bi bi-layout-sidebar-inset-reverse"></i>详情
-                                </div>
-                                <button type="button" class="mem-drawer-close-btn" title="关闭" onclick="App.closeMemoryDrawer && App.closeMemoryDrawer()">
-                                    <i class="bi bi-x-lg"></i>
-                                </button>
-                            </div>
-                            <div class="mem-drawer-body" id="memDrawerContent">
-                                <div class="text-center text-muted py-5">
-                                    <i class="bi bi-layout-sidebar fs-2 d-block mb-2"></i>
-                                    选择一条记忆或人物资料后在这里查看详情
-                                </div>
-                            </div>
-                        </aside>
-
-                    </div>
-                </div>
-
             </div>
         </div>
     </div>
@@ -1467,6 +1313,17 @@
                                                 </select>
                                             </div>
                                         </div>
+                                        <div class="row g-3 mt-1" id="modelBillingOptions">
+                                            <div class="col-sm-6"><label class="form-label" for="modelBillingMode">计费方式</label>
+                                                <select class="form-select" id="modelBillingMode"><option value="auto">按量估算</option><option value="free">免费</option><option value="included">订阅包含</option><option value="unknown">暂不计价</option></select>
+                                            </div>
+                                            <div class="col-sm-6"><label class="form-label" for="modelCostCurrency">自定义价格币种</label><select class="form-select" id="modelCostCurrency"><option value="USD">USD</option><option value="CNY">CNY</option></select></div>
+                                            <div class="col-sm-6"><label class="form-label" for="modelInputPrice">输入单价 / 百万 Token</label><input class="form-control" id="modelInputPrice" type="number" min="0" step="any" placeholder="自动匹配"></div>
+                                            <div class="col-sm-6"><label class="form-label" for="modelOutputPrice">输出单价 / 百万 Token</label><input class="form-control" id="modelOutputPrice" type="number" min="0" step="any" placeholder="自动匹配"></div>
+                                            <div class="col-sm-6"><label class="form-label" for="modelCacheReadPrice">缓存读取 / 百万 Token</label><input class="form-control" id="modelCacheReadPrice" type="number" min="0" step="any" placeholder="自动匹配"></div>
+                                            <div class="col-sm-6"><label class="form-label" for="modelCacheWritePrice">缓存写入 / 百万 Token</label><input class="form-control" id="modelCacheWritePrice" type="number" min="0" step="any" placeholder="自动匹配"></div>
+                                            <div class="col-12 small text-muted">留空使用可匹配的价格表。自定义价格需填写输入、输出；有缓存用量时需补充对应单价。Codex 固定按官方标准 API 价格折算。</div>
+                                        </div>
                                         <div class="model-capability-options">
                                             <label class="form-check">
                                                 <input type="checkbox" class="form-check-input" id="modelVision">
@@ -1608,16 +1465,16 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
     <!-- App Scripts -->
-    <script src="/static/assets/js/api.js?v=3.5.16"></script>
-    <script src="/static/assets/js/ui.js?v=3.4.21-email1"></script>
+    <script src="/static/assets/js/api.js?v=3.5.16-archive-only"></script>
+    <script src="/static/assets/js/ui.js?v=3.4.21-usage-email1-archive-only"></script>
     <script src="/notification-assets/email_notifications.js?v=1"></script>
-    <script src="/static/assets/js/system_operations.js?v=1.3.2"></script>
+    <script src="/static/assets/js/system_operations.js?v=1.3.2-archive-only"></script>
     <script src="/static/assets/js/system_tools.js?v=1.0.0"></script>
-    <script src="/static/assets/js/llm_manager.js?v=3.4.12"></script>
+    <script src="/static/assets/js/llm_manager.js?v=3.4.18-thread-reuse"></script>
     <script src="/static/assets/js/codex_center.js?v=1.0.15"></script>
     <script src="/static/assets/js/codex_skills.js?v=1.1.0"></script>
-    <script src="/static/assets/js/main.js?v=3.6.14-email1"></script>
-    <script src="/static/assets/js/memory_console.js?v=1.0.4"></script>
+    <script src="/static/assets/js/main.js?v=3.6.16-usage-archive-only"></script>
+    <script src="/static/assets/js/chat_archive.js?v=2.0.3-archive-only"></script>
 
     <!-- ==================== Judge History Modal ==================== -->
     <div class="modal fade" id="judgeHistoryModal" tabindex="-1" aria-labelledby="judgeHistoryModalLabel"

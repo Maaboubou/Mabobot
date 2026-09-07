@@ -54,6 +54,7 @@ class ModelRouteCatalogService:
         icon = raw_icon if _SAFE_ICON_PATTERN.fullmatch(raw_icon) else "bi-diagram-3"
         component_name = str(getattr(component, "name", "") or "")
         component_description = str(getattr(component, "description", "") or "")
+        tasks = normalize_llm_task_descriptors(config)
         return {
             "id": owner_id,
             "owner_kind": owner_kind,
@@ -70,7 +71,8 @@ class ModelRouteCatalogService:
             "category_label": str(category_meta["label"]),
             "category_order": int(category_meta["order"]),
             "featured": owner_kind == "core",
-            "tasks": normalize_llm_task_descriptors(config),
+            "tasks": {key: task for key, task in tasks.items() if task.get("routable") is not False},
+            "usage_tasks": tasks,
         }
 
     @staticmethod

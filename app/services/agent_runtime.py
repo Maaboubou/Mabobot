@@ -60,7 +60,6 @@ class AgentProfile:
 DEFAULT_PROFILES: Dict[str, AgentProfile] = {
     "chat": AgentProfile("chat", "interactive", True, 100),
     "proxy": AgentProfile("proxy", "batch", False, 70),
-    "memory": AgentProfile("memory", "batch", False, 60, sandbox="read-only"),
     "weekly": AgentProfile("weekly", "batch", False, 40),
     "batch": AgentProfile("batch", "batch", False, 50),
 }
@@ -291,6 +290,8 @@ class CodexProcessPool:
         self._completed = 0
         self._failed = 0
         self._queue_wait_total = 0.0
+        self._restart_index: Optional[int] = None
+        self._restart_error = ""
 
     def start(self) -> None:
         started: List[CodexAppServerManager] = []
@@ -306,6 +307,8 @@ class CodexProcessPool:
     def acquire(self, timeout: int, *, priority: int = 0) -> _PoolLease:
         started_at = time.monotonic()
         deadline = started_at + max(1, int(timeout))
+        restart_attempted = False
+        restart_deadline = deadline
         with self._condition:
             self._ticket_counter += 1
             ticket = (int(priority), self._ticket_counter)
@@ -314,10 +317,54 @@ class CodexProcessPool:
                 while True:
                     if not self._accepting:
                         raise CodexAppServerError(f"Codex {self.name} pool is draining")
+                    # A spawned process is not ready until initialize completes.
+                    running = [
+                        index != self._restart_index and manager.is_running()
+                        for index, manager in enumerate(self.managers)
+                    ]
+                    if not any(running):
+                        if not self.managers:
+                            raise CodexAppServerError(f"Codex {self.name} pool has no running workers")
+                        if self._restart_index is None:
+                            if restart_attempted:
+                                raise CodexAppServerError(
+                                    f"Codex {self.name} pool worker restart failed: {self._restart_error}"
+                                )
+                            index = min(range(len(self.managers)), key=lambda i: self._active[i])
+                            self._restart_index = index
+                            self._restart_error = ""
+                            startup_timeout = min(
+                                _positive_int(getattr(self.managers[index], "startup_timeout", 30), 30),
+                                max(1, int(deadline - time.monotonic())),
+                            )
+                            try:
+                                threading.Thread(
+                                    target=self._restart_worker,
+                                    args=(index, startup_timeout),
+                                    name=f"codex-{self.name}-restart",
+                                    daemon=True,
+                                ).start()
+                            except Exception as exc:
+                                self._restart_index = None
+                                self._restart_error = str(exc)
+                                raise CodexAppServerError(
+                                    f"Codex {self.name} pool worker restart failed: {exc}"
+                                ) from exc
+                        if not restart_attempted:
+                            startup_timeout = _positive_int(
+                                getattr(self.managers[self._restart_index], "startup_timeout", 30), 30
+                            )
+                            restart_deadline = min(deadline, time.monotonic() + startup_timeout)
+                            restart_attempted = True
+                        remaining = restart_deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise CodexAppServerError(f"Codex {self.name} pool worker restart timed out")
+                        self._condition.wait(timeout=min(remaining, 1.0))
+                        continue
                     candidates = [
                         index
                         for index, count in enumerate(self._active)
-                        if count < self.capacity and self.managers[index].is_running()
+                        if count < self.capacity and running[index]
                     ]
                     next_ticket = max(self._waiters, key=lambda item: (item[0], -item[1]))
                     if candidates and ticket == next_ticket:
@@ -334,6 +381,31 @@ class CodexProcessPool:
                 if ticket in self._waiters:
                     self._waiters.remove(ticket)
 
+    def _restart_worker(self, index: int, timeout: int) -> None:
+        manager = self.managers[index]
+        error = ""
+        try:
+            with self._condition:
+                if not self._accepting:
+                    return
+            logger.warning("Codex %s worker exited; restarting before dispatch", self.name)
+            manager.start(timeout=timeout)
+            if not manager.is_running():
+                raise CodexAppServerError("worker did not start")
+            logger.info("Codex %s worker restarted; resuming queued requests", self.name)
+        except Exception as exc:
+            error = str(exc)
+            logger.warning("Codex %s worker restart failed: %s", self.name, exc)
+        finally:
+            with self._condition:
+                self._restart_error = error
+                self._restart_index = None
+                accepting = self._accepting
+                self._condition.notify_all()
+            if not accepting:
+                # Draining can race with startup; do not leave a late process alive.
+                manager.stop()
+
     def release(self, index: int, *, failed: bool) -> None:
         with self._condition:
             self._active[index] = max(0, self._active[index] - 1)
@@ -341,6 +413,26 @@ class CodexProcessPool:
             if failed:
                 self._failed += 1
             self._condition.notify_all()
+
+    def is_healthy(self) -> bool:
+        with self._condition:
+            return (
+                self._accepting
+                and bool(self.managers)
+                # The request path already owns recovery of this worker. Avoid
+                # a second rebuild by the periodic monitor while it initializes.
+                and all(
+                    index == self._restart_index or manager.is_running()
+                    for index, manager in enumerate(self.managers)
+                )
+            )
+
+    def has_ready_worker(self) -> bool:
+        with self._condition:
+            return any(
+                index != self._restart_index and manager.is_running()
+                for index, manager in enumerate(self.managers)
+            )
 
     def drain_and_stop(self, timeout: int = 60) -> None:
         deadline = time.monotonic() + max(0, int(timeout))
@@ -478,11 +570,16 @@ class CodexAgentRuntime:
                 continue
             try:
                 signature = self.probe.quick_signature()
-                if self._quick_signature != signature:
+                if self._quick_signature != signature or not self._pools_healthy():
                     self.refresh(force=True)
             except Exception as exc:
                 self._last_refresh_error = str(exc)
                 logger.warning("Codex runtime discovery failed: %s", exc)
+
+    def _pools_healthy(self) -> bool:
+        with self._lock:
+            pools = list(self._pools.values())
+        return bool(pools) and all(pool.is_healthy() for pool in pools)
 
     def refresh(self, *, force: bool = False) -> bool:
         if not self._refresh_lock.acquire(blocking=False):
@@ -491,9 +588,7 @@ class CodexAgentRuntime:
             identity = self.probe.probe()
             self._discovered_identity = identity
             current = self._identity
-            if not force and current and current.key == identity.key:
-                return False
-            if current and current.key == identity.key and self._pools:
+            if current and current.key == identity.key and self._pools_healthy():
                 self._last_refresh_error = ""
                 self._quick_signature = self.probe.quick_signature()
                 return False
@@ -504,6 +599,8 @@ class CodexAgentRuntime:
                 logger.error("Codex runtime compatibility check failed: %s", self._last_refresh_error)
                 return False
 
+            if current and current.key == identity.key:
+                logger.warning("Codex workers unavailable; rebuilding process pools with the current binary")
             candidate = self._build_pools(identity)
             with self._lock:
                 previous = self._pools
@@ -515,6 +612,7 @@ class CodexAgentRuntime:
                 self._started_at = self._started_at or _iso_now()
                 if previous_identity and previous_identity.key != identity.key:
                     self._version_transitions += 1
+            self._record_success()
             if previous:
                 threading.Thread(
                     target=self._stop_pools,
@@ -628,6 +726,9 @@ class CodexAgentRuntime:
                 "exited unexpectedly",
                 "pool is draining",
                 "queue timed out",
+                "no running workers",
+                "pool worker restart failed",
+                "pool worker restart timed out",
                 "not found",
                 "compatibility",
             )
@@ -837,11 +938,16 @@ class CodexAgentRuntime:
         request = access.apply(request)
         fallback = profile.allow_exec_fallback if allow_exec_fallback is None else allow_exec_fallback
 
+        # History is a host dynamic tool and cannot survive an exec fallback.
+        # Fresh context is independent of process pooling and backend selection.
+        if request.get("mabobot_history_enabled"):
+            fallback = False
+
         # Explicitly stateless requests still use exec. Normal isolated chats
         # are safe to persist because access.apply() injects the administrator-
         # owned permission profile, cwd and runtime workspace roots after all
         # untrusted payload fields have been constructed.
-        if not persistent_session or not access.persistent_thread:
+        if (not persistent_session or not access.persistent_thread) and not request.get("mabobot_fresh_context"):
             return self._fallback_exec(
                 request,
                 reason="explicit_stateless",
@@ -862,7 +968,7 @@ class CodexAgentRuntime:
                     track_continuity=True,
                 )
             raise CodexProxyError(self._last_refresh_error or "Codex runtime is unavailable")
-        if self._circuit_open():
+        if self._circuit_open() and pool.has_ready_worker():
             if fallback:
                 return self._fallback_exec(
                     request,
@@ -913,7 +1019,7 @@ class CodexAgentRuntime:
             if fallback:
                 return self._fallback_exec(request, reason="runtime_unavailable")
             raise CodexProxyError(self._last_refresh_error or "Codex runtime is unavailable")
-        if self._circuit_open():
+        if self._circuit_open() and pool.has_ready_worker():
             if fallback:
                 return self._fallback_exec(request, reason="circuit_open")
             raise CodexProxyError("Codex runtime circuit is temporarily open")

@@ -94,11 +94,11 @@ async def list_roles(db: Session = Depends(get_db)) -> Dict[str, Any]:
     """获取所有角色列表"""
     try:
         roles = db.query(ChatBotRole).all()
-        
+
         role_list = []
         for role in roles:
             role_list.append(_role_to_dict(role, db))
-        
+
         return {
             "roles": role_list,
             "total": len(role_list)
@@ -108,47 +108,6 @@ async def list_roles(db: Session = Depends(get_db)) -> Dict[str, Any]:
 
 
 # 注意：具体路径必须在参数化路径之前定义，避免被 /{role_id} 捕获
-@router.get("/memory-event-source")
-async def get_memory_event_source(
-    chat_name: str = Query(..., min_length=1),
-    event_id: int = Query(..., ge=1),
-) -> Dict[str, Any]:
-    """Return one event card and the raw chat range that produced it."""
-    from app.assistant.memory_source import read_event_source
-    from app.assistant.memory_store import MemoryStore
-
-    store = MemoryStore()
-    event = store.get_event(chat_name, event_id)
-    if not event:
-        raise HTTPException(status_code=404, detail="记忆事件不存在")
-
-    event.pop("embedding", None)
-    source_start = max(1, int(event.get("source_start_cursor") or 1))
-    source_end = max(source_start, int(event.get("source_end_cursor") or source_start))
-    messages = read_event_source(
-        store,
-        event,
-        limit=min(200, source_end - source_start + 1),
-    )
-    safe_messages = [
-        {
-            key: message.get(key)
-            for key in ("_log_cursor", "time", "sender", "content")
-            if message.get(key) is not None
-        }
-        for message in messages
-    ]
-    return {
-        "success": True,
-        "data": {
-            "event": event,
-            "messages": safe_messages,
-        },
-    }
-
-
-
-
 
 
 @router.get("/{role_id}")
@@ -158,7 +117,7 @@ async def get_role(role_id: int, db: Session = Depends(get_db)) -> Dict[str, Any
         role = db.query(ChatBotRole).filter(ChatBotRole.id == role_id).first()
         if not role:
             raise HTTPException(status_code=404, detail="角色不存在")
-        
+
         return {
             "role": _role_to_dict(role, db)
         }
@@ -179,7 +138,7 @@ async def create_role(
         existing_role = db.query(ChatBotRole).filter(ChatBotRole.name == role_request.name).first()
         if existing_role:
             raise HTTPException(status_code=400, detail="角色名称已存在")
-        
+
         # 创建新角色
         new_role = ChatBotRole(
             name=role_request.name,
@@ -188,13 +147,13 @@ async def create_role(
             description=role_request.description,
             **_normalize_output_settings(role_request.dict())
         )
-        
+
         db.add(new_role)
         db.commit()
         db.refresh(new_role)
-        
+
         _reload_assistant_roles_safely()
-        
+
         return {
             "message": f"角色 '{role_request.display_name}' 创建成功",
             "role_id": new_role.id
@@ -217,9 +176,9 @@ async def update_role(
         role = db.query(ChatBotRole).filter(ChatBotRole.id == role_id).first()
         if not role:
             raise HTTPException(status_code=404, detail="角色不存在")
-        
+
         role_name = role.name  # 保存角色名用于日志
-        
+
         # 更新字段
         if role_request.display_name is not None:
             role.display_name = role_request.display_name
@@ -231,11 +190,11 @@ async def update_role(
         for key, value in _normalize_output_settings(update_data).items():
             if key in update_data:
                 setattr(role, key, value)
-        
+
         db.commit()
-        
+
         _reload_assistant_roles_safely()
-        
+
         return {
             "message": f"角色 '{role.display_name}' 更新成功"
         }
@@ -253,20 +212,20 @@ async def delete_role(role_id: int, db: Session = Depends(get_db)) -> Dict[str, 
         role = db.query(ChatBotRole).filter(ChatBotRole.id == role_id).first()
         if not role:
             raise HTTPException(status_code=404, detail="角色不存在")
-        
+
         role_name = role.name  # 保存角色名用于日志
         display_name = role.display_name
-        
+
         # 检查是否有用户正在使用
         user_count = db.query(UserChatBotRole).filter(UserChatBotRole.role_id == role_id).count()
         if user_count > 0:
             raise HTTPException(status_code=400, detail="有用户正在使用此角色，无法删除")
-        
+
         db.delete(role)
         db.commit()
-        
+
         _reload_assistant_roles_safely()
-        
+
         return {
             "message": f"角色 '{display_name}' 删除成功"
         }
@@ -284,7 +243,7 @@ async def get_user_role(user_id: int, db: Session = Depends(get_db)) -> Dict[str
         user = db.query(WeChatUser).filter(WeChatUser.id == user_id).first()
         if not user:
             raise HTTPException(status_code=404, detail="用户不存在")
-        
+
         # 查询用户角色关联
         user_role = db.query(UserChatBotRole).filter(UserChatBotRole.user_id == user_id).first()
         if user_role:
@@ -322,11 +281,11 @@ async def assign_user_role(
         user = db.query(WeChatUser).filter(WeChatUser.id == user_id).first()
         if not user:
             raise HTTPException(status_code=404, detail="用户不存在")
-        
+
         role = db.query(ChatBotRole).filter(ChatBotRole.id == assign_request.role_id).first()
         if not role:
             raise HTTPException(status_code=404, detail="角色不存在")
-        
+
         # 检查是否已有角色配置
         existing_user_role = db.query(UserChatBotRole).filter(UserChatBotRole.user_id == user_id).first()
         if existing_user_role:
@@ -336,11 +295,11 @@ async def assign_user_role(
             # 创建新配置
             user_role = UserChatBotRole(user_id=user_id, role_id=assign_request.role_id)
             db.add(user_role)
-        
+
         db.commit()
-        
+
         _reload_assistant_roles_safely()
-        
+
         return {
             "message": f"用户 '{user.chat_name}' 的角色已设置为 '{role.display_name}'"
         }
@@ -358,14 +317,14 @@ async def remove_user_role(user_id: int, db: Session = Depends(get_db)) -> Dict[
         user = db.query(WeChatUser).filter(WeChatUser.id == user_id).first()
         if not user:
             raise HTTPException(status_code=404, detail="用户不存在")
-        
+
         user_role = db.query(UserChatBotRole).filter(UserChatBotRole.user_id == user_id).first()
         if user_role:
             db.delete(user_role)
             db.commit()
-            
+
             _reload_assistant_roles_safely()
-            
+
             return {
                 "message": f"用户 '{user.chat_name}' 的角色配置已移除"
             }

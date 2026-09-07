@@ -15,6 +15,8 @@ import uuid
 import queue
 import time
 
+from app.services.llm_usage_context import usage_context
+
 from sqlalchemy.orm import Session
 from app.models.assistant_policy import AssistantChatPolicy
 from app.models.user_permission import WeChatUser
@@ -410,11 +412,14 @@ class EventBus:
 
         # 如果事件中有chat_name，则进行权限检查
         chat_name = event.data.get("chat_name")
+        usage_metadata = {"chat_name": chat_name, "chat_type": event.data.get("chat_type"),
+                          "usage_scope": "system" if not chat_name else None}
         if chat_name:
             db = self.db_session_factory()
             try:
                 user = db.query(WeChatUser).filter(WeChatUser.chat_name == chat_name).first()
                 if user:
+                    usage_metadata.update(user_id=user.id, chat_type="group" if user.is_group else "user")
                     sender = str(event.data.get("sender") or "").strip()
                     sender_blacklist = _parse_sender_blacklist(getattr(user, "sender_blacklist", None))
                     if sender and sender in sender_blacklist:
@@ -529,6 +534,9 @@ class EventBus:
             final_listeners = active_listeners
 
         # 同步执行所有有权限的监听器
+        # Observers archive incoming data before a business handler consumes it
+        # or waits for a model. Keep configured order within each phase.
+        final_listeners.sort(key=lambda item: item.propagation != "observe")
         for listener in final_listeners:
             if (
                 listener.owner_kind == "core"
@@ -712,7 +720,8 @@ class EventBus:
                         proxy_installed = False
 
                 try:
-                    result = listener.handler(event)
+                    with usage_context(usage_metadata):
+                        result = listener.handler(event)
                 finally:
                     if proxy_installed:
                         try:

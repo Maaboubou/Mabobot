@@ -26,11 +26,6 @@
       "description": "状态文件不存在时使用的初始期数；之后每次成功推送自动 +1",
       "default": 1
     },
-    "WEEKLY_CODEX_MODEL": {
-      "type": "string",
-      "description": "Codex 模型名称",
-      "default": "gpt-5.6-sol"
-    },
     "WEEKLY_CODEX_TIMEOUT_SECONDS": {
       "type": "number",
       "description": "Codex 生成周报页计划的超时时间",
@@ -86,7 +81,6 @@
     "WEEKLY_PUSH_TIME": "09:00",
     "WEEKLY_PAGE_COUNT": 8,
     "WEEKLY_INITIAL_ISSUE": 1,
-    "WEEKLY_CODEX_MODEL": "gpt-5.6-sol",
     "WEEKLY_CODEX_TIMEOUT_SECONDS": 900,
     "WEEKLY_IMAGE_BATCH_TIMEOUT_SECONDS": 3600,
     "WEEKLY_ADMIN_CHAT": "",

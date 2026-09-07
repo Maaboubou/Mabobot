@@ -17,7 +17,7 @@ const App = {
     currentLogSearchMatches: [],
     currentLogSearchIndex: -1,
     currentLogStatusBase: '就绪',
-    lastLiveCodexStatus: null,
+    lastCodexStatus: null,
     webRestartSupported: false,
     webRestartUnavailableReason: '正在检查管理控制台状态…',
     restartCapabilities: null,
@@ -39,6 +39,11 @@ const App = {
     _managedChatReferenceData: null,
     _managedChatReferencePromise: null,
     _managedChatProfilesData: null,
+
+    openSelectedChatArchive() {
+        const userId = Number(this._selectedChatPolicy?.user_id || 0);
+        if (userId) this.openChatArchive(userId);
+    },
 
     async init() {
         console.log('App Initializing...');
@@ -80,7 +85,7 @@ const App = {
         if (this.isLoading) return;
         await this.refreshBotServiceState({ quiet: true });
         // Don't auto-refresh settings or forms to avoid overwriting user input
-        if (['settings', 'users', 'roles', 'llm'].includes(this.currentTab)) return;
+        if (['settings', 'users', 'roles', 'llm', 'usage'].includes(this.currentTab)) return;
 
         await this.loadTab(this.currentTab, true);
     },
@@ -119,6 +124,9 @@ const App = {
                     break;
                 case 'roles':
                     await this.loadRoles();
+                    break;
+                case 'usage':
+                    await LLMManager.initUsage();
                     break;
                 case 'llm':
                     await LLMManager.init();
@@ -404,11 +412,11 @@ const App = {
     },
 
     openDashboardErrors() {
-        const path = '/ai/calls';
+        const path = '/usage/calls';
         if (UI.normalizePath(window.location.pathname) !== path) {
-            window.history.pushState({ tab: 'llm', section: 'llm-history' }, '', path);
+            window.history.pushState({ tab: 'usage', section: 'llm-history' }, '', path);
         }
-        UI.switchTab('llm', { history: false });
+        UI.switchTab('usage', { history: false });
     },
 
     async refreshCodexUsage() {
@@ -667,55 +675,54 @@ const App = {
         const container = document.getElementById('codexStatusOutput');
         if (!container) return;
 
-        // A dashboard poll can finish after a manual refresh. Keep the newest
-        // successful app-server result instead of letting an old rollout win.
-        const hasLiveUsage = data?.usage_source === 'app_server' && !!data?.quota_available;
-        if (hasLiveUsage) {
-            const incomingTime = Date.parse(data.updated_at || '') || 0;
-            const savedTime = Date.parse(this.lastLiveCodexStatus?.updated_at || '') || 0;
-            if (!this.lastLiveCodexStatus || incomingTime >= savedTime) {
-                this.lastLiveCodexStatus = data;
-            } else {
-                data = this.lastLiveCodexStatus;
-            }
-        } else if (this.lastLiveCodexStatus) {
-            data = this.lastLiveCodexStatus;
+        // Discard out-of-order responses, including an old account refresh that
+        // completes after the default configuration has changed.
+        const incomingTime = Date.parse(data?.updated_at || '') || 0;
+        const savedTime = Date.parse(this.lastCodexStatus?.updated_at || '') || 0;
+        const newerUsageForSameContext = data?.context_key
+            && data.context_key === this.lastCodexStatus?.context_key
+            && data?.quota_supported && data?.quota_available
+            && (Date.parse(data.rate_limit_updated_at || '') || 0)
+                > (Date.parse(this.lastCodexStatus?.rate_limit_updated_at || '') || 0);
+        if (incomingTime && savedTime > incomingTime) {
+            if (!newerUsageForSameContext) return;
+            data = { ...data, updated_at: this.lastCodexStatus.updated_at };
         }
+        this.lastCodexStatus = data;
 
-        const loggedIn = !!data?.logged_in;
-        const statusClass = loggedIn ? 'online' : 'offline';
-        const statusText = data?.usage_source === 'app_server'
-            ? (data?.served_from_snapshot ? '最近实时用量' : '实时用量')
-            : (loggedIn ? '缓存用量' : '尚未刷新');
-        const model = data?.model || 'gpt-5.5';
+        const configured = !!data?.profile_available;
+        const quotaSupported = !!data?.quota_supported;
+        const quotaAvailable = quotaSupported && !!data?.quota_available;
+        const statusClass = configured ? 'online' : 'offline';
+        const statusText = data?.status === 'error' ? '状态暂不可用'
+            : !configured ? (data?.profile_id ? '配置待检查' : '未配置')
+            : !quotaSupported ? (data?.status === 'warning' ? '配置待检查' : '已配置 · 额度未接入')
+            : data?.status === 'warning' ? '额度暂不可用'
+            : quotaAvailable ? (data?.served_from_snapshot ? '最近账户额度' : '账户额度') : '额度待刷新';
+        const model = data?.model || '未配置模型';
         const version = data?.version || '-';
-        const authMode = data?.auth_mode || (loggedIn ? 'chatgpt' : '-');
+        const authMode = data?.auth_mode === 'chatgpt' ? 'ChatGPT 登录'
+            : data?.auth_mode === 'api_key' ? 'API Key' : '认证待配置';
+        const provider = data?.model_provider || '提供方未配置';
         const planType = data?.plan_type ? ` / ${data.plan_type}` : '';
-        const updatedAt = data?.updated_at ? this.formatDashboardTime(data.updated_at) : '';
-        const quotaMessage = data?.quota_available
-            ? (data?.quota || 'Codex 已返回用量信息')
-            : this.localizeCodexQuotaMessage(data?.quota_message || '点击刷新以读取当前 Codex 账户限额。');
-        const primaryLimit = this.renderCodexLimit(data?.rate_limits?.primary, '主要限额');
-        const secondaryLimit = this.renderCodexLimit(data?.rate_limits?.secondary, '次要限额');
+        const updatedAt = data?.rate_limit_updated_at ? this.formatDashboardTime(data.rate_limit_updated_at) : '';
+        const quotaMessage = this.localizeCodexQuotaMessage(data?.quota_message || '配置状态暂不可用。');
+        const primaryLimit = quotaAvailable ? this.renderCodexLimit(data?.rate_limits?.primary, '主要限额') : '';
+        const secondaryLimit = quotaAvailable ? this.renderCodexLimit(data?.rate_limits?.secondary, '次要限额') : '';
 
         container.innerHTML = `
             <div class="dashboard-codex-meta">
-                <span class="dashboard-inline-state ${statusClass}"><i class="bi bi-circle-fill"></i>${statusText}</span>
+                <span class="dashboard-inline-state ${statusClass}" title="${this.escapeHtml(quotaMessage)}"><i class="bi bi-circle-fill"></i>${statusText}</span>
                 ${updatedAt ? `<small>${this.escapeHtml(updatedAt)}</small>` : ''}
             </div>
-            <div class="dashboard-codex-identity" title="Codex ${this.escapeHtml(version)}">
+            <div class="dashboard-codex-identity" title="${this.escapeHtml([data?.profile_id, authMode + planType, `Codex ${version}`].filter(Boolean).join(' · '))}">
                 <strong>${this.escapeHtml(model)}</strong>
-                <span>${this.escapeHtml(authMode + planType)}</span>
+                <span>${this.escapeHtml(provider + planType)}</span>
             </div>
             ${primaryLimit || secondaryLimit ? `
                 <div class="dashboard-codex-limits">
                     ${primaryLimit}
                     ${secondaryLimit}
-                </div>
-            ` : ''}
-            ${!data?.quota_available ? `
-                <div class="dashboard-codex-empty">
-                    <i class="bi bi-info-circle"></i><span>${this.escapeHtml(quotaMessage)}</span>
                 </div>
             ` : ''}
         `;
@@ -846,283 +853,6 @@ const App = {
         modal.show();
     },
 
-    renderMemoryTraceSummary(trace) {
-        const enabled = trace.enabled !== false;
-        const events = Array.isArray(trace.events) ? trace.events.length : 0;
-        const people = Array.isArray(trace.people) ? trace.people.length : 0;
-        const hasStage = Boolean(trace.stage && trace.stage.included);
-        const tokens = Number(trace.tokens || 0);
-        const budget = Number(trace.token_budget || 0);
-        const latency = Number(trace.retrieval_ms || 0);
-
-        return `
-            <div class="border rounded-3 bg-body-tertiary p-2 mb-3">
-                <div class="d-flex justify-content-between align-items-center gap-2 mb-2">
-                    <span class="small fw-semibold">
-                        <i class="bi bi-database-check text-primary me-1"></i>
-                        本轮已注入记忆
-                    </span>
-                    <span class="badge ${enabled ? 'text-bg-success' : 'text-bg-secondary'}">
-                        ${enabled ? `${tokens.toLocaleString()} / ${budget.toLocaleString()} tokens` : '已关闭'}
-                    </span>
-                </div>
-                <div class="d-flex flex-wrap gap-1">
-                    <span class="badge text-bg-light border">阶段 ${hasStage ? '1' : '0'}</span>
-                    <span class="badge text-bg-light border">事件 ${events}</span>
-                    <span class="badge text-bg-light border">人物 ${people}</span>
-                    <span class="badge text-bg-light border">检索 ${latency.toLocaleString()} 毫秒</span>
-                    <span class="badge text-bg-light border">
-                        向量 ${trace.vector_ready ? '就绪' : '未使用'}
-                    </span>
-                </div>
-            </div>
-        `;
-    },
-
-    renderMemoryTrace(trace, namespace = '') {
-        if (!trace) {
-            return '<div class="text-muted text-center py-4">此调用没有记忆审计记录。</div>';
-        }
-        if (trace.enabled === false) {
-            return `
-                <div class="alert alert-secondary mb-0">
-                    <i class="bi bi-database-x me-1"></i>本轮记忆功能已关闭，没有向提示词注入记忆。
-                </div>
-            `;
-        }
-
-        const events = Array.isArray(trace.events) ? trace.events : [];
-        const people = Array.isArray(trace.people) ? trace.people : [];
-        const droppedEvents = Array.isArray(trace.dropped_events) ? trace.dropped_events : [];
-        const droppedPeople = Array.isArray(trace.dropped_people) ? trace.dropped_people : [];
-        const stage = trace.stage || {};
-        const safeTraceId = `${trace.trace_id || 'memory'}-${namespace || 'record'}`
-            .replace(/[^a-zA-Z0-9_-]/g, '');
-
-        let html = `
-            <div class="alert alert-info py-2 small">
-                <i class="bi bi-info-circle me-1"></i>
-                这里展示的是<strong>实际注入本轮提示词</strong>的记忆；它不等同于模型内部一定采用了这些内容。
-            </div>
-            ${this.renderMemoryTraceSummary(trace)}
-        `;
-
-        html += `
-            <section class="mb-4">
-                <h6 class="d-flex align-items-center gap-2">
-                    <i class="bi bi-layers text-primary"></i>阶段记忆
-                    <span class="badge ${stage.included ? 'text-bg-success' : 'text-bg-secondary'}">
-                        ${stage.included ? '已注入' : '未注入'}
-                    </span>
-                </h6>
-        `;
-        if (stage.included) {
-            html += `
-                <div class="border rounded-3 p-3 bg-body-tertiary">
-                    <div class="d-flex flex-wrap gap-2 mb-2 small text-muted">
-                        <span>来源事件 #${Number(stage.source_event_id || 0)}</span>
-                        ${stage.updated_at ? `<span>更新于 ${this.escapeHtml(stage.updated_at)}</span>` : ''}
-                        ${stage.truncated ? '<span class="badge text-bg-warning">按预算截断</span>' : ''}
-                    </div>
-                    <div style="white-space: pre-wrap;">${this.escapeHtml(stage.text || '')}</div>
-                </div>
-            `;
-        } else {
-            html += '<div class="text-muted small">本轮没有阶段记忆注入提示词。</div>';
-        }
-        html += '</section>';
-
-        html += `
-            <section class="mb-4">
-                <h6><i class="bi bi-people text-primary me-2"></i>人物记忆 <span class="badge text-bg-light border">${people.length}</span></h6>
-        `;
-        if (people.length) {
-            html += '<div class="vstack gap-2">';
-            people.forEach(person => {
-                const reasons = Array.isArray(person.selection_reasons) ? person.selection_reasons : [];
-                html += `
-                    <div class="border rounded-3 p-3">
-                        <div class="d-flex justify-content-between gap-2 mb-1">
-                            <strong>${this.escapeHtml(person.name || '未知人物')}</strong>
-                            <small class="text-muted">来源事件 #${Number(person.source_event_id || 0)}</small>
-                        </div>
-                        <div class="d-flex flex-wrap gap-1 mb-2">
-                            ${reasons.map(reason => `<span class="badge text-bg-light border">${this.escapeHtml(reason)}</span>`).join('')}
-                        </div>
-                        <div class="small" style="white-space: pre-wrap;">${this.escapeHtml(person.profile_text || '')}</div>
-                    </div>
-                `;
-            });
-            html += '</div>';
-        } else {
-            html += '<div class="text-muted small">本轮没有人物资料注入提示词。</div>';
-        }
-        html += '</section>';
-
-        html += `
-            <section class="mb-4">
-                <h6><i class="bi bi-journal-text text-primary me-2"></i>事件记忆 <span class="badge text-bg-light border">${events.length}</span></h6>
-        `;
-        if (events.length) {
-            html += '<div class="vstack gap-2">';
-            events.forEach((event, index) => {
-                const score = Math.max(0, Math.min(1, Number(event.retrieval_score || 0)));
-                const scorePercent = Math.round(score * 100);
-                const reasons = Array.isArray(event.match_reasons) ? event.match_reasons : [];
-                const participants = Array.isArray(event.participants) ? event.participants : [];
-                const keywords = Array.isArray(event.keywords) ? event.keywords : [];
-                const breakdown = event.score_breakdown || {};
-                const sourceTargetId = `memory-source-${safeTraceId}-${Number(event.id || index)}`;
-                const timeRange = [event.start_time, event.end_time].filter(Boolean).join(' ～ ');
-
-                html += `
-                    <details class="border rounded-3 overflow-hidden" ${index === 0 ? 'open' : ''}>
-                        <summary class="p-3 bg-body-tertiary" style="cursor: pointer;">
-                            <div class="d-inline-flex flex-wrap align-items-center gap-2">
-                                <strong>#${Number(event.id || 0)} ${this.escapeHtml(event.title || '未命名事件')}</strong>
-                                <span class="badge text-bg-primary">相关度 ${scorePercent}%</span>
-                                ${event.certainty ? `<span class="badge text-bg-light border">${this.escapeHtml(event.certainty)}</span>` : ''}
-                            </div>
-                        </summary>
-                        <div class="p-3">
-                            <div class="progress mb-2" role="progressbar" aria-label="记忆相关度"
-                                 aria-valuenow="${scorePercent}" aria-valuemin="0" aria-valuemax="100"
-                                 style="height: 5px;">
-                                <div class="progress-bar" style="width: ${scorePercent}%"></div>
-                            </div>
-                            <div class="d-flex flex-wrap gap-1 mb-2">
-                                ${reasons.map(reason => `<span class="badge text-bg-info">${this.escapeHtml(reason)}</span>`).join('')}
-                            </div>
-                            ${timeRange ? `<div class="small text-muted mb-2"><i class="bi bi-clock me-1"></i>${this.escapeHtml(timeRange)}</div>` : ''}
-                            <div class="mb-2" style="white-space: pre-wrap;">${this.escapeHtml(event.summary || '')}</div>
-                            ${participants.length ? `<div class="small mb-1"><strong>参与者：</strong>${participants.map(value => this.escapeHtml(value)).join('、')}</div>` : ''}
-                            ${keywords.length ? `<div class="small mb-1"><strong>关键词：</strong>${keywords.map(value => this.escapeHtml(value)).join('、')}</div>` : ''}
-                            ${(event.decisions || []).length ? `<div class="small mb-1"><strong>结论：</strong>${event.decisions.map(value => this.escapeHtml(value)).join('；')}</div>` : ''}
-                            ${(event.open_items || []).length ? `<div class="small mb-1"><strong>未完成：</strong>${event.open_items.map(value => this.escapeHtml(value)).join('；')}</div>` : ''}
-                            <details class="mt-3">
-                                <summary class="small text-muted" style="cursor: pointer;">查看检索得分明细</summary>
-                                <div class="d-flex flex-wrap gap-1 mt-2">
-                                    ${Object.entries(breakdown).map(([key, value]) => `
-                                        <span class="badge text-bg-light border">
-                                            ${this.escapeHtml(this.memoryScoreLabel(key))} ${Number(value || 0).toFixed(3)}
-                                        </span>
-                                    `).join('')}
-                                </div>
-                            </details>
-                            <div class="d-flex flex-wrap gap-2 mt-3">
-                                <button class="btn btn-sm btn-outline-primary"
-                                        onclick="App.loadMemoryEventSource(${Number(event.id || 0)}, '${sourceTargetId}', this)">
-                                    <i class="bi bi-chat-left-text me-1"></i>查看原始消息
-                                </button>
-                                <details>
-                                    <summary class="btn btn-sm btn-outline-secondary">实际注入文本</summary>
-                                    <pre class="mt-2 mb-0 p-2 bg-body-tertiary border rounded small"
-                                         style="white-space: pre-wrap; max-height: 260px; overflow: auto;">${this.escapeHtml(event.prompt_text || '')}</pre>
-                                </details>
-                            </div>
-                            <div id="${sourceTargetId}" class="mt-3"
-                                 data-chat-name="${this.escapeHtml(trace.chat_name || '')}"></div>
-                        </div>
-                    </details>
-                `;
-            });
-            html += '</div>';
-        } else {
-            html += '<div class="text-muted small">本轮没有历史事件注入提示词。</div>';
-        }
-        html += '</section>';
-
-        if (droppedEvents.length || droppedPeople.length) {
-            html += `
-                <details class="border rounded-3 p-3">
-                    <summary class="small fw-semibold" style="cursor: pointer;">
-                        因 Token 预算未注入的候选（事件 ${droppedEvents.length}，人物 ${droppedPeople.length}）
-                    </summary>
-                    <div class="mt-2 small text-muted">
-                        ${droppedEvents.map(event => `
-                            <div>#${Number(event.id || 0)} ${this.escapeHtml(event.title || '未命名事件')}</div>
-                        `).join('')}
-                        ${droppedPeople.map(person => `
-                            <div>${this.escapeHtml(person.name || '未知人物')}</div>
-                        `).join('')}
-                    </div>
-                </details>
-            `;
-        }
-        return html;
-    },
-
-    memoryScoreLabel(key) {
-        return {
-            semantic: '语义',
-            lexical: '文字',
-            keyword: '关键词',
-            participant: '人物',
-            recency: '时效',
-            importance: '重要度'
-        }[key] || key;
-    },
-
-    async loadMemoryEventSource(eventId, targetId, button) {
-        const target = document.getElementById(targetId);
-        if (!target || target.dataset.loaded === 'true') return;
-        const chatName = target.dataset.chatName || '';
-        if (!chatName) {
-            target.innerHTML = '<div class="alert alert-warning py-2 mb-0">缺少群聊名称，无法读取来源消息。</div>';
-            return;
-        }
-
-        const originalHtml = button ? button.innerHTML : '';
-        if (button) {
-            button.disabled = true;
-            button.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>读取中';
-        }
-        target.innerHTML = '<div class="text-muted small">正在读取事件对应的原始群聊消息……</div>';
-        try {
-            const params = new URLSearchParams({
-                chat_name: chatName,
-                event_id: String(eventId)
-            });
-            const response = await API.request(`/api/assistant/roles/memory-event-source?${params.toString()}`);
-            const messages = response?.data?.messages || [];
-            if (!messages.length) {
-                target.innerHTML = `
-                    <div class="alert alert-secondary py-2 mb-0 small">
-                        没有找到对应的原始消息；聊天日志可能已轮转或清理。
-                    </div>
-                `;
-            } else {
-                target.innerHTML = `
-                    <div class="border rounded-3 p-2 bg-body-tertiary">
-                        <div class="small fw-semibold mb-2">原始消息（${messages.length}）</div>
-                        <div class="vstack gap-2" style="max-height: 360px; overflow-y: auto;">
-                            ${messages.map(message => `
-                                <div class="bg-body border rounded p-2 small">
-                                    <div class="d-flex justify-content-between gap-2 text-muted mb-1">
-                                        <span>#${Number(message._log_cursor || 0)} · ${this.escapeHtml(message.sender || '未知')}</span>
-                                        <span>${this.escapeHtml(message.time || '')}</span>
-                                    </div>
-                                    <div style="white-space: pre-wrap;">${this.escapeHtml(message.content || '')}</div>
-                                </div>
-                            `).join('')}
-                        </div>
-                    </div>
-                `;
-            }
-            target.dataset.loaded = 'true';
-        } catch (error) {
-            target.innerHTML = `
-                <div class="alert alert-danger py-2 mb-0 small">
-                    读取原始消息失败：${this.escapeHtml(error.message || String(error))}
-                </div>
-            `;
-        } finally {
-            if (button) {
-                button.disabled = false;
-                button.innerHTML = originalHtml;
-            }
-        }
-    },
 
     escapeHtml(text) {
         const div = document.createElement('div');
@@ -1734,7 +1464,6 @@ const App = {
             form.elements.judge_id?.focus();
             return;
         }
-        const memoryMode = form.elements.memory_mode.value;
         const payload = {
             expected_version: Number(form.dataset.version),
             chat: {
@@ -1754,14 +1483,8 @@ const App = {
                 followup_window_seconds: Number(form.elements.followup_window_seconds.value),
                 followup_merge_seconds: Number(form.elements.followup_merge_seconds.value),
                 followup_max_turns: Number(form.elements.followup_max_turns.value),
-                memory_mode: memoryMode,
-                memory_overrides: memoryMode === 'custom' ? {
-                    memory_enabled: true,
-                    memory_verification_enabled: form.elements.memory_verification_enabled.checked,
-                    memory_person_enabled: form.elements.memory_person_enabled.checked,
-                    memory_retention_days: Number(form.elements.memory_retention_days.value),
-                    memory_retrieval_top_k: Number(form.elements.memory_retrieval_top_k.value)
-                } : {},
+
+
                 ignored_senders: this.linesFromPolicyField(form, 'assistant_ignored_senders'),
                 ...(isGroup ? {
                     proactive_enabled: proactiveEnabled,
@@ -1801,10 +1524,6 @@ const App = {
         }
     },
 
-    openSelectedChatMemory() {
-        const userId = Number(this._selectedChatPolicy?.user_id || 0);
-        if (userId) this.openChatMemoryLibrary(userId);
-    },
 
     deleteSelectedManagedChat() {
         const userId = Number(this._selectedChatPolicy?.user_id || 0);
@@ -1949,7 +1668,7 @@ const App = {
                 ['默认角色', defaultRole?.display_name || flags.default_role || '未设置'],
                 ['主动回复', '按群聊独立启用'],
                 ['@触发', flags.allow_mention_trigger ? '允许' : '关闭'],
-                ['长期记忆', flags.memory_enabled ? '开启' : '关闭'],
+                ['历史上下文', '最近 50 条 + 按需查阅'],
                 ['网页搜索 / 图片内容补充', `${flags.search_enabled ? '搜索开启' : '搜索关闭'} · ${flags.image_enrichment_enabled ? '图片补充开启' : '图片补充关闭'}`]
             ];
             globalSummary.innerHTML = rows.map(([label, value]) => `
@@ -1961,13 +1680,12 @@ const App = {
         if (modelSummary) {
             const mappings = Object.entries(overview.models?.mappings || {});
             if (!mappings.length) {
-                modelSummary.innerHTML = '<div class="assistant-empty-inline">尚未配置 Judge 或记忆辅助模型。</div>';
+                modelSummary.innerHTML = '<div class="assistant-empty-inline">尚未配置 Judge 辅助模型。</div>';
             } else {
                 const labels = {
                     chat: '对话回复', judge: '主动判断',
-                    memory_generate: '记忆生成', memory_review: '记忆审核',
-                    memory_synthesize: '记忆归纳'
-                };
+
+                    };
                 modelSummary.innerHTML = mappings.slice(0, 6).map(([type, mapping]) => `
                     <div><span>${UI.escapeHtml(labels[type] || type)}</span><strong>${UI.escapeHtml(mapping.primary || '未设置')}</strong></div>
                 `).join('');
@@ -2005,12 +1723,6 @@ const App = {
             const rawName = UI.escapeHtml(chat.chat_name);
             const role = UI.escapeHtml(chat.role?.display_name || '默认角色');
             const judge = UI.escapeHtml(chat.judge?.display_name || '未启用');
-            const memory = chat.memory || {};
-            const memoryLabels = {
-                inherit: memory.effective_enabled ? '继承全局 · 开启' : '继承全局 · 关闭',
-                off: '此聊天关闭',
-                custom: '此聊天自定义'
-            };
             const triggerCard = chat.is_group
                 ? `<div><span>Judge</span><strong>${judge}</strong><small>${chat.proactive_enabled ? '主动回复开启' : '主动回复关闭'}</small></div>`
                 : '<div><span>触发方式</span><strong>收到消息</strong><small>私聊直接回复，无需 Judge</small></div>';
@@ -2028,7 +1740,7 @@ const App = {
                         <div><span>角色</span><strong>${role}</strong><small>${chat.role_source === 'chat' ? '聊天覆盖' : '继承全局'}</small></div>
                         ${triggerCard}
                         <div><span>连续对话</span><strong>${chat.followup_enabled ? '开启' : '关闭'}</strong><small>${chat.followup_enabled ? `${chat.followup_window_seconds} 秒 · ${chat.followup_max_turns} 轮` : '需要重新触发'}</small></div>
-                        <div><span>长期记忆</span><strong>${memoryLabels[memory.mode] || memoryLabels.inherit}</strong><small>${memory.mode === 'custom' ? '仅覆盖必要参数' : (memory.mode === 'off' ? '不读取也不生成新记忆' : '随全局设置自动调整')}</small></div>
+                        <div><span>聊天档案</span><strong>按需查阅</strong><small>最近 50 条 · 原文长期保存</small></div>
                     </div>
                     <div class="assistant-chat-card-footer">
                         <button class="btn btn-sm btn-light border" onclick="App.showAssistantChatEditor(${Number(chat.id)})"><i class="bi bi-box-arrow-up-right me-1"></i>在聊天页配置</button>

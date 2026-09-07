@@ -35,7 +35,6 @@ class AssistantChatPolicy(Base):
     followup_window_seconds = Column(Integer, default=60, nullable=False)
     followup_merge_seconds = Column(Integer, default=3, nullable=False)
     followup_max_turns = Column(Integer, default=3, nullable=False)
-    memory_profile = Column(Text, nullable=True)
     ignored_senders = Column(Text, nullable=True)
     # Empty means inherit the administrator-selected default; a concrete id
     # selects an isolated managed Profile for each request.
@@ -83,7 +82,6 @@ def migrate_legacy_assistant_permissions(bind) -> int:
                     followup_window_seconds=int(legacy.followup_window_seconds or 60),
                     followup_merge_seconds=int(legacy.followup_merge_seconds or 3),
                     followup_max_turns=int(legacy.followup_max_turns or 3),
-                    memory_profile=legacy.memory_profile,
                     ignored_senders=legacy.ignored_senders,
                 )
                 db.add(policy)

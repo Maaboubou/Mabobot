@@ -1,8 +1,8 @@
 {
   "name": "builtin_chat_logger",
   "display_name": "聊天记录",
-  "version": "2.0.0",
-  "description": "记录聊天消息，并可在后台为图片补充可检索的文字与视觉内容",
+  "version": "3.0.0",
+  "description": "长期归档聊天原文，支持历史导入和按需查阅；图片内容补充单独运行",
   "author": "Project Contributors",
   "category": "utility",
   "requires": [],
@@ -35,18 +35,23 @@
       "type": "array",
       "group": "logging",
       "description": "记录的消息类型",
-      "default": ["text", "image", "link", "quote"]
+      "default": [
+        "text",
+        "image",
+        "link",
+        "quote"
+      ]
     },
     "max_log_size_mb": {
       "type": "integer",
       "group": "logging",
-      "description": "单个聊天记录文件最大大小（MB）",
+      "description": "兼容日志缓存大小（长期原文档案按分片保存）",
       "default": 100
     },
     "max_log_days": {
       "type": "integer",
       "group": "logging",
-      "description": "聊天记录保留天数",
+      "description": "兼容日志缓存保留天数（长期原文档案不受此项影响）",
       "default": 7
     },
     "image_enrichment_enabled": {
@@ -66,7 +71,12 @@
     }
   },
   "config": {
-    "log_message_types": ["text", "image", "link", "quote"],
+    "log_message_types": [
+      "text",
+      "image",
+      "link",
+      "quote"
+    ],
     "max_log_size_mb": 100,
     "max_log_days": 7,
     "image_enrichment_enabled": false

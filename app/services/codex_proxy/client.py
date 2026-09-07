@@ -2023,7 +2023,7 @@ class CodexCliClient:
         isolated_workdir_path: Optional[Path] = None
         if isolated_workdir:
             isolated_workdir_path = Path(
-                tempfile.mkdtemp(prefix="mabobot_codex_memory_")
+                tempfile.mkdtemp(prefix="mabobot_codex_schema_")
             ).resolve()
             workdir_path = isolated_workdir_path
         else:

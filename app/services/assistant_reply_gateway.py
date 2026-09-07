@@ -1,7 +1,7 @@
 """Codex-only reply boundary for the first-class chat assistant.
 
 This module deliberately bypasses :meth:`LLMManager.call`.  Auxiliary assistant
-tasks (Judge, memory and media enrichment) still use the generic model router,
+tasks (Judge and media enrichment) still use the generic model router,
 but a message that will be sent as the assistant's final reply must cross this
 gateway and can therefore only be produced by the local Codex runtime.  The
 gateway may still publish telemetry to LLMManager's history store; telemetry is
@@ -32,6 +32,12 @@ class CodexReplyRequest:
     role_name: str = ""
     codex_profile_id: str = ""
     persistent_session: bool = True
+    incremental_context: bool = False
+    fresh_context: bool = False
+    history_enabled: bool = False
+    history_request_id: str = ""
+    history_max_calls: int = 0
+    history_max_bytes: int = 0
     retry: bool = False
     reasoning_effort: str = "inherit"
     reasoning_summary: str = "inherit"
@@ -42,7 +48,6 @@ class CodexReplyRequest:
     output_schema: Optional[Dict[str, Any]] = None
     input_files: Sequence[Dict[str, Any]] = field(default_factory=tuple)
     allow_image_input: bool = False
-    memory_trace: Optional[Dict[str, Any]] = None
     history_mode: str = "full"
     usage_capture: Optional[List[Dict[str, Any]]] = None
 
@@ -162,6 +167,15 @@ class CodexReplyGateway:
             "timeout": max(1, int(request.timeout_seconds or 600)),
             "extra_body": {},
         }
+        if request.history_enabled:
+            payload["mabobot_history_enabled"] = True
+            payload["mabobot_history_request_id"] = request.history_request_id
+            payload["mabobot_history_max_calls"] = request.history_max_calls
+            payload["mabobot_history_max_bytes"] = request.history_max_bytes
+        if request.incremental_context:
+            payload["mabobot_incremental_context"] = True
+        if request.fresh_context:
+            payload["mabobot_fresh_context"] = True
         effort = str(request.reasoning_effort or "inherit").strip().lower()
         if effort == "inherit" and profile:
             effort = str(profile.get("reasoning_effort") or "inherit").strip().lower()
@@ -213,7 +227,7 @@ class CodexReplyGateway:
             self._record_telemetry(
                 request=request,
                 model=model,
-                response=None,
+                response=getattr(exc, "billing_response", None),
                 response_text="",
                 response_time=time.monotonic() - started_at,
                 backend="codex_runtime",
@@ -279,11 +293,6 @@ class CodexReplyGateway:
         """Publish history without allowing telemetry failures to block replies."""
         if self._telemetry_recorder is None:
             return
-        memory_trace = (
-            copy.deepcopy(request.memory_trace)
-            if isinstance(request.memory_trace, dict)
-            else None
-        )
         try:
             self._telemetry_recorder(
                 messages=copy.deepcopy(list(request.messages)),
@@ -297,8 +306,6 @@ class CodexReplyGateway:
                 metadata={
                     "chat_name": str(request.chat_name or ""),
                     "role_name": str(request.role_name or ""),
-                    "trace_id": str((memory_trace or {}).get("trace_id") or ""),
-                    "memory_trace": memory_trace,
                     "history_mode": str(request.history_mode or "full"),
                     "_usage_capture": request.usage_capture,
                 },
