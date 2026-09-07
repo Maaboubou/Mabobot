@@ -2874,8 +2874,11 @@ class LLMManager:
     def _log_failure(self, kwargs, response_obj, start_time, end_time):
         """LiteLLM 失败回调"""
         model = kwargs.get("model", "unknown")
-        self._record_model_failure(model, response_obj)
-        logger.error(f"❌ LLM Failure: {model}")
+        error = kwargs.get("exception") or response_obj
+        self._record_model_failure(model, error)
+        logger.error("❌ LLM Failure: %s error_type=%s status_code=%s",
+                     model, type(error).__name__ if error is not None else "unknown",
+                     getattr(error, "status_code", None))
 
     # ─────────────────────── 持久化统计 ───────────────────────
 

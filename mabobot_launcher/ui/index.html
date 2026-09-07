@@ -51,7 +51,7 @@
             <div class="window-actions">
                 <button class="window-button" id="minimizeButton" aria-label="最小化"><span class="minus"></span></button>
                 <button class="window-button" id="maximizeButton" aria-label="最大化"><span class="square"></span></button>
-                <button class="window-button window-close" id="closeButton" aria-label="关闭到托盘"><span class="cross"></span></button>
+                <button class="window-button window-close" id="closeButton" aria-label="关闭窗口"><span class="cross"></span></button>
             </div>
         </header>
 
@@ -168,8 +168,8 @@
                             <label class="settings-line" for="autoLoginToggleSettings" id="autoLoginSettingsRow"><span><strong>自动确认微信登录</strong><small>桌面就绪后确认微信，再启动 Mabobot 服务</small></span><input type="checkbox" id="autoLoginToggleSettings"><span class="switch" aria-hidden="true"></span></label>
                         </article>
                         <article class="panel settings-card">
-                            <div class="settings-card-heading"><span class="setting-icon"><svg><use href="#i-gauge"/></svg></span><div><h2>窗口行为</h2><p>关闭窗口不会中断机器人运行。</p></div></div>
-                            <div class="settings-line readonly"><span><strong>关闭主窗口</strong><small>从托盘图标可以重新打开</small></span><span class="value-pill" id="closeBehavior">最小化到系统托盘</span></div>
+                            <div class="settings-card-heading"><span class="setting-icon"><svg><use href="#i-gauge"/></svg></span><div><h2>窗口行为</h2><p>选择关闭窗口时是否继续在后台运行。</p></div></div>
+                            <label class="settings-line" for="closeBehavior"><span><strong>关闭主窗口时</strong><small id="closeBehaviorHint">首次关闭时询问，可随时修改</small></span><select id="closeBehavior" aria-label="关闭主窗口时"><option value="ask">每次询问</option><option value="tray">最小化到系统托盘</option><option value="exit">停止服务并退出</option></select></label>
                             <div class="settings-line readonly"><span><strong>重复启动</strong><small>再次双击 START.bat 时恢复现有窗口</small></span><span class="value-pill">单实例</span></div>
                         </article>
                         <article class="panel settings-card wide-card">
@@ -189,6 +189,14 @@
             <span class="modal-icon"><svg><use href="#i-info"/></svg></span>
             <h2 id="modalTitle">确认操作</h2>
             <p id="modalMessage"></p>
+            <div id="closeOptions" hidden>
+                <fieldset class="close-options"><legend>关闭窗口时</legend>
+                    <label><input type="radio" name="closeChoice" value="tray" checked><span><strong id="closeTrayLabel">最小化到系统托盘</strong><small>机器人继续运行，可从托盘重新打开。</small></span></label>
+                    <label><input type="radio" name="closeChoice" value="exit"><span><strong>停止服务并退出</strong><small>停止微信 Bot 和 Web 服务，并退出启动器。</small></span></label>
+                </fieldset>
+                <label class="remember-close"><input type="checkbox" id="rememberClose" checked>记住我的选择，不再询问</label>
+                <p class="close-settings-hint">以后可在“设置 → 窗口行为”中修改。</p>
+            </div>
             <div class="modal-actions"><button class="button button-secondary" id="modalCancel">取消</button><button class="button button-danger" id="modalConfirm">确认</button></div>
         </div>
     </div>

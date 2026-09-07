@@ -164,6 +164,16 @@ class LauncherApi:
         self._application.request_exit()
         return {"ok": True}
 
+    def close_window(self, choice: str | None = None, remember: bool = False) -> dict[str, Any]:
+        return self._application.request_close(choice, remember)
+
+    def set_close_behavior(self, behavior: str) -> dict[str, Any]:
+        try:
+            self._application.preferences.set_close_behavior(behavior)
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
 
 class DesktopLauncher:
     def __init__(self, *, startup_mode: bool = False):
@@ -411,7 +421,8 @@ class DesktopLauncher:
                 "launch_at_login": bool(startup_status.get("enabled")),
                 "startup": startup_status,
                 "auto_confirm_wechat": preferences.auto_confirm_wechat,
-                "close_behavior": "tray" if self._tray_available else "minimize",
+                "close_behavior": preferences.close_behavior,
+                "tray_available": self._tray_available,
             },
             "environment": self._environment_status(),
             "repairing": self._repairing,
@@ -629,10 +640,35 @@ class DesktopLauncher:
     def _on_closing(self) -> bool | None:
         if self._allow_close:
             return None
-        threading.Thread(
-            target=self.hide_window, name="mabobot-hide-window", daemon=True
-        ).start()
+        def close_requested():
+            result = self.request_close()
+            if result.get("needs_choice") and self.window:
+                try:
+                    self.window.evaluate_js("window.showLauncherCloseDialog()")
+                except Exception as exc:
+                    self.supervisor.logs.add("系统", f"无法显示关闭选项，请在设置中选择关闭方式：{exc}", "warning")
+
+        threading.Thread(target=close_requested, name="mabobot-close-window", daemon=True).start()
         return False
+
+    def request_close(self, choice: str | None = None, remember: bool = False) -> dict[str, Any]:
+        if self._exiting:
+            return {"ok": True}
+        behavior = self.preferences.load().close_behavior if choice is None else choice
+        if behavior == "ask" and choice is None:
+            return {"ok": True, "needs_choice": True}
+        if behavior not in ("tray", "exit"):
+            return {"ok": False, "error": "请选择有效的窗口关闭方式"}
+        if remember:
+            try:
+                self.preferences.set_close_behavior(behavior)
+            except Exception as exc:
+                return {"ok": False, "error": f"保存关闭设置失败：{exc}"}
+        if behavior == "exit":
+            self.request_exit()
+        else:
+            self.hide_window()
+        return {"ok": True}
 
     def request_exit(self) -> None:
         if self._exiting:

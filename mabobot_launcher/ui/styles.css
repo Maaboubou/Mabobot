@@ -316,3 +316,11 @@ input:disabled + .switch { opacity: .55; }
     .environment-item { min-height: 28px; }
     .switch-row { min-height: 38px; }
 }
+
+.settings-line select { max-width: 190px; padding: 7px 9px; border: 1px solid var(--hairline); border-radius: 6px; background: var(--surface); color: var(--ink); font: inherit; }
+.close-options { display: grid; gap: 10px; margin: 16px 0; padding: 0; border: 0; text-align: left; }
+.close-options legend { margin-bottom: 8px; font-weight: 600; }
+.close-options label { display: flex; align-items: flex-start; gap: 9px; padding: 12px; border: 1px solid var(--hairline); border-radius: 8px; cursor: pointer; }
+.close-options label span { display: grid; gap: 5px; }
+.close-options small, .close-settings-hint { color: var(--muted); font-size: 12px; }
+.remember-close { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }

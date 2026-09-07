@@ -54,7 +54,7 @@ def _bounded_env_int(name: str, default: int, minimum: int) -> int:
 # 添加项目根目录到Python路径，以便导入配置工具
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.models.base import SessionLocal
-from app.models.user_permission import WeChatUser
+from app.models.user_permission import WeChatUser, UserPermission
 from app.services.wechat_file_store import (
     extract_file_name_from_message,
     get_wechat_file_store,
@@ -772,6 +772,54 @@ logger = logging.getLogger(__name__)
 # --- FastAPI主应用地址 ---
 _web_port = os.getenv("WEB_PORT", "8888").strip() or "8888"
 MAIN_APP_URL = os.getenv("MAIN_APP_URL", "").strip() or f"http://127.0.0.1:{_web_port}"
+_main_app_ready = threading.Event()
+_main_app_ready_lock = threading.Lock()
+
+
+def _wait_for_main_app_ready() -> None:
+    """Keep startup messages in the per-chat callback queue until Web is ready."""
+    if _main_app_ready.is_set():
+        return
+    with _main_app_ready_lock:
+        if _main_app_ready.is_set():
+            return
+        logger.info("Waiting for Web startup before forwarding received messages")
+        while not _main_app_ready.is_set():
+            try:
+                response = requests.get(f"{MAIN_APP_URL}/health", timeout=2)
+                if response.status_code == 200 and response.json().get("status") == "live":
+                    _main_app_ready.set()
+                    logger.info("Web ready; forwarding queued startup messages")
+                    return
+            except (requests.RequestException, ValueError):
+                pass
+            _main_app_ready.wait(0.5)
+
+
+def _restore_persisted_listeners(client) -> None:
+    """Restore listener intent alongside Web/plugin startup, using a local DB session."""
+    started = time.monotonic()
+    try:
+        with SessionLocal() as db:
+            names = [row.chat_name for row in db.query(WeChatUser).filter(
+                WeChatUser.listening_enabled.is_(True)
+            ).all()]
+    except Exception as exc:
+        # A fresh install or an old schema is initialized/migrated by Web.
+        logger.info("Early listener restore deferred to Web database initialization: %s", exc)
+        return
+    logger.info("Early listener restore started: count=%s (parallel with Web initialization)", len(names))
+    restored = 0
+    for name in names:
+        if wx is not client or restart_requested:
+            break
+        try:
+            _add_listen_chat_verified(name)
+            restored += 1
+        except Exception as exc:
+            logger.warning("Early listener restore failed: chat=%s error=%s", name, exc)
+    logger.info("Early listener restore completed: %s/%s elapsed_ms=%.1f",
+                restored, len(names), (time.monotonic() - started) * 1000)
 
 
 # --- 微信核心逻辑 ---
@@ -838,6 +886,8 @@ def start_wechat_logic():
                 daemon=True,
             )
             keep_running_thread.start()
+
+            _restore_persisted_listeners(current_client)
 
             # 进入监控循环，定期检查重启请求和微信状态
             logger.info("Starting monitoring loop...")
@@ -935,80 +985,19 @@ def start_wechat_logic():
 
 
 def check_summary_permission(chat_name: str) -> bool:
-    """
-    检查聊天是否启用了摘要功能
-    
-    Args:
-        chat_name: 聊天名称
-        
-    Returns:
-        是否启用摘要功能
-    """
+    """Read only the grant names; unrelated schema migrations must not affect access."""
     try:
-        # 从数据库查询用户权限
-        db = SessionLocal()
-        try:
-            user = db.query(WeChatUser).filter(WeChatUser.chat_name == chat_name).first()
-            if user:
-                # 检查用户是否有摘要插件权限
-                allowed_plugins = {p.plugin_name for p in user.permissions}
-                summary_plugins = {"builtin_summary", "summary_plus"}
-                # 支持多级目录插件名匹配（完整键）
-                if allowed_plugins.intersection(summary_plugins):
-                    return True
-                # 检查末级简名匹配
-                base_plugins = {p.rsplit('/', 1)[-1] for p in allowed_plugins}
-                if base_plugins.intersection(summary_plugins):
-                    return True
-                return False
-            else:
-                # 如果用户不在权限表中，默认允许（保持向后兼容）
-                logger.debug(f"用户 '{chat_name}' 不在权限表中，默认允许摘要功能")
-                return True
-        finally:
-            db.close()
-    except Exception as e:
-        logger.warning(f"⚠️ 检查摘要权限失败: {e}")
-        # 如果检查失败，默认允许（保持向后兼容）
-        return True
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+        with SessionLocal() as db:
+            grants = db.query(UserPermission.plugin_name).join(
+                WeChatUser, UserPermission.user_id == WeChatUser.id
+            ).filter(WeChatUser.chat_name == chat_name).all()
+            return any(
+                str(name).rsplit("/", 1)[-1] in {"builtin_summary", "summary_plus"}
+                for (name,) in grants
+            )
+    except Exception as exc:
+        logger.warning("检查摘要权限失败，拒绝摘要处理: %s", exc)
+        return False
 
 
 
@@ -1492,6 +1481,7 @@ def message_callback(msg, chat):
         
         # 发送到主应用
         try:
+            _wait_for_main_app_ready()
             response = requests.post(
                 f"{MAIN_APP_URL}/api/internal/wechat_message",
                 json=msg_data,

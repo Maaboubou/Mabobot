@@ -253,7 +253,12 @@
         $('#autoLoginSettingsRow').classList.toggle('is-disabled', !startupEnabled);
         $('#autoLoginHint').textContent = startupEnabled ? '微信在线后再启动服务' : '依赖登录启动';
         $('#startupDetail').textContent = settings.startup?.detail || '未登记 Windows 登录启动';
-        $('#closeBehavior').textContent = settings.close_behavior === 'tray' ? '最小化到系统托盘' : '最小化窗口';
+        $('#closeBehavior').value = settings.close_behavior || 'ask';
+        const trayAvailable = settings.tray_available !== false;
+        $('#closeBehavior option[value="tray"]').textContent = trayAvailable ? '最小化到系统托盘' : '最小化窗口';
+        $('#closeTrayLabel').textContent = trayAvailable ? '最小化到系统托盘' : '最小化窗口';
+        $('#closeTrayLabel').nextElementSibling.textContent = trayAvailable ? '机器人继续运行，可从托盘重新打开。' : '系统托盘不可用，窗口将保留在任务栏，机器人继续运行。';
+        $('#closeBehaviorHint').textContent = { ask: '关闭时选择继续运行或完全退出', tray: trayAvailable ? '机器人继续运行，可从托盘重新打开' : '系统托盘不可用，将保留在任务栏', exit: '停止微信 Bot 和 Web 服务，并退出启动器' }[settings.close_behavior || 'ask'];
 
         const repairText = ui.snapshot.repairing ? '正在修复环境' : '修复环境';
         $$('[data-action="repair"]').forEach(button => {
@@ -348,6 +353,8 @@
     }
 
     function confirmAction(title, message, confirmLabel, action) {
+        ui.modalPreviousFocus = document.activeElement;
+        $('#closeOptions').hidden = true;
         $('#modalTitle').textContent = title;
         $('#modalMessage').textContent = message;
         $('#modalConfirm').textContent = confirmLabel;
@@ -359,6 +366,24 @@
     function closeModal() {
         $('#confirmModal').hidden = true;
         ui.modalAction = null;
+        ui.modalPreviousFocus?.focus();
+    }
+
+    window.showLauncherCloseDialog = function () {
+        if (!$('#confirmModal').hidden && !$('#closeOptions').hidden) return;
+        confirmAction('关闭 Mabobot', '请选择关闭窗口后的运行方式。', '确定', async () => {
+            const choice = $('input[name="closeChoice"]:checked').value;
+            await execute('close_window', [choice, $('#rememberClose').checked]);
+        });
+        $('#closeOptions').hidden = false;
+    };
+
+    async function requestWindowClose() {
+        try {
+            const result = await apiCall('close_window');
+            if (result?.ok === false) throw new Error(result.error);
+            if (result?.needs_choice) window.showLauncherCloseDialog();
+        } catch (error) { toast(error.message || String(error), 'error'); }
     }
 
     function bindEvents() {
@@ -396,7 +421,7 @@
             }
         };
         $('#maximizeButton').addEventListener('click', toggleWindowMaximize);
-        $('#closeButton').addEventListener('click', () => execute('hide_window'));
+        $('#closeButton').addEventListener('click', requestWindowClose);
         $('.window-actions').addEventListener('mousedown', event => event.stopPropagation());
         $('#titlebar').addEventListener('dblclick', event => {
             if (!event.target.closest('.window-actions')) toggleWindowMaximize();
@@ -436,6 +461,8 @@
             ));
         });
 
+        $('#closeBehavior').addEventListener('change', event => execute('set_close_behavior', [event.target.value], '已保存关闭方式'));
+
         $('#logFilters').addEventListener('click', event => {
             const button = event.target.closest('[data-filter]');
             if (!button) return;
@@ -454,6 +481,12 @@
             if (event.target === $('#confirmModal')) closeModal();
         });
         document.addEventListener('keydown', event => {
+            if (event.key === 'Tab' && !$('#confirmModal').hidden) {
+                const controls = [...$('#confirmModal').querySelectorAll('button, input')].filter(item => item.getClientRects().length && !item.disabled);
+                const first = controls[0], last = controls[controls.length - 1];
+                if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+                else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+            }
             if (event.key === 'Escape' && !$('#confirmModal').hidden) closeModal();
             if (event.ctrlKey && event.key.toLowerCase() === 'l') {
                 event.preventDefault();

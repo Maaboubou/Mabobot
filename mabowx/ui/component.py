@@ -908,12 +908,22 @@ class WeChatBrowser(BaseUISubWnd):
                     return item
         except Exception:
             pass
-        return uia.find_descendant(
-            self.control,
+        return self._find_menu_control(
             control_type="MenuItemControl",
             name=option,
             timeout=0.12,
         )
+
+    def _find_menu_control(self, **criteria):
+        """A menu rebuilt by Chromium may invalidate a node during traversal."""
+        try:
+            return uia.find_descendant(self.control, **criteria)
+        except Exception as exc:
+            code = getattr(exc, "hresult", exc.args[0] if exc.args else None)
+            if code not in (-2147220991, -2147417848):
+                raise
+            wxlog.debug(f"浏览器菜单节点已失效，等待下一轮查找: {exc}")
+            return None
 
     @uilock
     def select_options(self, option: str, timeout: float = 15.0) -> WxResponse:
@@ -926,8 +936,7 @@ class WeChatBrowser(BaseUISubWnd):
             return WxResponse.failure("微信内置浏览器不存在")
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            more = uia.find_descendant(
-                self.control,
+            more = self._find_menu_control(
                 control_type="ButtonControl",
                 name="更多",
                 class_name="AppMenuButton",
@@ -944,8 +953,17 @@ class WeChatBrowser(BaseUISubWnd):
                 except Exception:
                     more.Click(simulateMove=False, waitTime=0.05)
                 for _ in range(10):
+                    if time.monotonic() >= deadline:
+                        break
                     item = self._find_option_fast(option)
-                    if item is not None and item.Exists(0):
+                    try:
+                        ready = item is not None and item.Exists(0)
+                    except Exception as exc:
+                        code = getattr(exc, "hresult", exc.args[0] if exc.args else None)
+                        if code not in (-2147220991, -2147417848):
+                            raise
+                        ready = False
+                    if ready:
                         try:
                             rect = item.BoundingRectangle
                             uia.click_screen(

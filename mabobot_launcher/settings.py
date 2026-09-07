@@ -7,7 +7,7 @@ import os
 import shutil
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -17,12 +17,15 @@ from .constants import BOOTSTRAP_SCRIPT, DATA_DIR, SETTINGS_FILE
 @dataclass(frozen=True)
 class LauncherPreferences:
     auto_confirm_wechat: bool = True
+    close_behavior: str = "ask"
 
     @classmethod
     def from_mapping(cls, value: Any) -> LauncherPreferences:
         if not isinstance(value, dict):
             return cls()
-        return cls(auto_confirm_wechat=bool(value.get("auto_confirm_wechat", True)))
+        behavior = value.get("close_behavior", "ask")
+        return cls(auto_confirm_wechat=bool(value.get("auto_confirm_wechat", True)),
+                   close_behavior=behavior if behavior in ("ask", "tray", "exit") else "ask")
 
 
 class PreferenceStore:
@@ -55,7 +58,14 @@ class PreferenceStore:
         return preferences
 
     def set_auto_confirm_wechat(self, enabled: bool) -> LauncherPreferences:
-        return self.save(LauncherPreferences(auto_confirm_wechat=bool(enabled)))
+        with self._lock:
+            return self.save(replace(self.load(), auto_confirm_wechat=bool(enabled)))
+
+    def set_close_behavior(self, behavior: str) -> LauncherPreferences:
+        if behavior not in ("ask", "tray", "exit"):
+            raise ValueError("请选择有效的窗口关闭方式")
+        with self._lock:
+            return self.save(replace(self.load(), close_behavior=behavior))
 
 
 class WindowsLoginStartup:

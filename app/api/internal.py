@@ -13,47 +13,27 @@ from app.core.event_bus import EventBus, Event, EventType
 from app.dependencies import get_event_bus_instance, get_wechat_manager_instance
 from app.core.wechat_manager import WeChatManager
 from app.models.base import SessionLocal
-from app.models.user_permission import WeChatUser
+from app.models.user_permission import WeChatUser, UserPermission
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 def check_summary_permission(chat_name: str) -> bool:
-    """
-    检查聊天是否启用了摘要功能
-
-    Args:
-        chat_name: 聊天名称
-
-    Returns:
-        是否启用摘要功能
-    """
+    """Read only the grant names; unrelated schema migrations must not affect access."""
     try:
-        # 从数据库查询用户权限
-        db = SessionLocal()
-        try:
-            user = db.query(WeChatUser).filter(WeChatUser.chat_name == chat_name).first()
-            if user:
-                # 检查用户是否有摘要插件权限
-                allowed_plugins = {p.plugin_name for p in user.permissions}
-                summary_plugins = {"builtin_summary", "summary_plus"}
-                # 支持多级目录插件名匹配（完整键）
-                if allowed_plugins.intersection(summary_plugins):
-                    return True
-                # 检查末级简名匹配
-                base_plugins = {p.rsplit('/', 1)[-1] for p in allowed_plugins}
-                if base_plugins.intersection(summary_plugins):
-                    return True
-                return False
-            else:
-                logger.info("聊天 '%s' 未纳入管理，拒绝摘要能力", chat_name)
-                return False
-        finally:
-            db.close()
-    except Exception as e:
-        logger.warning(f"⚠️ 检查摘要权限失败: {e}")
-        # Authorization lookup failures must fail closed.
+        with SessionLocal() as db:
+            grants = db.query(UserPermission.plugin_name).join(
+                WeChatUser, UserPermission.user_id == WeChatUser.id
+            ).filter(WeChatUser.chat_name == chat_name).all()
+            return any(
+                str(name).rsplit("/", 1)[-1] in {"builtin_summary", "summary_plus"}
+                for (name,) in grants
+            )
+    except Exception as exc:
+        logger.warning("检查摘要权限失败，拒绝摘要处理: %s", exc)
         return False
+
+
 
 class WeChatMessage(BaseModel):
     content: str
