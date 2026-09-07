@@ -593,10 +593,13 @@ class WeChat:
                 self.listen.pop(nickname, None)
                 wxlog.warning(f"已清理失效监听对象，准备重新打开: {nickname!r}")
 
+        started = time.monotonic()
         chat, error = self._ensure_listen_window(nickname)
+        window_ready = time.monotonic()
         if error is not None:
             return error
         self._prime_listen_cache(chat)
+        baseline_ready = time.monotonic()
         with self._listen_registry_lock:
             # 打开窗口/prime 期间可能有另一个调用已完成添加，二次检查。
             existing = self.listener_manager.get_chat(nickname)
@@ -612,7 +615,10 @@ class WeChat:
                 self._listener_is_listening = True
                 wxlog.info(
                     f"监听任务已添加: {nickname!r} chat_exists={chat.core.exists()} "
-                    f"active={self.listener_manager.active_names()}"
+                    f"active={self.listener_manager.active_names()} "
+                    f"window_ms={(window_ready - started) * 1000:.1f} "
+                    f"baseline_ms={(baseline_ready - window_ready) * 1000:.1f} "
+                    f"total_ms={(time.monotonic() - started) * 1000:.1f}"
                 )
                 return chat
         wxlog.error(f"监听任务添加失败: {nickname!r}")
@@ -659,6 +665,10 @@ class WeChat:
         """
         try:
             box = chat.core.get_chatbox()
+            # Chat construction already captured an existing populated window.
+            # Only newly materialising/empty lists need the readiness wait.
+            if box._visible_control_snapshot:
+                return
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
                 if box.get_visible_messages():

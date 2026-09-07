@@ -157,7 +157,11 @@ def find_descendant(
     else:
         factory = root.Control
     control = factory(**kwargs)
-    return control if control.Exists(timeout) else None
+    if not control.Exists(timeout):
+        return None
+    # Exists() on a search wrapper discards its element and traverses the tree
+    # again. Bind the resolved element so later validity checks stay lightweight.
+    return auto_mod.Control.CreateControlFromElement(control.Element)
 
 
 def iter_descendants(root, max_nodes: int = 5000):

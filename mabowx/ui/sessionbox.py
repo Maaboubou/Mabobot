@@ -8,6 +8,7 @@ from typing import Any
 
 from mabowx.core import uia
 from mabowx.core.locks import uilock
+from mabowx.core.win32 import post_left_click, post_double_click
 from mabowx.logger import wxlog
 from mabowx.param import WxParam, WxResponse
 
@@ -593,11 +594,34 @@ class SessionBox(BaseUISubWnd):
                 return True
         return False
 
-    def _open_by_double_click(self, item: SessionElement, who: str) -> bool | None:
-        """Use the proven exact-row click plus double-click interaction."""
-        try:
-            item.click()
+    def _click_detach_row(self, item: SessionElement, *, double: bool = False) -> None:
+        """Deliver to the verified main HWND without global mouse delays."""
+        hwnd = int(getattr(self.root, "HWND", 0) or 0)
+        control = getattr(item, "control", None)
+        if hwnd and control is not None:
+            top = control.GetTopLevelControl()
+            if int(getattr(top, "NativeWindowHandle", 0) or 0) != hwnd:
+                raise RuntimeError("会话行不属于当前微信主窗口")
+            rect = control.BoundingRectangle
+            click = post_double_click if double else post_left_click
+            if not click(hwnd, (rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2):
+                raise RuntimeError("会话行定向点击失败")
+        elif double:
             item.double_click()
+        else:
+            item.click()
+
+    def _open_by_double_click(self, item: SessionElement, who: str) -> bool | None:
+        """Re-resolve the exact row after selection before sending the double click."""
+        try:
+            self._click_detach_row(item)
+            # Selecting a conversation can move its virtualized row. Never
+            # double-click the old row merely because its RuntimeId still exists.
+            item = self._find_visible_session(who, exact=True)
+            if item is None:
+                return False
+            self._click_detach_row(item)
+            self._click_detach_row(item, double=True)
         except Exception as exc:
             wxlog.warning(f"会话双击打开独立窗口失败: {who!r}: {exc}")
             return False
@@ -619,6 +643,18 @@ class SessionBox(BaseUISubWnd):
 
         任何路径都必须真正观察到同名顶层 HWND 后才报成功。
         """
+        if self._separate_window_state(who):
+            return WxResponse.success(message=f"独立窗口已存在：{who}")
+        # A visible exact row can be detached with targeted HWND messages even
+        # when the main window is behind another chat. Keep foreground/layout
+        # recovery for the case where the UIA session list is unavailable.
+        self._close_search_popover()
+        item = self._find_visible_session(who, exact=True)
+        if item is not None:
+            opened = self._open_by_double_click(item, who)
+            if opened is not False:
+                return WxResponse.success()
+
         show = getattr(self.root, "show", None)
         if show is not None:
             show()

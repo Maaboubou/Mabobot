@@ -791,7 +791,9 @@ class ChatBox(BaseUISubWnd):
         self._cache_chat_name: str | None = None
         self._delivery_sequence = 0
         self._media_operation_sequencer = OrderedOperationSequencer()
-        self.init()
+        # Listening only needs the message list. Input/button/page discovery is
+        # deferred until a send operation calls refresh() or input_control.
+        self.control = getattr(root, "control", None)
 
     def init(self) -> None:
         if self.root is None or not self.root.exists():
@@ -1773,9 +1775,12 @@ class ChatBox(BaseUISubWnd):
                 msg_type = getattr(msg_cls, "type", "other")
                 content = parse_content(msg_type, raw_name)
                 anchor_token = control_anchor_token(control)
-                direction, avatar_sender, direction_source = self._identity_for(
-                    control, probe_avatar=probe_avatar_direction,
-                )
+                if probe_avatar_direction:
+                    direction, avatar_sender, direction_source = self._identity_for(control)
+                else:
+                    # A startup baseline records order, not sender identity. Do
+                    # not screenshot or walk the group header for old messages.
+                    direction, avatar_sender, direction_source = None, "", "baseline"
                 if direction is None:
                     direction = self._direction_for_message(msg_type, raw_name, content)
                     direction_source = "fallback"
@@ -1786,7 +1791,7 @@ class ChatBox(BaseUISubWnd):
                     self._last_time = msg.content
                     msg.sender = "系统"
                 else:
-                    msg.sender = self._sender_for(direction, msg.type)
+                    msg.sender = self._sender_for(direction, msg.type) if probe_avatar_direction else ""
                     if direction == "friend" and not msg.sender:
                         msg.sender = avatar_sender
                 result.append(msg)
@@ -2138,7 +2143,21 @@ class ChatBox(BaseUISubWnd):
         with self._message_read_lock:
             return self._get_new_messages_serialized()
 
+    @uilock
+    def _visible_list_is_unchanged(self) -> bool:
+        """Only skip delivery work when the complete raw message list is unchanged.
+
+        This is the existing delivery baseline, never a sender/direction cache.
+        New or changed rows still receive fresh avatar identification.
+        """
+        if not self._visible_control_snapshot or self._last_anchor_missing:
+            return False
+        snapshot = tuple(control_anchor_token(row) for row in self.get_visible_messages())
+        return snapshot == self._visible_control_snapshot
+
     def _get_new_messages_serialized(self) -> list:
+        if self._visible_list_is_unchanged():
+            return []
         visible_messages = self.get_messages(
             resolve_group_senders=False,
         )
@@ -2488,10 +2507,11 @@ class ChatBox(BaseUISubWnd):
 
     @uilock
     def get_visible_messages(self) -> list[Any]:
-        if self.message_list is None or not self.message_list.Exists(0):
+        message_list = self.message_list
+        if message_list is None:
             return []
         try:
-            return list(self.message_list.GetChildren())
+            return list(message_list.GetChildren())
         except Exception:
             return []
 
