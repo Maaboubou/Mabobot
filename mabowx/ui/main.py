@@ -20,6 +20,7 @@ from mabowx.core.win32 import (
     get_version_by_path,
     get_window_info,
     is_window,
+    is_window_visible,
     kill_process_tree,
 )
 from mabowx.core.window_cache import WindowCache
@@ -510,6 +511,10 @@ class WeChatMainWnd(BaseUIWnd):
         if not entry:
             return None
         try:
+            if not is_window_visible(int(entry["hwnd"])):
+                from mabowx.core.tray import invoke_wechat_tray
+
+                invoke_wechat_tray()
             control = uia.control_from_handle(int(entry["hwnd"]))
             if not control.Exists(0):
                 return None
@@ -525,6 +530,11 @@ class WeChatMainWnd(BaseUIWnd):
         try:
             return uia.find_main_window(name=self._ui_name, class_name=self._ui_cls_name)
         except Exception:
+            # Hidden Qt windows can disappear from UIA entirely after closing
+            # to the tray. Ask the application to reopen before searching again.
+            from mabowx.core.tray import invoke_wechat_tray
+
+            invoke_wechat_tray()
             # 兼容英文客户端或非标准标题
             return uia.find_main_window(class_name=self._ui_cls_name, timeout=3.0)
 
@@ -655,17 +665,19 @@ class WeChatMainWnd(BaseUIWnd):
         """确保主窗口的 QWidget UIA 子树可用。
 
         微信 4.1 在部分窗口状态下，主窗口 UIA 只暴露
-        MMUIRenderSubWindowHW。此时点击标题栏左侧空白区域可让 Qt
-        可访问树重新出现。
+        MMUIRenderSubWindowHW。关闭到托盘后，ShowWindow 只能显示原生
+        外壳；优先调用微信托盘动作恢复 Qt 自身的可见状态。
 
         安全约束：点击点必须由 ``compute_safe_titlebar_point`` 计算，
         优先读取 ``mmui::TitleBar`` 左边界；右侧是最小化/最大化/关闭
         按钮，任何情况下都不允许靠近。
         """
-        for _ in range(attempts):
+        for attempt in range(attempts):
             try:
                 children = self.control.GetChildren()
                 if any(getattr(child, "ClassName", "") == "QWidget" for child in children):
+                    return
+                if attempt == 0 and self._restore_from_tray():
                     return
                 rect = self.control.BoundingRectangle
                 window_rect = (int(rect.left), int(rect.top), int(rect.right), int(rect.bottom))
@@ -694,6 +706,29 @@ class WeChatMainWnd(BaseUIWnd):
                 time.sleep(0.5)
             except Exception:
                 return
+
+    def _restore_from_tray(self) -> bool:
+        from mabowx.core.tray import invoke_wechat_tray
+
+        if not self.HWND or not invoke_wechat_tray():
+            return False
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            try:
+                control = uia.control_from_handle(self.HWND)
+                if control.ClassName == self._ui_cls_name and any(
+                    getattr(child, "ClassName", "") == "QWidget"
+                    for child in control.GetChildren()
+                ):
+                    self.control = control
+                    for name in ("_session_box", "_navigation_box", "_chatbox"):
+                        self.__dict__.pop(name, None)
+                    wxlog.info(f"通过微信托盘恢复主窗口控件树: HWND={self.HWND}")
+                    return True
+            except Exception:
+                pass
+            time.sleep(0.1)
+        return False
 
     def shutdown(self) -> None:
         """结束当前主窗口进程及其全部微信相关进程。"""
