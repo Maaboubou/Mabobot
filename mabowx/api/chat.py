@@ -114,7 +114,6 @@ class Chat:
             return []
         return self.core.get_chatbox().get_new_messages()
 
-    @uilock
     def GetHistoryMessage(
         self,
         n: int,

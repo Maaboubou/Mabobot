@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import math
 import threading
 import time
 from pathlib import Path
@@ -12,7 +13,7 @@ from mabowx.core import uia
 from mabowx.core.clipboard import set_files, set_text
 from mabowx.core.locks import ui_transaction, uilock
 from mabowx.core.operation_sequencer import OrderedOperationSequencer
-from mabowx.core.win32 import enum_windows_by_pid, get_window_owner, post_right_click, post_middle_click
+from mabowx.core.win32 import enum_windows_by_pid, get_window_owner, post_right_click, post_middle_click, scroll_window, force_foreground, get_foreground_window
 from mabowx.logger import wxlog
 from mabowx.msgs import classify, make_message, parse_content
 from mabowx.msgs.identity import attach_delivery_context
@@ -291,6 +292,34 @@ def merge_overlapping_message_pages(pages: list[list]) -> tuple[list, bool]:
     return merged, True
 
 
+def messages_before_history_overlap(page: list, frontier: list) -> list | None:
+    """Find the older prefix even if new arrivals extend the page's bottom."""
+    for signatures_only in (False, True):
+        left = [_message_control_token(m) for m in page]
+        right = [_message_control_token(m) for m in frontier]
+        if signatures_only:
+            left = [t[1] for t in left]
+            right = [t[1] for t in right]
+        candidates = []
+        for index in range(len(left)):
+            length = 0
+            while index + length < len(left) and length < len(right) and left[index + length] == right[length]:
+                length += 1
+            if length and (not signatures_only or length >= 2 or
+                           (left.count(right[0]) == right.count(right[0]) == 1)):
+                candidates.append((length, index))
+        if candidates:
+            best = max(length for length, _ in candidates)
+            matches = [index for length, index in candidates if length == best]
+            if len(matches) == 1:
+                return page[:matches[0]]
+            return None
+        # A buffered subset of the preceding page adds no older occurrences.
+        if left and any(right[i:i + len(left)] == left for i in range(len(right))):
+            return []
+    return None
+
+
 MESSAGE_SIGNATURE_TTL_SEC = 15.0
 MUTABLE_MEDIA_ANCHOR_TYPES = frozenset({"image", "video", "voice", "file"})
 ANCHOR_RECOVERY_MAX_FAILURES = 3
@@ -516,49 +545,81 @@ class ChatMoreInfoWnd:
             timeout=timeout,
         )
 
+    def _focus_target(self) -> int:
+        hwnd = int(getattr(self.root, "NativeWindowHandle", 0) or 0)
+        if not hwnd:
+            raise RuntimeError("群昵称读取缺少目标窗口句柄")
+        if get_foreground_window() != hwnd:
+            force_foreground(hwnd)
+        if get_foreground_window() != hwnd:
+            raise RuntimeError("群昵称读取未能取得目标窗口焦点")
+        return hwnd
+
+    def _find_more_button(self):
+        return uia.find_descendant(
+            self.root, control_type="ButtonControl", name="聊天信息",
+            automation_id=self._more_button_aid, timeout=0,
+        )
+
+    def _click_more(self, more) -> bool:
+        self._focus_target()
+        import win32gui
+        hwnd = int(self.root.NativeWindowHandle)
+        rect = more.BoundingRectangle
+        point = (int((rect.left + rect.right) // 2), int((rect.top + rect.bottom) // 2))
+        hit = win32gui.WindowFromPoint(point)
+        if int(win32gui.GetAncestor(hit, 2) or hit) != hwnd:
+            raise RuntimeError("聊天信息按钮被其他窗口遮挡")
+        uia.click_screen(*point, wait=0.05)
+        return True
+
+    def _wait_panel(self, timeout: float):
+        deadline = time.monotonic() + timeout
+        while True:
+            panel = self._find_open_panel(timeout=0)
+            if panel is not None or time.monotonic() >= deadline:
+                return panel
+            time.sleep(0.025)
+
     def _open(self) -> None:
         if self.root is None:
             return
-        show = getattr(self.parent, "show", None)
-        if callable(show):
-            try:
-                show()
-                time.sleep(0.2)
-            except Exception:
-                pass
-        existing = self._find_open_panel(timeout=0.2)
+        self._focus_target()
+        existing = self._find_open_panel(timeout=0)
         if existing is not None:
             self.panel = existing
             return
-        more = uia.find_descendant(
-            self.root,
-            control_type="ButtonControl",
-            name="聊天信息",
-            automation_id=self._more_button_aid,
-            timeout=1.5,
-        )
-        if more is None:
-            raise RuntimeError("未找到聊天信息按钮")
-        self.more_button = more
-        try:
-            rect = more.BoundingRectangle
-            uia.click_screen(
-                int(rect.left + (rect.right - rect.left) // 2),
-                int(rect.top + (rect.bottom - rect.top) // 2),
-                wait=0.6,
-            )
-        except Exception:
-            more.Click(simulateMove=False, waitTime=0.6)
-
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline:
-            panel = self._find_open_panel(timeout=0.2)
+        # Poll actual UI state instead of fixed sleeps. Recover once after
+        # restoring the same window; check for late opening before clicking again.
+        for attempt in range(2):
+            if attempt:
+                show = getattr(self.parent, "show", None)
+                if callable(show):
+                    show()
+                hwnd = int(getattr(self.parent, "HWND", 0) or 0)
+                if hwnd:
+                    self.root = uia.control_from_handle(hwnd)
+                existing = self._find_open_panel(timeout=0)
+                if existing is not None:
+                    self.panel = existing
+                    self._opened_by_us = True
+                    return
+            more = self._find_more_button()
+            if more is None:
+                continue
+            self.more_button = more
+            try:
+                self._click_more(more)
+            except RuntimeError:
+                if attempt:
+                    raise
+                continue
+            panel = self._wait_panel(0.4 if not attempt else 1.2)
             if panel is not None:
                 self.panel = panel
                 self._opened_by_us = True
                 return
-            time.sleep(0.08)
-        raise RuntimeError("聊天信息侧栏未打开")
+        raise RuntimeError("聊天信息侧栏未打开（点击及同窗口恢复均未成功）")
 
     @staticmethod
     def _control_identity(control) -> tuple:
@@ -648,31 +709,21 @@ class ChatMoreInfoWnd:
         """
         if not self._opened_by_us or self.root is None:
             return True
-        panel = self._find_open_panel(timeout=0.2)
+        panel = self._find_open_panel(timeout=0)
         if panel is None:
             self._opened_by_us = False
             return True
-        more = self.more_button or uia.find_descendant(
-            self.root,
-            control_type="ButtonControl",
-            name="聊天信息",
-            automation_id=self._more_button_aid,
-            timeout=0.5,
-        )
-        if more is None:
-            return False
         try:
-            rect = more.BoundingRectangle
-            uia.click_screen(
-                int(rect.left + (rect.right - rect.left) // 2),
-                int(rect.top + (rect.bottom - rect.top) // 2),
-                wait=0.3,
-            )
+            self._focus_target()
+            more = self._find_more_button()
+            if more is None:
+                return False
+            self._click_more(more)
         except Exception:
             return False
         deadline = time.monotonic() + 1.5
         while time.monotonic() < deadline:
-            if self._find_open_panel(timeout=0.1) is None:
+            if self._find_open_panel(timeout=0) is None:
                 self._opened_by_us = False
                 self.panel = None
                 return True
@@ -709,6 +760,7 @@ class ChatMoreInfoWnd:
         """Read only the setting row labelled ``我在本群的昵称``."""
         if self.root is None:
             return []
+        hwnd = self._focus_target()
         label = self.get_item_control("我在本群的昵称")
         if label is None:
             # Compatibility fallback for builds that expose the row normally.
@@ -721,21 +773,11 @@ class ChatMoreInfoWnd:
         if label is None:
             return []
 
-        # The value is a descendant in 4.1.12 and may be a sibling in other
-        # 4.x builds. Walk only a bounded row ancestry; never inspect members.
-        row = label
-        for _ in range(4):
-            values = self._text_values(row)
-            if values:
-                return values
-            try:
-                parent = row.GetParentControl()
-            except Exception:
-                parent = None
-            if parent is None or parent is self.root:
-                break
-            row = parent
-        return []
+        if get_foreground_window() != hwnd:
+            raise RuntimeError("群昵称读取期间目标窗口失去焦点")
+        # Only values inside the exact nickname row are evidence. Walking up
+        # to the panel can mistake a group name or member name for our nickname.
+        return self._text_values(label)
 
     def get_my_nickname(self) -> str:
         candidates = self._nickname_setting_candidates()
@@ -1589,16 +1631,18 @@ class ChatBox(BaseUISubWnd):
                 try:
                     from mabowx.ui.component import Menu
 
-                    Menu(
-                        self.root,
-                        timeout=0.25,
-                        # 微信会把头像菜单重排到聊天窗口右上角，不能用点击点
-                        # 邻近性判断；新 HWND + PID + owner 足以精确归属。
-                        anchor=None,
-                        baseline_hwnds=baseline_menu_hwnds,
-                        require_new=True,
-                        expected_owner_hwnd=root_hwnd,
-                    ).close()
+                    # Synchronous clicks have already returned. Only inspect
+                    # a popup that still exists; do not wait for a dismissed one.
+                    pending = [window for window in enum_windows_by_pid(root_pid)
+                               if window.visible and window.hwnd not in baseline_menu_hwnds
+                               and window.class_name in AVATAR_MENU_NATIVE_CLASSES
+                               and get_window_owner(window.hwnd) == root_hwnd]
+                    if pending:
+                        Menu(
+                            self.root, timeout=0.0 if matched else 0.25,
+                            anchor=None, baseline_hwnds=baseline_menu_hwnds,
+                            require_new=True, expected_owner_hwnd=root_hwnd,
+                        ).close()
                 except Exception:
                     pass
 
@@ -1611,7 +1655,7 @@ class ChatBox(BaseUISubWnd):
                 if matched:
                     wxlog.debug(
                         "头像方向探测命中: "
-                        f"chat={self.who!r} direction={direction} sender={sender!r} "
+                        f"chat={getattr(self, '_cache_chat_name', '')!r} direction={direction} sender={sender!r} "
                         f"anchor={control_anchor_token(control)!r} "
                         f"attempt={attempt + 1} "
                         f"elapsed_ms={(time.monotonic() - started) * 1000:.1f}"
@@ -1619,7 +1663,7 @@ class ChatBox(BaseUISubWnd):
                     return direction, sender
         wxlog.debug(
             "头像方向探测未命中: "
-            f"chat={self.who!r} elapsed_ms={(time.monotonic() - started) * 1000:.1f}"
+            f"chat={getattr(self, '_cache_chat_name', '')!r} elapsed_ms={(time.monotonic() - started) * 1000:.1f}"
         )
         return None
 
@@ -1760,15 +1804,17 @@ class ChatBox(BaseUISubWnd):
         resolve_group_senders: bool = True,
         *,
         probe_avatar_direction: bool = True,
+        controls: list | None = None,
     ) -> list:
         """读取当前可见消息并解析为消息对象。
 
         监听初始化可关闭头像探测，只建立轻量基线；正常读取与原版一样
         逐条探测当前头像，不以可复用的 RuntimeId 跳过身份识别。
         """
-        self._sync_chat_cache()
+        if controls is None:
+            self._sync_chat_cache()
         result: list = []
-        for control in self.get_visible_messages():
+        for control in (self.get_visible_messages() if controls is None else controls):
             try:
                 raw_name = str(getattr(control, "Name", "") or "")
                 msg_cls = classify(control)
@@ -1791,7 +1837,10 @@ class ChatBox(BaseUISubWnd):
                     self._last_time = msg.content
                     msg.sender = "系统"
                 else:
-                    msg.sender = self._sender_for(direction, msg.type) if probe_avatar_direction else ""
+                    if controls is not None and direction == "friend" and avatar_sender:
+                        msg.sender = avatar_sender
+                    else:
+                        msg.sender = self._sender_for(direction, msg.type) if probe_avatar_direction else ""
                     if direction == "friend" and not msg.sender:
                         msg.sender = avatar_sender
                 result.append(msg)
@@ -1952,48 +2001,19 @@ class ChatBox(BaseUISubWnd):
         self._anchor_recovery_circuit_logged = False
 
     def _prepare_recovered_messages(self, visible_page: list, messages: list) -> None:
-        """在历史页仍可见时固化图片身份，并逐条补齐群发送者。"""
-        if not messages:
-            return
-        for message in messages:
-            try:
-                if str(getattr(message, "type", "") or "") == "image":
-                    with ui_transaction(timeout=1.0):
-                        attach_delivery_context(visible_page, [message])
-                else:
-                    attach_delivery_context(visible_page, [message])
-            except Exception as exc:
-                wxlog.debug(f"恢复消息身份固化失败: {exc}")
-
-        try:
-            with ui_transaction(timeout=0.75):
-                group_chat = self.is_group_chat()
-        except Exception:
-            group_chat = False
-        if not group_chat:
-            return
-        for message in messages:
-            if (
-                str(getattr(message, "direction", "") or "") != "friend"
-                or str(getattr(message, "sender", "") or "").strip()
-                or str(getattr(message, "type", "") or "")
-                in {"system", "time", "official"}
-            ):
-                continue
-            try:
-                # 一条消息一个短事务，避免一整页头像探测长期占用全局 UI 锁。
-                with ui_transaction(timeout=0.75):
-                    sender = self._extract_group_sender(message)
-                if sender:
-                    message.sender = sender
-            except Exception as exc:
-                wxlog.debug(f"恢复消息发送者探测失败: {exc}")
-            time.sleep(0.02)
+        """Resolve only new occurrences while their historical page is visible."""
+        for index, message in enumerate(messages):
+            parsed = self._read_history_message(message, visible_page)
+            messages[index] = parsed
+            for row_index, row in enumerate(visible_page):
+                if row is message:
+                    visible_page[row_index] = parsed
+                    break
 
     def _recover_messages_after_missing_anchor(
         self,
         *,
-        max_pages: int = 8,
+        max_pages: int = 32,
         timeout: float = 8.0,
         wheel_times: int = 4,
         settle_interval: float = 0.12,
@@ -2035,9 +2055,20 @@ class ChatBox(BaseUISubWnd):
         try:
             if collection_ok:
                 anchor_page = self.get_messages(
-                    resolve_group_senders=False,
+                    resolve_group_senders=False, probe_avatar_direction=False,
                 )
                 result["collection_pages"] = 1
+                # The lightweight page has provisional direction. Resolve the
+                # matched old occurrence too, so a self-sent anchor can match
+                # its previously recorded type/content/direction signature.
+                overlap_anchor = find_control_snapshot_overlap(
+                    tuple(_message_control_token(m) for m in anchor_page),
+                    previous_control_snapshot,
+                )
+                if overlap_anchor is not None:
+                    self._prepare_recovered_messages(
+                        anchor_page, [anchor_page[overlap_anchor[1]]],
+                    )
                 candidates, anchor_found = messages_after_anchor(
                     anchor_page,
                     self._tail_message_id,
@@ -2052,8 +2083,8 @@ class ChatBox(BaseUISubWnd):
                     result["status"] = "collection_anchor_lost"
                     collection_ok = False
                 else:
-                    accumulated = list(anchor_page)
                     self._prepare_recovered_messages(anchor_page, candidates)
+                    accumulated = list(anchor_page)
 
             for _ in range(down_scrolls if collection_ok else 0):
                 if time.monotonic() - collection_started >= timeout * 2:
@@ -2065,14 +2096,11 @@ class ChatBox(BaseUISubWnd):
                         result["status"] = "window_unavailable"
                         collection_ok = False
                         break
-                    self.message_list.WheelDown(
-                        wheelTimes=max(1, int(wheel_times)),
-                        interval=0.015,
-                        waitTime=0.0,
-                    )
-                time.sleep(max(0.0, float(settle_interval)))
+                    before_scroll = self._read_control_anchor_snapshot()
+                    self._scroll_message_list(-max(1, int(wheel_times)))
+                self._wait_message_page(before_scroll, timeout=max(0.2, settle_interval))
                 page = self.get_messages(
-                    resolve_group_senders=False,
+                    resolve_group_senders=False, probe_avatar_direction=False,
                 )
                 result["collection_pages"] = int(result["collection_pages"]) + 1
                 overlap = message_page_overlap_length(accumulated, page)
@@ -2081,8 +2109,8 @@ class ChatBox(BaseUISubWnd):
                     collection_ok = False
                     break
                 appended = list(page[overlap:])
-                accumulated.extend(appended)
                 self._prepare_recovered_messages(page, appended)
+                accumulated.extend(appended)
         except Exception as exc:
             result["status"] = "collection_error"
             result["error"] = f"{type(exc).__name__}: {exc}"
@@ -2093,7 +2121,7 @@ class ChatBox(BaseUISubWnd):
                     self._return_to_latest(wait_time=0.1)
                 time.sleep(max(0.12, float(settle_interval)))
                 final_visible = self.get_messages(
-                    resolve_group_senders=False,
+                    resolve_group_senders=False, probe_avatar_direction=False,
                 )
             except Exception as exc:
                 result["status"] = "restore_error"
@@ -2114,8 +2142,8 @@ class ChatBox(BaseUISubWnd):
             result["status"] = "concurrent_bottom_gap"
             return None, final_visible, result
         final_appended = list(final_visible[final_overlap:])
-        accumulated.extend(final_appended)
         self._prepare_recovered_messages(final_visible, final_appended)
+        accumulated.extend(final_appended)
 
         recovered, anchor_found = messages_after_anchor(
             accumulated,
@@ -2274,54 +2302,150 @@ class ChatBox(BaseUISubWnd):
                 return
             time.sleep(max(0.01, min(float(interval), deadline - time.monotonic())))
 
-    @uilock
+    def _scroll_message_list(self, wheel_times: int) -> None:
+        """Short UI transaction shared by history reads and anchor recovery."""
+        with ui_transaction(timeout=0.75):
+            message_list = self.message_list
+            if message_list is None or not message_list.Exists(0):
+                raise RuntimeError("历史消息窗口不可用")
+            hwnd = int(message_list.GetTopLevelControl().NativeWindowHandle or 0)
+            expected = int(getattr(self.root, "HWND", 0) or 0)
+            if expected and hwnd != expected:
+                raise RuntimeError("历史消息窗口身份发生变化")
+            if not scroll_window(hwnd, message_list.BoundingRectangle, wheel_times):
+                raise RuntimeError("历史消息定向滚动失败")
+
+    def _wait_message_page(self, previous, *, timeout: float, deadline=None):
+        """Wait for a changed page to settle; never hold UI lock while sleeping."""
+        end = time.monotonic() + max(0.0, timeout)
+        if deadline is not None:
+            end = min(end, deadline)
+        previous = tuple(previous)
+        last = previous
+        while True:
+            with ui_transaction(timeout=0.5):
+                current = self._read_control_anchor_snapshot()
+            if current and current != previous and current == last:
+                return current
+            if time.monotonic() >= end:
+                return current
+            last = current
+            time.sleep(min(0.025, max(0.0, end - time.monotonic())))
+
+    def _message_scroll_position(self):
+        with ui_transaction(timeout=0.5):
+            rows = self.get_visible_messages()
+            if not rows:
+                return ()
+            return tuple((control_anchor_token(c), int(c.BoundingRectangle.top),
+                          int(c.BoundingRectangle.bottom)) for c in (rows[0], rows[-1]))
+
+    def _ensure_history_message_visible(self, message):
+        # UIA exposes buffered rows outside the viewport. Parsing their avatars
+        # before scrolling them into view is both slow and unreliable.
+        deadline = time.monotonic() + 2.0
+        while True:
+            with ui_transaction(timeout=0.5):
+                if control_anchor_token(message.control) != _message_control_token(message):
+                    raise RuntimeError("历史消息在滚动期间已变化")
+                viewport = self.message_list.BoundingRectangle
+                row = message.control.BoundingRectangle
+                point = group_sender_head_point(message.control, "friend")
+                y = point[1] if point is not None else int((row.top + row.bottom) // 2)
+                if viewport.top + 2 <= y < viewport.bottom - 2:
+                    return
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("历史消息无法滚动到可见区域")
+                self._scroll_message_list(1 if y < viewport.top + 2 else -1)
+            time.sleep(0.025)
+
+    def _read_history_message(self, message, page):
+        # Full identity/media work is performed once, while this occurrence is
+        # still on its page. Runtime IDs alone are not durable message identity.
+        self._ensure_history_message_visible(message)
+        with ui_transaction(timeout=0.75):
+            token = _message_control_token(message)
+            if control_anchor_token(message.control) != token:
+                raise RuntimeError("历史消息在读取前已变化")
+            self._last_time = str(getattr(message, "time", "") or self._last_time)
+            parsed = self.get_messages(controls=[message.control], resolve_group_senders=False)
+            if len(parsed) != 1 or _message_control_token(parsed[0]) != token:
+                raise RuntimeError("历史消息无法确认身份")
+            attach_delivery_context(page, parsed)
+            from mabowx.utils.history_time import history_timestamp
+            source_time = parsed[0].content if getattr(parsed[0], "is_time", False) else parsed[0].time
+            parsed[0].time = history_timestamp(source_time)
+            return parsed[0]
+
     def get_history_messages(
-        self,
-        n: int,
-        callback=None,
-        interval: float = 0.3,
-        speed: int = 1,
-        goback: bool = True,
-        timeout: float | None = None,
+        self, n: int, callback=None, interval: float = 0.2,
+        speed: int = 1, goback: bool = True, timeout: float | None = None,
     ) -> list:
-        """向上滚动读取历史消息，直到数量达到 n 或无新消息。"""
-        import time as _time
+        """Read newest-to-oldest, return oldest-to-newest, without moving a cursor.
 
-        self.refresh()
-        collected: dict[str, object] = {}
-        deadline = None if timeout is None else _time.monotonic() + timeout
-
-        def _collect():
-            for msg in self.get_messages():
-                if msg.id and msg.id not in collected:
-                    collected[msg.id] = msg
-                    if callback is not None:
-                        try:
-                            callback(msg)
-                        except Exception:
-                            pass
-
-        _collect()
-        no_new_rounds = 0
-        while len(collected) < n and no_new_rounds < 4:
-            if deadline is not None and _time.monotonic() > deadline:
-                break
-            before = len(collected)
+        Like wxautox4, n counts non-system/time messages; callbacks see every
+        object, including the object that returns CALLBACK_STOP_SIGN.
+        """
+        if not isinstance(n, int) or not isinstance(speed, int):
+            raise ValueError("n 和 speed 必须为整数")
+        if not 1 <= speed <= 100 or not math.isfinite(interval) or interval < 0:
+            raise ValueError("speed 必须为 1..100，interval 必须为非负有限数")
+        if timeout is not None and (not math.isfinite(timeout) or timeout < 0):
+            raise ValueError("timeout 必须为非负有限数")
+        if n <= 0:
+            return []
+        deadline = None if timeout is None else time.monotonic() + timeout
+        with self._message_read_lock:
+            saved_time = self._last_time
+            collected = []
+            frontier = None
+            count = 0
+            no_progress = 0
+            scroll_moved = True
+            def check_deadline():
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError("timed out while loading message history")
             try:
-                if self.message_list is not None and self.message_list.Exists(0):
-                    self.message_list.WheelUp(wheelTimes=speed, waitTime=interval)
-            except Exception:
-                pass
-            _time.sleep(max(0.2, interval))
-            _collect()
-            if len(collected) == before:
-                no_new_rounds += 1
-            else:
-                no_new_rounds = 0
-
-        if goback:
-            self._return_to_latest()
-        return list(collected.values())
+                with ui_transaction(timeout=0.75):
+                    self.refresh()
+                expected_chat = self.who
+                while True:
+                    check_deadline()
+                    if self.who != expected_chat:
+                        raise RuntimeError("读取历史消息期间聊天已切换")
+                    page = self.get_messages(resolve_group_senders=False,
+                                             probe_avatar_direction=False,
+                                             controls=self.get_visible_messages())
+                    if not page:
+                        raise RuntimeError("历史消息页面为空，无法证明连续性")
+                    new = page
+                    if frontier is not None:
+                        new = messages_before_history_overlap(page, frontier)
+                        if new is None:
+                            raise RuntimeError("历史消息页间不连续，停止读取")
+                    for message in reversed(new):
+                        check_deadline()
+                        parsed = self._read_history_message(message, page)
+                        collected.append(parsed)
+                        if str(parsed.type) not in {"time", "system"}:
+                            count += 1
+                        stopped = callback is not None and callback(parsed) == WxParam.CALLBACK_STOP_SIGN
+                        if stopped or count >= n:
+                            return list(reversed(collected))
+                    no_progress = no_progress + 1 if not new and not scroll_moved else 0
+                    if no_progress >= 2:
+                        return list(reversed(collected))
+                    frontier = page
+                    snapshot = tuple(_message_control_token(m) for m in page)
+                    position = self._message_scroll_position()
+                    self._scroll_message_list(speed)
+                    self._wait_message_page(snapshot, timeout=max(0.2, interval), deadline=deadline)
+                    scroll_moved = self._message_scroll_position() != position
+            finally:
+                self._last_time = saved_time
+                if goback:
+                    with ui_transaction(timeout=0.75):
+                        self._return_to_latest(wait_time=0.1)
 
     def _read_control_anchor_snapshot(self) -> tuple[tuple[str, str], ...]:
         """在调用方持有 UI 锁时读取轻量可见锚点。"""
@@ -2380,7 +2504,7 @@ class ChatBox(BaseUISubWnd):
             "lock_hold_max_ms": 0.0,
             "restore_elapsed_ms": 0.0,
         }
-        last_page_fingerprint: tuple[str, ...] | None = None
+        last_page_fingerprint: tuple | None = None
         repeated_pages = 0
 
         try:
@@ -2415,8 +2539,9 @@ class ChatBox(BaseUISubWnd):
                                 )
                                 break
 
-                            page_fingerprint = tuple(
-                                signature for _id, signature in snapshot
+                            page_fingerprint = (
+                                tuple(signature for _id, signature in snapshot),
+                                self._message_scroll_position(),
                             )
                             if page_fingerprint == last_page_fingerprint:
                                 repeated_pages += 1
@@ -2435,12 +2560,7 @@ class ChatBox(BaseUISubWnd):
                             if self.message_list is None or not self.message_list.Exists(0):
                                 result["status"] = "window_unavailable"
                                 break
-                            self.message_list.SetFocus()
-                            self.message_list.WheelUp(
-                                wheelTimes=wheel_times,
-                                interval=0.015,
-                                waitTime=0.0,
-                            )
+                            self._scroll_message_list(wheel_times)
                             result["scrolls"] = int(result["scrolls"]) + 1
                         finally:
                             lock_hold_ms = (time.monotonic() - lock_started) * 1000
@@ -2455,10 +2575,8 @@ class ChatBox(BaseUISubWnd):
                 except TimeoutError:
                     result["status"] = "ui_busy"
                     break
-                if settle_interval:
-                    remaining = deadline - time.monotonic()
-                    if remaining > 0:
-                        time.sleep(min(settle_interval, remaining))
+                self._wait_message_page(snapshot, timeout=max(0.2, settle_interval),
+                                        deadline=deadline)
         except Exception as exc:
             result["status"] = "error"
             result["error"] = f"{type(exc).__name__}: {exc}"
@@ -2485,6 +2603,18 @@ class ChatBox(BaseUISubWnd):
 
         不点击消息列表内容，避免误触卡片/图片等消息；优先 SetFocus + End。
         """
+        hwnd = int(getattr(self.root, "HWND", 0) or 0)
+        if hwnd:
+            import win32gui
+            if self.message_list is None or not self.message_list.Exists(0):
+                raise RuntimeError("消息列表不存在，无法返回最新位置")
+            self.message_list.SetFocus()
+            # Match wxautox4's targeted End; global SendKeys can reach a
+            # different foreground window after a callback or avatar probe.
+            win32gui.PostMessage(hwnd, 0x100, 0x23, 0)
+            win32gui.PostMessage(hwnd, 0x101, 0x23, 0)
+            time.sleep(max(0.15, float(wait_time)))
+            return
         try:
             if self.message_list is not None and self.message_list.Exists(0):
                 self.message_list.SetFocus()

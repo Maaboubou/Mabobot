@@ -441,6 +441,34 @@ def post_double_click(hwnd: int, screen_x: int, screen_y: int) -> bool:
         return False
 
 
+def scroll_window(hwnd: int, rect, wheel_times: int) -> bool:
+    """Send a signed wheel delta to this window without moving the mouse.
+
+    WM_MOUSEWHEEL uses screen coordinates. A zero window-procedure result is
+    valid; success here means delivery, and callers must verify page movement.
+    """
+    if not is_windows() or not wheel_times or abs(wheel_times) > 100:
+        return False
+    try:
+        win32api, win32con, win32gui, _ = _require_win32()
+        if not hwnd or not win32gui.IsWindow(hwnd):
+            return False
+        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+        left, top = max(left, rect.left), max(top, rect.top)
+        right, bottom = min(right, rect.right), min(bottom, rect.bottom)
+        if right - left < 4 or bottom - top < 4:
+            return False
+        point = (int((left + right) // 2), int((top + bottom) // 2))
+        win32gui.SendMessageTimeout(
+            hwnd, win32con.WM_MOUSEWHEEL, (120 * wheel_times & 0xffff) << 16,
+            win32api.MAKELONG(*point),
+            win32con.SMTO_ABORTIFHUNG | win32con.SMTO_BLOCK, 500,
+        )
+        return True
+    except Exception:
+        return False
+
+
 def post_left_click(hwnd: int, screen_x: int, screen_y: int) -> bool:
     """向指定窗口的指定屏幕坐标同步定向投递一次左键点击。"""
 
