@@ -43,7 +43,7 @@ def group_sender_head_point(control, direction: str | None) -> tuple[int, int] |
         return None
     if width < 110 or height < 35:
         return None
-    # 原版 wxautox4 使用消息行左/右上角固定 (51, 30) 偏移。仅在异常窄行
+    # 头像命中点使用消息行左/右上角固定 (51, 30) 偏移。仅在异常窄行
     # 中向内收缩，正常微信消息行保持同一命中位置。
     horizontal = min(int(WxParam.DEFAULT_MESSAGE_XBIAS), max(20, width // 8))
     vertical = min(int(WxParam.DEFAULT_MESSAGE_YBIAS), height - 2)
@@ -1604,7 +1604,7 @@ class ChatBox(BaseUISubWnd):
             posted = post_right_click(root_hwnd, point[0], point[1])
             if not posted:
                 return False, ""
-            # wxautox4 reads the avatar focus after right-click + middle-click.
+            # Read the avatar focus after right-click + middle-click.
             if not post_middle_click(root_hwnd, point[0], point[1]):
                 return False, ""
             deadline = time.monotonic() + max(0.02, float(focus_timeout))
@@ -2383,7 +2383,7 @@ class ChatBox(BaseUISubWnd):
     ) -> list:
         """Read newest-to-oldest, return oldest-to-newest, without moving a cursor.
 
-        Like wxautox4, n counts non-system/time messages; callbacks see every
+        The count n excludes system/time messages; callbacks see every
         object, including the object that returns CALLBACK_STOP_SIGN.
         """
         if not isinstance(n, int) or not isinstance(speed, int):
@@ -2609,7 +2609,7 @@ class ChatBox(BaseUISubWnd):
             if self.message_list is None or not self.message_list.Exists(0):
                 raise RuntimeError("消息列表不存在，无法返回最新位置")
             self.message_list.SetFocus()
-            # Match wxautox4's targeted End; global SendKeys can reach a
+            # Target End at this window; global SendKeys can reach a
             # different foreground window after a callback or avatar probe.
             win32gui.PostMessage(hwnd, 0x100, 0x23, 0)
             win32gui.PostMessage(hwnd, 0x101, 0x23, 0)

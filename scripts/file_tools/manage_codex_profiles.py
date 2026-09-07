@@ -1098,7 +1098,7 @@ def main() -> int:
         if options.action == "list":
             result = list_profiles(home=home)
         else:
-            # Every mutating action first reconciles data created by wxautox4.
+            # Every mutating action first reconciles legacy profile data.
             # This prevents a duplicate create from hiding an existing legacy
             # profile and makes migration independent of which screen opens first.
             _migrate_legacy_profiles(home)
