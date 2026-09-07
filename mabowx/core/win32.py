@@ -363,6 +363,44 @@ def post_right_click(hwnd: int, screen_x: int, screen_y: int) -> bool:
         return False
 
 
+def post_middle_click(hwnd: int, screen_x: int, screen_y: int) -> bool:
+    """向指定窗口的指定屏幕坐标同步定向投递一次中键点击。"""
+
+    if not is_windows():
+        return False
+    try:
+        win32api, win32con, win32gui, _ = _require_win32()
+        if not hwnd or not win32gui.IsWindow(hwnd):
+            return False
+        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+        x = int(screen_x)
+        y = int(screen_y)
+        if x < int(left) or x >= int(right) or y < int(top) or y >= int(bottom):
+            return False
+        client_x, client_y = win32gui.ScreenToClient(hwnd, (x, y))
+        lparam = win32api.MAKELONG(int(client_x), int(client_y))
+        flags = win32con.SMTO_ABORTIFHUNG | win32con.SMTO_BLOCK
+        messages = (
+            (win32con.WM_MOUSEMOVE, 0),
+            (win32con.WM_MBUTTONDOWN, win32con.MK_MBUTTON),
+            (win32con.WM_MBUTTONUP, 0),
+        )
+        for message, wparam in messages:
+            result = win32gui.SendMessageTimeout(
+                hwnd,
+                message,
+                wparam,
+                lparam,
+                flags,
+                500,
+            )
+            if not result or not result[0]:
+                return False
+        return True
+    except Exception:
+        return False
+
+
 def post_left_click(hwnd: int, screen_x: int, screen_y: int) -> bool:
     """向指定窗口的指定屏幕坐标同步定向投递一次左键点击。"""
 

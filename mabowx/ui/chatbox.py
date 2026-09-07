@@ -12,7 +12,7 @@ from mabowx.core import uia
 from mabowx.core.clipboard import set_files, set_text
 from mabowx.core.locks import ui_transaction, uilock
 from mabowx.core.operation_sequencer import OrderedOperationSequencer
-from mabowx.core.win32 import enum_windows_by_pid, get_window_owner, post_right_click
+from mabowx.core.win32 import enum_windows_by_pid, get_window_owner, post_right_click, post_middle_click
 from mabowx.logger import wxlog
 from mabowx.msgs import classify, make_message, parse_content
 from mabowx.msgs.identity import attach_delivery_context
@@ -788,10 +788,6 @@ class ChatBox(BaseUISubWnd):
         self._message_read_lock = threading.Lock()
         self._sent_texts: dict[str, float] = {}
         self._sent_filenames: dict[str, float] = {}
-        self._direction_cache: dict[str, str] = {}
-        self._avatar_direction_cache: dict[tuple[str, str], str] = {}
-        self._avatar_sender_cache: dict[tuple[str, str], str] = {}
-        self._direction_source_cache: dict[tuple[str, str], str] = {}
         self._cache_chat_name: str | None = None
         self._delivery_sequence = 0
         self._media_operation_sequencer = OrderedOperationSequencer()
@@ -1564,6 +1560,9 @@ class ChatBox(BaseUISubWnd):
             posted = post_right_click(root_hwnd, point[0], point[1])
             if not posted:
                 return False, ""
+            # wxautox4 reads the avatar focus after right-click + middle-click.
+            if not post_middle_click(root_hwnd, point[0], point[1]):
+                return False, ""
             deadline = time.monotonic() + max(0.02, float(focus_timeout))
             while True:
                 focused = uia.get_focused_control()
@@ -1602,15 +1601,16 @@ class ChatBox(BaseUISubWnd):
                     pass
 
     def _detect_avatar_direction(self, control) -> tuple[str, str] | None:
-        """复刻原版顺序：每轮先左后右，最多两轮且绝不猜测。"""
+        """按原版先左后右探测；保留三轮上限，避免失效控件阻塞监听。"""
         started = time.monotonic()
-        for attempt in range(2):
+        for attempt in range(3):
             for direction in ("friend", "self"):
                 matched, sender = self._probe_avatar_side(control, direction)
                 if matched:
                     wxlog.debug(
                         "头像方向探测命中: "
-                        f"chat={self.who!r} direction={direction} "
+                        f"chat={self.who!r} direction={direction} sender={sender!r} "
+                        f"anchor={control_anchor_token(control)!r} "
                         f"attempt={attempt + 1} "
                         f"elapsed_ms={(time.monotonic() - started) * 1000:.1f}"
                     )
@@ -1621,46 +1621,23 @@ class ChatBox(BaseUISubWnd):
         )
         return None
 
-    def _direction_for(
-        self,
-        control,
-        *,
-        probe_avatar: bool = True,
-        anchor_token: tuple[str, str] | None = None,
-    ) -> str | None:
-        """真实头像控件优先，窗口截图只作为有界失败后的兜底。"""
+    def _identity_for(
+        self, control, *, probe_avatar: bool = True,
+    ) -> tuple[str | None, str, str]:
+        """每次读取当前头像；方向、发送者和来源仅属于本次消息对象。"""
         class_name = str(getattr(control, "ClassName", "") or "")
         if class_name in ("mmui::ChatItemView", "mmui::ChatSystemInfoItemView", "mmui::ChatAppReaderItemView"):
-            return None
+            return None, "", "system"
         try:
-            token = anchor_token or control_anchor_token(control)
-            authoritative = self._avatar_direction_cache.get(token)
-            if authoritative in {"friend", "self"}:
-                return authoritative
             if probe_avatar:
-                avatar_result = self._detect_avatar_direction(control)
-                if avatar_result is not None:
-                    direction, sender = avatar_result
-                    self._avatar_direction_cache[token] = direction
-                    self._avatar_sender_cache[token] = sender
-                    self._direction_source_cache[token] = "avatar"
-                    return direction
-
-            runtime_id = "-".join(str(part) for part in control.GetRuntimeId())
-            name = str(getattr(control, "Name", "") or "")[:80]
-            key = f"{runtime_id}|{class_name}|{name}"
-            cached = self._direction_cache.get(key)
-            if cached is not None:
-                self._direction_source_cache.setdefault(token, "visual")
-                return cached
+                result = self._detect_avatar_direction(control)
+                if result is not None:
+                    return result[0], result[1], "avatar"
             hwnd = getattr(self.root, "HWND", None)
             direction = detect_message_direction(control, hwnd=int(hwnd) if hwnd else None)
-            if direction is not None:
-                self._direction_cache[key] = direction
-                self._direction_source_cache[token] = "visual"
-            return direction
+            return direction, "", "visual" if direction else "fallback"
         except Exception:
-            return None
+            return None, "", "fallback"
 
     def _direction_for_message(self, msg_type: str, raw_name: str, content: str) -> str | None:
         """确定性方向判断：不依赖截图。
@@ -1708,22 +1685,11 @@ class ChatBox(BaseUISubWnd):
         direction = str(getattr(message, "direction", "") or "")
         if direction != "friend" or control is None:
             return ""
-        token = tuple(
-            getattr(message, "ui_anchor_token", None)
-            or control_anchor_token(control)
-        )
-        cached_sender = self._avatar_sender_cache.get(token, "")
-        if cached_sender:
-            return cached_sender
-
         # 方向探测已确定为左侧后，这里只需在同一侧补取可能暂时为空的 Name。
         for _attempt in range(2):
             matched, sender = self._probe_avatar_side(control, "friend")
             if matched:
-                self._avatar_direction_cache[token] = "friend"
-                self._direction_source_cache[token] = "avatar"
                 if sender:
-                    self._avatar_sender_cache[token] = sender
                     return sender
             time.sleep(0.04)
         return ""
@@ -1785,10 +1751,6 @@ class ChatBox(BaseUISubWnd):
             self._anchor_recovery_failures = 0
             self._anchor_recovery_circuit_logged = False
             self._last_anchor_recovery_result = {}
-            self._direction_cache.clear()
-            self._avatar_direction_cache.clear()
-            self._avatar_sender_cache.clear()
-            self._direction_source_cache.clear()
 
     @uilock
     def get_messages(
@@ -1796,16 +1758,14 @@ class ChatBox(BaseUISubWnd):
         resolve_group_senders: bool = True,
         *,
         probe_avatar_direction: bool = True,
-        only_unseen_direction: bool = False,
     ) -> list:
         """读取当前可见消息并解析为消息对象。
 
-        监听初始化可关闭头像探测，只建立轻量基线；正常轮询则用
-        ``only_unseen_direction`` 只探测上一轮快照中没有的新控件。
+        监听初始化可关闭头像探测，只建立轻量基线；正常读取与原版一样
+        逐条探测当前头像，不以可复用的 RuntimeId 跳过身份识别。
         """
         self._sync_chat_cache()
         result: list = []
-        known_tokens = set(self._visible_control_snapshot) if only_unseen_direction else set()
         for control in self.get_visible_messages():
             try:
                 raw_name = str(getattr(control, "Name", "") or "")
@@ -1813,31 +1773,22 @@ class ChatBox(BaseUISubWnd):
                 msg_type = getattr(msg_cls, "type", "other")
                 content = parse_content(msg_type, raw_name)
                 anchor_token = control_anchor_token(control)
-                should_probe_avatar = bool(
-                    probe_avatar_direction
-                    and (not only_unseen_direction or anchor_token not in known_tokens)
-                )
-                direction = self._direction_for(
-                    control,
-                    probe_avatar=should_probe_avatar,
-                    anchor_token=anchor_token,
+                direction, avatar_sender, direction_source = self._identity_for(
+                    control, probe_avatar=probe_avatar_direction,
                 )
                 if direction is None:
                     direction = self._direction_for_message(msg_type, raw_name, content)
-                    self._direction_source_cache.setdefault(anchor_token, "fallback")
+                    direction_source = "fallback"
                 msg = make_message(control, self, direction, self._last_time)
                 msg.ui_anchor_token = anchor_token
-                msg.direction_source = self._direction_source_cache.get(
-                    anchor_token,
-                    "fallback",
-                )
+                msg.direction_source = direction_source
                 if getattr(msg, "is_time", False):
                     self._last_time = msg.content
                     msg.sender = "系统"
                 else:
                     msg.sender = self._sender_for(direction, msg.type)
                     if direction == "friend" and not msg.sender:
-                        msg.sender = self._avatar_sender_cache.get(anchor_token, "")
+                        msg.sender = avatar_sender
                 result.append(msg)
             except Exception as exc:
                 try:
@@ -2080,7 +2031,6 @@ class ChatBox(BaseUISubWnd):
             if collection_ok:
                 anchor_page = self.get_messages(
                     resolve_group_senders=False,
-                    only_unseen_direction=True,
                 )
                 result["collection_pages"] = 1
                 candidates, anchor_found = messages_after_anchor(
@@ -2118,7 +2068,6 @@ class ChatBox(BaseUISubWnd):
                 time.sleep(max(0.0, float(settle_interval)))
                 page = self.get_messages(
                     resolve_group_senders=False,
-                    only_unseen_direction=True,
                 )
                 result["collection_pages"] = int(result["collection_pages"]) + 1
                 overlap = message_page_overlap_length(accumulated, page)
@@ -2140,7 +2089,6 @@ class ChatBox(BaseUISubWnd):
                 time.sleep(max(0.12, float(settle_interval)))
                 final_visible = self.get_messages(
                     resolve_group_senders=False,
-                    only_unseen_direction=True,
                 )
             except Exception as exc:
                 result["status"] = "restore_error"
@@ -2193,7 +2141,6 @@ class ChatBox(BaseUISubWnd):
     def _get_new_messages_serialized(self) -> list:
         visible_messages = self.get_messages(
             resolve_group_senders=False,
-            only_unseen_direction=True,
         )
         messages = self._consume_messages(visible_messages)
 
