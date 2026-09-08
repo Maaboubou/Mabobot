@@ -23,10 +23,13 @@ from mabowx.core.window_health import (
     advance_window_repair_confirmation,
     build_window_observation,
     choose_window_recovery_rect,
+    is_undersized_window_rect,
     is_usable_window_rect,
     window_observation_fingerprint,
 )
 from mabowx.logger import wxlog
+from mabowx.param import WxParam
+from mabowx.ui.base import compute_auto_resize_size
 from mabowx.ui.main import is_wechat_qt_window_class
 
 
@@ -45,11 +48,11 @@ def _env_int(name: str, default: int, minimum: int) -> int:
 
 
 class ListenerWindowMonitor:
-    """Observe and repair the confirmed -32000 Qt restore-position failure.
+    """Repair confirmed offscreen and undersized detached listener windows.
 
     The monitor never traverses UIA, activates a window, closes a window, or
     recreates a listener.  It changes geometry only after the same HWND has
-    been observed in the unrecoverable state for multiple scans.
+    been observed with unhealthy geometry for multiple scans.
     """
 
     def __init__(self, main_wnd, listener_manager) -> None:
@@ -113,34 +116,53 @@ class ListenerWindowMonitor:
             except Exception as exc:
                 wxlog.error(f"监听窗口几何监控异常: {exc}")
 
-    @staticmethod
-    def _window_payload(window) -> dict:
+    def _window_payload(self, window) -> dict:
         return {
             "hwnd": int(window.hwnd),
             "title": str(window.title or ""),
             "class_name": str(window.class_name or ""),
             "pid": int(window.pid),
-            **get_window_geometry(int(window.hwnd)),
+            **self._geometry(int(window.hwnd)),
         }
 
-    def _fallback_rect(self) -> dict:
+    def _geometry(self, hwnd: int) -> dict:
+        geometry = get_window_geometry(hwnd)
+        geometry["undersized"] = bool(
+            getattr(self.main_wnd, "resize_enabled", True)
+            and geometry.get("visible")
+            and not geometry.get("iconic")
+            and is_undersized_window_rect(
+                geometry.get("window_rect"), self._fallback_rect(geometry)
+            )
+        )
+        return geometry
+
+    def _fallback_rect(self, geometry: dict | None = None) -> dict:
         try:
             monitors = get_monitor_info()
             if not monitors:
                 return {}
-            monitor = next(
-                (
-                    item
-                    for item in monitors
-                    if tuple(item.get("WorkPosition") or ()) == (0, 0)
-                ),
-                monitors[0],
-            )
+            rect = (geometry or {}).get("window_rect") or {}
+
+            def monitor_score(item):
+                x, y = item["WorkPosition"]
+                overlap = max(0, min(rect.get("right", 0), x + item["WorkWidth"])
+                              - max(rect.get("left", 0), x)) * max(
+                    0, min(rect.get("bottom", 0), y + item["WorkHeight"])
+                    - max(rect.get("top", 0), y))
+                return overlap, item["WorkHeight"]
+
+            monitor = max(monitors, key=monitor_score)
             left, top = tuple(monitor.get("WorkPosition") or (0, 0))
             available_width = int(monitor.get("WorkWidth") or 0)
             available_height = int(monitor.get("WorkHeight") or 0)
-            width = min(1200, available_width)
-            height = min(1040, available_height)
+            width, height = compute_auto_resize_size(
+                *WxParam.CHAT_WINDOW_SIZE, available_width, available_height
+            )
+            # Win32 constrains real top-level windows to the monitor. Do not
+            # compare their actual height with the requested 6000px UIA size.
+            width = min(width, available_width)
+            height = min(height, available_height)
             if width <= 0 or height <= 0:
                 return {}
             return {
@@ -223,15 +245,15 @@ class ListenerWindowMonitor:
         if is_hung_window(hwnd):
             result["reason"] = "window_message_thread_hung"
             return result
-        before = get_window_geometry(hwnd)
+        before = self._geometry(hwnd)
         result["before"] = before
-        if not before.get("unrecoverable_offscreen"):
+        if not (before.get("unrecoverable_offscreen") or before.get("undersized")):
             result.update(success=True, reason="already_recovered", after=before)
             return result
         foreground_before = get_foreground_window()
         changed = restore_window_no_activate(hwnd, recovery_rect)
         time.sleep(0.1)
-        after = get_window_geometry(hwnd)
+        after = self._geometry(hwnd)
         foreground_after = get_foreground_window()
         result.update({
             "after": after,
@@ -240,7 +262,11 @@ class ListenerWindowMonitor:
             "foreground_unchanged": foreground_before == foreground_after,
             "success": bool(
                 changed
+                and after.get("visible")
+                and not after.get("iconic")
                 and not after.get("unrecoverable_offscreen")
+                and not after.get("undersized")
+                and is_usable_window_rect(after.get("window_rect"))
                 and is_usable_window_rect(after.get("normal_rect"))
             ),
         })
@@ -262,7 +288,8 @@ class ListenerWindowMonitor:
             normal = window.get("normal_rect") or {}
             current = window.get("window_rect") or {}
             candidate = normal if is_usable_window_rect(normal) else current
-            if is_usable_window_rect(candidate):
+            if (is_usable_window_rect(candidate)
+                    and not is_undersized_window_rect(candidate, self._fallback_rect(window))):
                 self._last_valid_rect[str(window.get("title") or "")] = dict(candidate)
 
         result = {
@@ -275,8 +302,8 @@ class ListenerWindowMonitor:
         }
         result["observations"] = self._record_observations(expected, by_title, now)
         for name in expected:
-            matches = [item for item in by_title.get(name, []) if item.get("visible")]
-            if len(matches) != 1:
+            matches = by_title.get(name, [])
+            if len(matches) != 1 or not matches[0].get("visible"):
                 self._pending.pop(name, None)
                 continue
             target = matches[0]
@@ -284,14 +311,14 @@ class ListenerWindowMonitor:
             state, due = advance_window_repair_confirmation(
                 previous,
                 hwnd=int(target.get("hwnd") or 0),
-                unhealthy=bool(target.get("unrecoverable_offscreen")),
+                unhealthy=bool(target.get("unrecoverable_offscreen") or target.get("undersized")),
                 now=now,
                 threshold=self.confirmations,
             )
             if not state:
                 self._pending.pop(name, None)
                 continue
-            if previous:
+            if previous and previous.get("hwnd") == state["hwnd"]:
                 for key in ("next_attempt_at", "last_attempt_at", "last_error"):
                     if key in previous:
                         state[key] = previous[key]
@@ -301,17 +328,34 @@ class ListenerWindowMonitor:
                 continue
 
             peer_rects = []
+            fallback = self._fallback_rect(target)
             for window in windows:
                 if int(window.get("hwnd") or 0) == int(target.get("hwnd") or 0):
                     continue
                 normal = window.get("normal_rect") or {}
                 current = window.get("window_rect") or {}
-                peer_rects.append(normal if is_usable_window_rect(normal) else current)
+                candidate = normal if is_usable_window_rect(normal) else current
+                if not is_undersized_window_rect(candidate, fallback):
+                    peer_rects.append(candidate)
+            preferred = self._last_valid_rect.get(name)
+            if is_undersized_window_rect(preferred, fallback):
+                preferred = None
             recovery = choose_window_recovery_rect(
-                self._last_valid_rect.get(name),
+                preferred,
                 peer_rects,
-                self._fallback_rect(),
+                fallback,
             )
+            if target.get("undersized") and fallback:
+                # Keep this window on its monitor and move a bottom-edge
+                # shrunken window up so the restored area is actually usable.
+                current = target["window_rect"]
+                width = max(current["right"] - current["left"],
+                            recovery["right"] - recovery["left"])
+                height = max(current["bottom"] - current["top"],
+                             recovery["bottom"] - recovery["top"])
+                left = max(fallback["left"], min(current["left"], fallback["right"] - width))
+                top = max(fallback["top"], min(current["top"], fallback["bottom"] - height))
+                recovery = dict(left=left, top=top, right=left + width, bottom=top + height)
             try:
                 with ui_transaction(timeout=0.1):
                     repair = self._repair(name, target, recovery)
@@ -325,14 +369,14 @@ class ListenerWindowMonitor:
                 self._last_repair_at = time.time()
                 result["status"] = "recovered"
                 wxlog.warning(
-                    f"监听窗口位置已恢复: who={name!r} hwnd={repair.get('hwnd')}"
+                    f"监听窗口位置/尺寸已恢复: who={name!r} hwnd={repair.get('hwnd')}"
                 )
             else:
                 state["last_error"] = repair.get("reason")
                 state["next_attempt_at"] = time.time() + self.retry_cooldown
                 result["status"] = "repair_failed"
                 wxlog.error(
-                    f"监听窗口位置恢复失败: who={name!r} reason={repair.get('reason')}"
+                    f"监听窗口位置/尺寸恢复失败: who={name!r} reason={repair.get('reason')}"
                 )
         with self._lock:
             self._last_check_at = now

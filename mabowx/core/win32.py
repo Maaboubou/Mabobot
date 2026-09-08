@@ -711,14 +711,14 @@ def get_window_rect(hwnd: int) -> tuple[int, int, int, int]:
 
 def get_monitor_info() -> list[dict[str, object]]:
     """返回显示器信息列表，每项含 Position 和 Size。"""
-    _, _, win32gui, _ = _require_win32()
+    win32api, _, _, _ = _require_win32()
     result: list[dict[str, object]] = []
 
-    def _callback(monitor: int, _dc: object, _rect: object, _data: object) -> bool:
+    for monitor, _dc, _rect in win32api.EnumDisplayMonitors():
         try:
-            info = win32gui.GetMonitorInfo(monitor)
+            info = win32api.GetMonitorInfo(monitor)
         except Exception:
-            return True
+            continue
         rect = info["Monitor"]
         work = info.get("Work") or rect
         result.append(
@@ -734,9 +734,6 @@ def get_monitor_info() -> list[dict[str, object]]:
                 "Device": info.get("Device", ""),
             }
         )
-        return True
-
-    win32gui.EnumDisplayMonitors(None, None, _callback, None)
     return result
 
 

@@ -96,6 +96,8 @@ def build_window_observation(
         state = "minimized"
     elif offscreen or normal_offscreen:
         state = "partial_offscreen_sentinel"
+    elif target.get("undersized"):
+        state = "undersized"
     else:
         state = "healthy"
     return {
@@ -113,6 +115,7 @@ def build_window_observation(
         "offscreen_sentinel": offscreen,
         "normal_offscreen_sentinel": normal_offscreen,
         "unrecoverable_offscreen": unrecoverable,
+        "undersized": bool(target.get("undersized")),
     }
 
 
@@ -132,6 +135,21 @@ def window_observation_fingerprint(
         bool(value.get("offscreen_sentinel")),
         bool(value.get("normal_offscreen_sentinel")),
         bool(value.get("unrecoverable_offscreen")),
+        bool(value.get("undersized")),
+    )
+
+
+def is_undersized_window_rect(
+    rect: Mapping[str, int] | None,
+    target: Mapping[str, int] | None,
+) -> bool:
+    """Allow small WM/DPI differences, but retain at least 90% of each axis."""
+    if not is_usable_window_rect(rect) or not is_usable_window_rect(target):
+        return False
+    return any(
+        (int(rect[end]) - int(rect[start]))
+        < (int(target[end]) - int(target[start])) * 0.9
+        for start, end in (("left", "right"), ("top", "bottom"))
     )
 
 
