@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Callable
@@ -20,6 +21,19 @@ from app.services.codex_proxy.client import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _diagnostic_text(value, limit=2048):
+    """Keep bounded command diagnostics without common inline credentials."""
+    text = str(value or "")
+    text = re.sub(r"(?i)(bearer\s+)[^\s\"']+", r"\1[redacted]", text)
+    text = re.sub(r"\bsk-[A-Za-z0-9_-]{12,}", "[redacted]", text)
+    text = re.sub(
+        r"(?i)((?:[A-Z0-9_]*(?:API_KEY|TOKEN|PASSWORD|SECRET))\s*[=:]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+        r"\1[redacted]", text,
+    )
+    return text if len(text) <= limit else "[truncated] " + text[-limit:]
+
 
 
 class CodexImageStream:
@@ -74,8 +88,7 @@ class CodexImageStream:
                 if isinstance(event, dict) and event.get("type") in {"item.started", "item.completed"}:
                     item = event.get("item") or {}
                     if isinstance(item, dict):
-                        self.event("codex_item_observed", phase=event["type"],
-                                   item_type=item.get("type"), item_id=item.get("id"))
+                        self.record_item(event["type"], item)
             return b"".join(chunks)
 
         tasks = [asyncio.create_task(coro) for coro in (stdout(), proc.stderr.read(), write(), proc.wait())]
@@ -87,6 +100,23 @@ class CodexImageStream:
                 if not task.done():
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    def record_item(self, phase, item):
+        details = {"phase": phase, "item_type": item.get("type"), "item_id": item.get("id")}
+        if str(item.get("type") or "").replace("_", "").lower() == "commandexecution":
+            output = item.get("aggregated_output") or item.get("output") or ""
+            error = item.get("error") or item.get("stderr") or ""
+            if not error and (item.get("exit_code") not in (None, 0) or item.get("status") == "failed"):
+                error = output
+            details.update(
+                command=_diagnostic_text(item.get("command"), limit=4096),
+                exit_code=item.get("exit_code"),
+                status=item.get("status"),
+                output_tail=_diagnostic_text(output),
+                error_summary=_diagnostic_text(error),
+            )
+        # Persist each item as it arrives, so diagnostics survive a later timeout.
+        self.event("codex_item_observed", **details)
 
     async def _watch(self):
         while True:

@@ -49,6 +49,10 @@ class CodexProxyError(RuntimeError):
     """Raised when the Codex CLI backend cannot produce a usable response."""
 
 
+class CodexCliTimeoutError(CodexProxyError):
+    """The process exceeded its deadline; streamed images may already be delivered."""
+
+
 logger = logging.getLogger(__name__)
 
 CODEX_APPROVAL_POLICY = "on-request"
@@ -1156,6 +1160,7 @@ def render_chat_prompt(
     input_files: Optional[List[Dict[str, Any]]] = None,
     available_file_commands: Optional[Iterable[str]] = None,
     text_only: bool = False,
+    host_managed_images: bool = False,
 ) -> str:
     """Render OpenAI chat messages into a single Codex exec prompt."""
     rendered: List[str] = [
@@ -1183,6 +1188,20 @@ def render_chat_prompt(
             "- Read supplied input files only when needed to answer the request.",
             "- Native web search is enabled; use it only when needed for this request."
             if native_web_search_enabled else "- Native web search is disabled; use the supplied context.",
+        ])
+    elif host_managed_images:
+        rendered.extend([
+            "",
+            "Host-managed image delivery instructions:",
+            "- Complete the requested image generation/editing with the real built-in image generation tool.",
+            "- Treat all supplied images as references and preserve the user's requested subjects and details.",
+            "- Leave generated images in the image tool's native save location. The host monitors this thread, copies complete images, and sends them to the user.",
+            "- Retain every complete intermediate version; do not delete or overwrite generated images.",
+            "- Do not run shell commands to locate, inspect, verify, copy, or move generated images for delivery.",
+            "- Do not search for an output directory or wait for a copied attachment or delivery confirmation. The host handles these steps independently.",
+            "- Once the requested generation is complete, end the turn with a brief final response. No additional file handling is required.",
+            "- Do not claim that the host sent an image; you cannot observe delivery acknowledgments.",
+            "- If image generation fails or is unavailable, report that accurately. Do not draw substitute or placeholder images with code.",
         ])
     elif artifact_output_dir is not None:
         search_instructions = [
@@ -2063,13 +2082,8 @@ class CodexCliClient:
                 else _detect_runtime_file_commands(False)
             ),
             text_only=text_only,
+            host_managed_images=on_image is not None,
         )
-        if on_image is not None:
-            prompt += (
-                "\nImage streaming instructions: retain every complete generated image, including "
-                "intermediate versions, as separate files. Do not delete or overwrite drafts. "
-                "The host delivers complete images as they become available.\n"
-            )
         image_paths: List[Path] = []
         temporary_image_paths: List[Path] = []
         runtime_image_paths: List[str] = []
@@ -2271,7 +2285,7 @@ class CodexCliClient:
                 )
             except asyncio.TimeoutError as exc:
                 await self._terminate_process_tree(proc, runtime_output_path, request_id)
-                raise CodexProxyError(f"Codex CLI timed out after {timeout}s") from exc
+                raise CodexCliTimeoutError(f"Codex CLI timed out after {timeout}s") from exc
             except BaseException:
                 if image_stream is not None and proc.returncode is None:
                     await self._terminate_process_tree(proc, runtime_output_path, request_id)

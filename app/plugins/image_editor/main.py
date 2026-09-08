@@ -16,7 +16,7 @@ from app.utils.plugin_config import get_config
 from app.services.codex_profile_service import (
     CodexProfileError, get_codex_profile_service, _managed_profile_permission_roots,
 )
-from app.services.codex_proxy.client import CodexCliClient
+from app.services.codex_proxy.client import CodexCliClient, CodexCliTimeoutError
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -319,6 +319,7 @@ class ImageEditorPlugin:
         """每个任务只调用一次独立 Codex CLI，不使用聊天进程池或续接会话。"""
         if session is None:
             return
+        sent_hashes = set()
         try:
             profile = self._resolve_profile()
             target = session.target_images or self.target_images
@@ -346,8 +347,6 @@ class ImageEditorPlugin:
                 permission_read_roots=_managed_profile_permission_roots(profile),
                 codex_home=profile.get("codex_home"),
             )
-            sent_hashes = set()
-
             def send_image(path):
                 digest = hashlib.sha256(path.read_bytes()).hexdigest()
                 if digest in sent_hashes:
@@ -372,7 +371,8 @@ class ImageEditorPlugin:
                     {"role": "system", "content": (
                         "你是图片编辑器。使用真实的图片生成/编辑能力完成任务，"
                         "保留用户要求的主体和细节。不要追问，不要启动子代理或额外 Codex 进程。"
-                        "每次生成的完整图片都保留为附件，包括中间版本，不要删除或覆盖。"
+                        "保留生图工具产生的全部完整版本，不要删除或覆盖。"
+                        "宿主负责收集和发送图片，你无需查找、检查或搬运生成文件；完成生成后直接结束。"
                         "能力不可用时如实说明失败，禁止用代码绘制替代图片。"
                     )},
                     {"role": "user", "content": content},
@@ -392,8 +392,14 @@ class ImageEditorPlugin:
             for path in paths:
                 send_image(path)
         except Exception as exc:
-            logger.exception("🖼️ Codex 图片编辑失败")
-            self._send_error_message(session, str(exc))
+            if sent_hashes and isinstance(exc, (CodexCliTimeoutError, TimeoutError)):
+                logger.warning(
+                    "🖼️ Codex 图片已交付，后续执行超时 - 聊天: %s, 用户: %s, 已发送: %d, 原因: %s",
+                    session.chat_name, session.user_sender, len(sent_hashes), exc,
+                )
+            else:
+                logger.exception("🖼️ Codex 图片编辑失败")
+                self._send_error_message(session, str(exc))
         finally:
             with self._session_lock:
                 session.status = "completed"
