@@ -1099,11 +1099,13 @@ const App = {
     },
 
     async showCapabilitySettings(name, options = {}) {
+        const requestId = this._capabilitySettingsRequest = (this._capabilitySettingsRequest || 0) + 1;
         try {
             const [detailResponse, settings] = await Promise.all([
                 API.capabilities.getDetail(name),
                 API.capabilities.getSettings(name)
             ]);
+            if (requestId !== this._capabilitySettingsRequest) return;
             const capability = detailResponse.capability || {};
             this.currentCapabilitySettings = settings;
             this.currentCapabilityId = name;
@@ -1118,6 +1120,10 @@ const App = {
             const modalElement = document.getElementById('configModal');
             new bootstrap.Modal(modalElement).show();
             UI.bindCapabilitySettingsControls(modalElement);
+            if ((capability.features || []).includes('push')) {
+                const shell = modalElement.querySelector('.cap-settings-shell');
+                shell.pushReady = this.loadCapabilityPushRecipients(name, shell);
+            }
             if (options.focusGroup) {
                 UI.focusCapabilitySettingsGroup(modalElement, options.focusGroup);
             }
@@ -1126,9 +1132,85 @@ const App = {
         }
     },
 
+    async loadCapabilityPushRecipients(name, shell) {
+        const container = shell.querySelector('[data-push-recipients]');
+        const summary = shell.querySelector('[data-push-summary]');
+        const search = shell.querySelector('[data-push-search]');
+        const refreshSummary = () => {
+            const selected = [...container.querySelectorAll('input:checked')];
+            summary.textContent = selected.length ? `已选 ${selected.length} 个对象：${selected.map(i => i.dataset.chatName).join('、')}` : '未选择接收对象';
+        };
+        try {
+            const users = await API.users.getAll();
+            if (!shell.isConnected) return;
+            container.replaceChildren();
+            for (const user of users) {
+                const label = document.createElement('label');
+                label.className = 'd-flex align-items-center gap-2 py-1';
+                const input = document.createElement('input');
+                input.type = 'checkbox';
+                input.className = 'form-check-input';
+                input.dataset.userId = String(user.id);
+                input.dataset.chatName = user.chat_name;
+                input.checked = (user.permissions || []).some(p => p.plugin_name === `${name}#push`);
+                input.dataset.original = String(input.checked);
+                input.onchange = refreshSummary;
+                const text = document.createElement('span');
+                text.textContent = `${user.chat_name}（${user.is_group ? '群聊' : '私聊'}）`;
+                label.append(input, text);
+                container.append(label);
+            }
+            if (!users.length) container.textContent = '暂无聊天，请先在“聊天”页面添加接收对象。';
+            search.oninput = () => {
+                for (const label of container.querySelectorAll('label')) {
+                    label.classList.toggle('d-none', !label.textContent.toLowerCase().includes(search.value.trim().toLowerCase()));
+                }
+            };
+            refreshSummary();
+            shell.savePushRecipients = async () => {
+                for (const input of container.querySelectorAll('input')) {
+                    if (String(input.checked) === input.dataset.original) continue;
+                    const checked = input.checked;
+                    const policy = await API.chatPolicies.get(input.dataset.userId);
+                    const grants = (policy.plugin_grants || []).filter(p => p.plugin_name !== `${name}#push`)
+                        .map(p => ({plugin_name: p.plugin_name, require_mention: Boolean(p.require_mention)}));
+                    if (checked) grants.push({plugin_name: `${name}#push`, require_mention: false});
+                    const updated = await API.chatPolicies.update(input.dataset.userId, {expected_version: policy.version, plugin_grants: grants});
+                    this.syncSavedPushRecipient(input.dataset.userId, name, checked, policy.version, updated);
+                    input.dataset.original = String(checked);
+                }
+            };
+        } catch (error) {
+            shell.pushLoadError = error;
+            summary.textContent = '接收对象加载失败，请重新打开设置';
+            container.textContent = error.message;
+        }
+    },
+
+    syncSavedPushRecipient(userId, name, checked, previousVersion, updated) {
+        const form = document.getElementById('chatPolicyForm');
+        if (!form || form.dataset.userId !== String(userId) || Number(form.dataset.version) !== previousVersion || !updated?.version) return;
+        const controls = [...form.querySelectorAll('input[name], select[name], textarea[name], .chat-policy-plugin-toggle, .chat-policy-plugin-mention, .chat-policy-plugin-push')];
+        const card = [...form.querySelectorAll('[data-plugin-card]')].find(item => item.dataset.pluginCard === name);
+        const input = card?.querySelector('.chat-policy-plugin-push');
+        const baseline = JSON.parse(form._initialSnapshot || '[]');
+        const index = controls.indexOf(input);
+        if (input && baseline[index]) {
+            // Preserve an unsaved choice in the chat form while advancing its baseline.
+            if (input.checked === baseline[index].checked) input.checked = checked;
+            baseline[index].checked = checked;
+            form._initialSnapshot = JSON.stringify(baseline);
+            input.dispatchEvent(new Event('change', {bubbles:true}));
+        }
+        form.dataset.version = String(updated.version);
+        this._selectedChatPolicy = updated;
+        UI.syncChatPolicyDirty(form);
+    },
+
     async saveCapabilitySettings(name) {
         const form = document.getElementById('capabilitySettingsForm');
-        if (!form) return;
+        const shell = form?.closest('.cap-settings-shell');
+        if (!form || shell.dataset.capabilityId !== name) return;
         if (!form.checkValidity()) {
             form.reportValidity();
             return;
@@ -1160,14 +1242,21 @@ const App = {
         saveBtn.disabled = true;
         saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>正在应用';
         try {
+            await shell.pushReady;
+            if (shell.pushLoadError) throw shell.pushLoadError;
+            if (!shell.isConnected) return;
+            shell.querySelectorAll('[data-push-recipients] input').forEach(input => { input.disabled = true; });
             await API.capabilities.updateSettings(name, values);
+            await shell.savePushRecipients?.();
+            if (!shell.isConnected) return;
             const modal = bootstrap.Modal.getInstance(document.getElementById('configModal'));
             if (modal) modal.hide();
             UI.showSuccess('设置已保存并应用');
             await this.loadPlugins(false);
         } catch (e) {
-            UI.showError('保存失败：' + e.message);
+            UI.showError('部分设置可能已保存，请重试：' + e.message);
         } finally {
+            shell.querySelectorAll('[data-push-recipients] input').forEach(input => { input.disabled = false; });
             saveBtn.disabled = false;
             saveBtn.innerHTML = originalHtml;
         }
@@ -1176,12 +1265,14 @@ const App = {
     // Users & Listeners
     async loadUsers() {
         try {
-            const [usersData, listenersData, profilesData] = await Promise.all([
+            const [usersData, listenersData, profilesData, assistantOverview] = await Promise.all([
                 API.users.getAll(),
                 API.wechat.getListeners(),
-                API.codexProfiles.list().catch(() => ({ profiles: [], default_profile_id: '' }))
+                API.codexProfiles.list().catch(() => ({ profiles: [], default_profile_id: '' })),
+                API.assistant.getOverview()
             ]);
             this.updateManagedChatProfiles(profilesData);
+            this.updateManagedChatAssistantOverview(assistantOverview);
 
             const dbUsers = usersData || [];
             // Handle different structure of listeners response
@@ -1326,6 +1417,7 @@ const App = {
         if (force) this._managedChatReferenceData = null;
         if (this._managedChatReferenceData) return this._managedChatReferenceData;
         if (!this._managedChatReferencePromise) {
+            const overviewRevision = this._assistantOverviewRevision || 0;
             this._managedChatReferencePromise = Promise.all([
                 API.capabilities.getAll(),
                 API.assistant.getOverview(),
@@ -1336,7 +1428,8 @@ const App = {
                 this._managedChatProfilesData = profiles;
                 this._managedChatReferenceData = {
                     capabilities: capabilitiesData.capabilities || [],
-                    assistantOverview,
+                    assistantOverview: overviewRevision === (this._assistantOverviewRevision || 0)
+                        ? assistantOverview : this._assistantOverview,
                     profiles
                 };
                 return this._managedChatReferenceData;
@@ -1345,6 +1438,15 @@ const App = {
             });
         }
         return this._managedChatReferencePromise;
+    },
+
+    updateManagedChatAssistantOverview(overview) {
+        this._assistantOverview = overview;
+        this._assistantOverviewRevision = (this._assistantOverviewRevision || 0) + 1;
+        if (this._managedChatReferenceData) {
+            this._managedChatReferenceData.assistantOverview = overview;
+        }
+        UI.updateChatPolicyAssistantOptions(overview);
     },
 
     updateManagedChatProfiles(profilesData) {
@@ -1452,9 +1554,10 @@ const App = {
                 plugin_name: toggle.value,
                 require_mention: isGroup ? (mentionToggle ? mentionToggle.checked : true) : false
             });
-            if (card.querySelector('.chat-policy-plugin-push')?.checked) {
-                pluginGrants.push({ plugin_name: `${toggle.value}#push`, require_mention: false });
-            }
+        });
+        form.querySelectorAll('.chat-policy-plugin-push:checked').forEach(input => {
+            const toggle = input.closest('.chat-policy-plugin').querySelector('.chat-policy-plugin-toggle');
+            pluginGrants.push({ plugin_name: `${toggle.value}#push`, require_mention: false });
         });
         const roleValue = form.elements.role_id.value;
         const proactiveEnabled = Boolean(isGroup && form.elements.proactive_enabled?.checked);
@@ -1513,9 +1616,7 @@ const App = {
             (updated.side_effect_warnings || []).forEach(message => UI.showInfo(message));
         } catch (error) {
             UI.showError(`保存失败：${error.message}`);
-            if (/版本|刷新|current_version/.test(error.message)) {
-                await this.selectUser(this.currentThreadName, userId);
-            }
+            // Keep the user's edits on a version conflict; never silently reload them away.
         } finally {
             controls.forEach(([control, disabled]) => {
                 if (control.isConnected) control.disabled = disabled;
@@ -1569,7 +1670,7 @@ const App = {
             const judges = overview.judges || [];
             const chats = overview.chats || [];
 
-            this._assistantOverview = overview;
+            this.updateManagedChatAssistantOverview(overview);
             this._roles = roles;
             this._judges = judges;
             this._assistantChats = chats;
@@ -1886,16 +1987,12 @@ const App = {
             const description = UI.escapeHtml(j.description || '暂无描述');
             const judgeId = Number(j.id);
             const userCount = Number(j.user_count || 0);
-            const isBuiltin = j.is_builtin === true
-                || String(j.is_builtin ?? '').trim().toLowerCase() === 'true';
-            const canDelete = !isBuiltin && userCount === 0;
-            const deleteTitle = isBuiltin
-                ? '内置 Judge 无法删除'
-                : (userCount > 0
-                    ? `无法删除：有 ${userCount} 个用户正在使用此 Judge`
-                    : '删除');
+            const canDelete = userCount === 0;
+            const deleteTitle = userCount > 0
+                ? `无法删除：有 ${userCount} 个用户正在使用此 Judge`
+                : '删除';
             const modeBadge = j.prompt_mode === 'template'
-                ? '<span class="badge bg-primary-subtle text-primary border border-primary-subtle rounded-pill" style="font-size: 0.72rem;">模板</span>'
+                ? '<span class="badge bg-primary-subtle text-primary border border-primary-subtle rounded-pill" style="font-size: 0.72rem;">模板模式</span>'
                 : '<span class="badge bg-success-subtle text-success border border-success-subtle rounded-pill" style="font-size: 0.72rem;">简洁</span>';
 
             return `
@@ -2259,8 +2356,8 @@ const App = {
             const modal = bootstrap.Modal.getInstance(document.getElementById('configModal'));
             if (modal) modal.hide();
 
-            // Refresh UI to show changes
-            this.loadRoles();
+            // Refresh both the role manager and the retained chat policy form.
+            await this.loadRoles();
         } catch (e) {
             UI.showError('操作失败：' + e.message);
         }

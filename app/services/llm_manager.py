@@ -394,7 +394,9 @@ class LLMManager:
 
         # 自动清理 Gemini 3.x 已弃用采样参数。旧配置在首次加载新版
         # 代码时会被修正并写回，避免仅靠调用时过滤而长期保留脏数据。
-        modified = False
+        from app.services.retired_model_routes import prune_retired_model_routes
+
+        modified = prune_retired_model_routes(self.config.get("plugin_mappings", {}))
         for model_id, model_cfg in list(self.config.get("models", {}).items()):
             if not isinstance(model_cfg, dict):
                 continue
@@ -3019,6 +3021,10 @@ class LLMManager:
 
     def update_mapping(self, plugin_name: str, call_type: str, mapping: Dict):
         """更新一个路由主体的任务模型路由。"""
+        from app.services.retired_model_routes import is_retired_model_route
+
+        if is_retired_model_route(plugin_name, call_type):
+            raise ValueError("该模型路由已弃用并移除")
         if plugin_name in {"assistant", "builtin_chatbot"} and call_type == "chat":
             raise ValueError("AI 助手最终回复不支持通用模型路由")
         with self._config_lock:

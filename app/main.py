@@ -298,18 +298,32 @@ def _ensure_wechat_user_listener_preference_column(db: SessionLocal):
         db.rollback()
 
 
+def _should_seed_assistant_examples(db, model, key):
+    """Seed only a new empty installation; deletion must survive every restart."""
+    db.query(model).filter(model.is_builtin != "false").update({model.is_builtin: "false"}, synchronize_session="fetch")
+    flag = db.query(models_setting.Setting).filter(models_setting.Setting.key == key).first()
+    if flag:
+        return False
+    empty = db.query(model).first() is None
+    db.add(models_setting.Setting(key=key, value="true"))
+    return empty
+
+
 def _ensure_default_assistant_roles(db: SessionLocal):
-    """确保系统内置的 ChatBot 角色存在，不覆盖用户已有配置。"""
+    """仅在首次空库初始化普通示例角色；已有安装不补回删除项。"""
     try:
         from app.models.chatbot_role import ChatBotRole
 
+        if not _should_seed_assistant_examples(db, ChatBotRole, "ASSISTANT_ROLE_EXAMPLES_INITIALIZED_V1"):
+            db.commit()
+            return
         desired_roles = [
             {
                 "name": "default",
                 "display_name": "默认助手",
                 "description": "友好、专业的AI助手",
                 "prompt": "你是一个有用的AI助手，能够回答各种问题并提供帮助。请用简洁明了的语言回复。",
-                "is_builtin": "true"
+                "is_builtin": "false"
             },
             *BUILTIN_CHATBOT_ROLES,
         ]
@@ -324,15 +338,15 @@ def _ensure_default_assistant_roles(db: SessionLocal):
 
         db.commit()
         if created_count:
-            logger.info("成功创建 %s 个内置 ChatBot 角色", created_count)
+            logger.info("成功创建 %s 个示例 ChatBot 角色", created_count)
 
     except Exception as e:
-        logger.error(f"创建内置 ChatBot 角色失败: {e}")
+        logger.error(f"初始化示例 ChatBot 角色失败: {e}")
         db.rollback()
 
 
 def _get_system_default_judge_prompt() -> str:
-    """系统内置默认 Judge 模板（template 模式）"""
+    """新安装的示例 Judge 提示词（template 模式）"""
     return """## Role
 你是一个高情商的聊天群组观察员，你的名字是刘局(GG)。
 
@@ -364,11 +378,14 @@ def _get_system_default_judge_prompt() -> str:
 
 
 def _ensure_default_assistant_judges(db: SessionLocal):
-    """确保内置 Judge 存在，并从旧配置迁移默认 prompt（幂等）。"""
+    """首次空库导入普通示例，不恢复用户删除的判断器。"""
     try:
         from app.models.chatbot_judge import ChatBotJudge
 
         default_judge = db.query(ChatBotJudge).filter(ChatBotJudge.name == "default_judge").first()
+        if not _should_seed_assistant_examples(db, ChatBotJudge, "ASSISTANT_JUDGE_EXAMPLES_INITIALIZED_V1"):
+            db.commit()
+            return default_judge
         created_count = 0
         if not default_judge:
             legacy_prompt = get_plugin_setting("assistant", "proactive_judge_prompt", None)
@@ -384,7 +401,7 @@ def _ensure_default_assistant_judges(db: SessionLocal):
                 trigger_interval_minutes=int(get_plugin_setting("assistant", "proactive_interval_minutes", 1) or 1),
                 cooldown_msg_threshold=int(get_plugin_setting("assistant", "proactive_msg_threshold", 5) or 0),
                 cooldown_minutes=int(get_plugin_setting("assistant", "proactive_interval_minutes", 1) or 1),
-                is_builtin="true",
+                is_builtin="false",
             )
             db.add(default_judge)
             created_count += 1
@@ -399,10 +416,10 @@ def _ensure_default_assistant_judges(db: SessionLocal):
         db.commit()
         db.refresh(default_judge)
         if created_count:
-            logger.info("成功创建 %s 个内置 ChatBot Judge", created_count)
+            logger.info("成功创建 %s 个示例 ChatBot Judge", created_count)
         return default_judge
     except Exception as e:
-        logger.error(f"创建内置 ChatBot Judge 失败: {e}")
+        logger.error(f"初始化示例 ChatBot Judge 失败: {e}")
         db.rollback()
         return None
 

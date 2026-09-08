@@ -1,4 +1,4 @@
-"""Built-in ChatBot role and Judge presets shared by every distribution."""
+"""Editable starter examples for a new installation."""
 
 BUILTIN_CHATBOT_ROLES = (
     {
@@ -95,7 +95,7 @@ messages 里的每一项，都必须是刘局会直接发出去的微信短句�
         "output_max_count": 3,
         "output_strip_trailing_period": True,
         "output_interval_seconds": 3.0,
-        "is_builtin": "true",
+        "is_builtin": "false",
     },
 )
 
@@ -180,6 +180,6 @@ should_reply 只在“刘局这会儿真想说一句”的时候才为 true。
         "trigger_interval_minutes": 10,
         "cooldown_msg_threshold": 1,
         "cooldown_minutes": 1,
-        "is_builtin": "true",
+        "is_builtin": "false",
     },
 )

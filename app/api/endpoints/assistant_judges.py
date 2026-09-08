@@ -64,7 +64,6 @@ def _judge_to_dict(judge: ChatBotJudge, db: Session) -> Dict[str, Any]:
         "trigger_interval_minutes": judge.trigger_interval_minutes,
         "cooldown_msg_threshold": judge.cooldown_msg_threshold,
         "cooldown_minutes": judge.cooldown_minutes,
-        "is_builtin": judge.is_builtin,
         "user_count": db.query(UserChatBotJudge).filter(UserChatBotJudge.judge_id == judge.id).count(),
         "created_at": judge.created_at.isoformat() if judge.created_at else None,
         "updated_at": judge.updated_at.isoformat() if judge.updated_at else None,
@@ -207,9 +206,6 @@ async def delete_judge(judge_id: int, db: Session = Depends(get_db)) -> Dict[str
         judge = db.query(ChatBotJudge).filter(ChatBotJudge.id == judge_id).first()
         if not judge:
             raise HTTPException(status_code=404, detail="Judge 不存在")
-        if (judge.is_builtin or "").lower() == "true":
-            raise HTTPException(status_code=400, detail="内置 Judge 不可删除")
-
         bind_count = db.query(UserChatBotJudge).filter(UserChatBotJudge.judge_id == judge_id).count()
         if bind_count > 0:
             raise HTTPException(status_code=400, detail="有用户正在使用此 Judge，无法删除")

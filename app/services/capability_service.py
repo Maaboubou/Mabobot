@@ -605,6 +605,13 @@ class CapabilityService:
             "category_label": category_meta["label"],
             "category_order": category_meta["order"],
             "icon": str(raw_ui.get("icon") or category_meta["icon"]),
+            "management_url": (
+                raw_ui.get("management_url")
+                if isinstance(raw_ui.get("management_url"), str)
+                and raw_ui["management_url"].startswith("/api/")
+                and not any(c in raw_ui["management_url"] for c in "\\\r\n\t\"<>")
+                else None
+            ),
             "llm_tasks": normalize_llm_task_descriptors(config),
             "featured": False,
             "system": plugin_id.startswith("builtin_"),

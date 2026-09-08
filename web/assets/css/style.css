@@ -6694,7 +6694,8 @@ body.automation-pointer-sorting * {
 .chat-policy-plugin-config:hover:not(:disabled) { border-color: var(--primary); background: var(--accent-soft); }
 .chat-policy-plugin-config:disabled { color: var(--text-soft); cursor: not-allowed; opacity: .55; }
 .chat-policy-plugin-options { display: none; gap: .75rem; padding: .4rem .62rem; border-top: 1px solid var(--border-soft); background: var(--bg-soft); }
-.chat-policy-plugin.selected .chat-policy-plugin-options { display: flex; }
+.chat-policy-plugin.selected .chat-policy-plugin-options,
+.chat-policy-plugin.supports-push .chat-policy-plugin-options { display: flex; flex-wrap: wrap; }
 .chat-policy-plugin-options:empty { display: none !important; }
 .chat-policy-plugin-options label { display: flex; align-items: center; gap: .3rem; margin: 0; color: var(--text-secondary); font-size: var(--chat-font-label); }
 .chat-policy-plugin-options .form-check-input { position: static; float: none; margin: 0; }
@@ -7194,3 +7195,18 @@ body.automation-pointer-sorting * {
     .archive-console .archive-text-button { padding: .2rem; }
     .archive-heading > span { display: none; }
 }
+
+/* Compact recipient picker, scoped to capability settings. */
+.cap-push-settings > summary { display:flex; align-items:center; gap:.65rem; padding:.8rem 1rem; cursor:pointer; list-style:none; font-size:.78rem; }
+.cap-push-settings > summary::-webkit-details-marker { display:none; }
+.cap-push-settings > summary strong { flex-shrink:0; }
+.cap-push-settings [data-push-summary] { min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cap-push-action { flex-shrink:0; color:var(--primary); font-size:.7rem; }
+.cap-push-action i { display:inline-block; transition:transform .15s; }
+.cap-push-settings[open] .cap-push-action i { transform:rotate(180deg); }
+.cap-push-body { padding:.75rem 1rem; border-top:1px solid var(--border-soft); }
+.cap-push-settings [data-push-recipients] { max-height:180px; overflow-y:auto; margin-top:.5rem; }
+.cap-push-settings [data-push-recipients] label { padding:.4rem .3rem !important; margin:0; cursor:pointer; font-size:.76rem; border-radius:6px; }
+.cap-push-settings [data-push-recipients] label:hover { background:var(--bg-soft); }
+.cap-push-settings [data-push-recipients] input { flex-shrink:0; margin:0; float:none; }
+@media (max-width:575px) { .cap-push-settings > summary { flex-wrap:wrap; } .cap-push-settings [data-push-summary] { order:3; flex-basis:100%; } .cap-push-action { margin-left:auto; } }

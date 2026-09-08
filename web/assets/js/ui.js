@@ -184,7 +184,7 @@ const UI = {
     escapeHtml(text) {
         const div = document.createElement('div');
         div.textContent = text == null ? '' : String(text);
-        return div.innerHTML;
+        return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     },
 
     debounce(fn, delay = 300) {
@@ -1255,6 +1255,7 @@ const UI = {
                         <button class="btn btn-light border btn-sm capability-assign">
                             <i class="bi bi-chat-square-text me-1"></i>分配聊天
                         </button>
+                        ${info.management_url ? `<a class="btn btn-light border btn-sm" href="${this.escapeHtml(info.management_url)}">核对记录</a>` : ''}
                         <div class="dropdown ms-auto">
                             <button class="btn btn-light border btn-sm" data-bs-toggle="dropdown" aria-label="更多操作"><i class="bi bi-three-dots"></i></button>
                             <ul class="dropdown-menu dropdown-menu-end">
@@ -1721,7 +1722,7 @@ const UI = {
         const roles = assistantOverview.roles || [];
         const judges = assistantOverview.judges || [];
         const selectedProfile = assistant.codex_profile_id || '';
-        const selectedPluginCount = grants.filter(item => !String(item.plugin_name).includes('#')).length;
+        const selectedPluginCount = new Set(grants.map(item => String(item.plugin_name).split('#')[0])).size;
         const chatLogCapability = (capabilities || []).find(item => item.id === 'builtin_chat_logger');
         const chatLogEnabled = Boolean(chatLogCapability?.enabled);
         const chatLogStatus = !chatLogCapability
@@ -1746,7 +1747,7 @@ const UI = {
                 const configurable = Boolean(capability.configurable);
                 const searchValue = `${capability.display_name || ''} ${capability.id} ${capability.description || ''}`.toLowerCase();
                 return `
-                    <article class="chat-policy-plugin ${checked ? 'selected' : ''} ${available ? '' : 'unavailable'}"
+                    <article class="chat-policy-plugin ${checked || pushGrant ? 'selected' : ''} ${supportsPush ? 'supports-push' : ''} ${available ? '' : 'unavailable'}"
                         data-plugin-card="${this.escapeHtml(capability.id)}" data-plugin-search="${this.escapeHtml(searchValue)}">
                         <div class="chat-policy-plugin-main">
                             <span><i class="bi ${this.escapeHtml(capability.icon || 'bi-puzzle')}"></i></span>
@@ -1759,7 +1760,7 @@ const UI = {
                         </div>
                         <div class="chat-policy-plugin-options">
                             ${chat.is_group ? `<label><input class="form-check-input chat-policy-plugin-mention" type="checkbox" ${grant?.require_mention ? 'checked' : ''} ${checked && available ? '' : 'disabled'}><span>仅在 @Bot 时触发</span></label>` : ''}
-                            ${supportsPush ? `<label><input class="form-check-input chat-policy-plugin-push" type="checkbox" ${pushGrant ? 'checked' : ''} ${checked && available ? '' : 'disabled'}><span>允许后台推送</span></label>` : ''}
+                            ${supportsPush ? `<label><input class="form-check-input chat-policy-plugin-push" type="checkbox" ${pushGrant ? 'checked' : ''} ${available ? '' : 'disabled'}><span>允许后台推送</span></label>` : ''}
                         </div>
                     </article>`;
             }).join('');
@@ -1875,6 +1876,29 @@ const UI = {
         ].join('');
     },
 
+    updateChatPolicyAssistantOptions(overview) {
+        const form = document.getElementById('chatPolicyForm');
+        if (!form) return;
+        for (const [name, items, placeholder] of [
+            ['role_id', overview.roles || [], '继承全局默认角色'],
+            ['judge_id', overview.judges || [], '选择判断器']
+        ]) {
+            const select = form.elements[name];
+            if (!select) continue;
+            const selected = select.value;
+            const previousLabel = select.selectedOptions[0]?.textContent || selected;
+            select.replaceChildren(new Option(placeholder, ''));
+            for (const item of items) {
+                select.add(new Option(item.display_name || item.name, String(item.id)));
+            }
+            if (selected && ![...select.options].some(option => option.value === selected)) {
+                select.add(new Option(`${previousLabel}（已删除，请重新选择）`, selected));
+            }
+            select.value = selected;
+        }
+        this.syncChatPolicyDirty(form);
+    },
+
     updateChatPolicyProfileOptions(profilesData) {
         const form = document.getElementById('chatPolicyForm');
         const select = form?.elements?.codex_profile_id;
@@ -1891,8 +1915,12 @@ const UI = {
         if (!form) return;
         const syncPlugin = toggle => {
             const card = toggle.closest('.chat-policy-plugin');
-            card.classList.toggle('selected', toggle.checked);
+            card.classList.toggle('selected', toggle.checked || Boolean(card.querySelector('.chat-policy-plugin-push')?.checked));
             card.querySelectorAll('.chat-policy-plugin-options input').forEach(input => {
+                if (input.classList.contains('chat-policy-plugin-push')) {
+                    input.disabled = card.classList.contains('unavailable');
+                    return;
+                }
                 input.disabled = !toggle.checked || card.classList.contains('unavailable');
                 if (!toggle.checked) input.checked = false;
             });
@@ -1957,7 +1985,8 @@ const UI = {
         };
 
         const updateSummary = () => {
-            const selectedCount = form.querySelectorAll('.chat-policy-plugin-toggle:checked').length;
+            form.querySelectorAll('.chat-policy-plugin-toggle').forEach(syncPlugin);
+            const selectedCount = form.querySelectorAll('.chat-policy-plugin.selected').length;
             form.querySelectorAll('[data-plugin-tab-count]').forEach(item => { item.textContent = selectedCount; });
             const assistantStatus = form.querySelector('[data-assistant-status]');
             if (assistantStatus) assistantStatus.textContent = form.elements.assistant_enabled.checked ? '已启用' : '已关闭';
@@ -2211,6 +2240,16 @@ const UI = {
                         </div>
                     </div>
                     <div class="cap-settings-notice"><i class="bi bi-globe2"></i><span>${this.escapeHtml(settings.notice || '这里设置该能力对所有聊天的默认行为。')}</span></div>
+                    ${(capability.features || []).includes('push') ? `<details class="cap-settings-section cap-push-settings" data-settings-persistent aria-label="推送接收对象">
+                        <summary>
+                            <strong>推送接收对象</strong>
+                            <span class="small text-muted text-truncate" data-push-summary>正在加载…</span>
+                            <span class="cap-push-action">选择对象 <i class="bi bi-chevron-down"></i></span>
+                        </summary>
+                        <div class="cap-push-body"><p class="small text-muted mb-2">仅设置当前插件的接收对象，点击底部“保存设置”一起保存。</p>
+                        <input type="search" class="form-control form-control-sm mb-2" data-push-search placeholder="搜索聊天名称" aria-label="搜索推送接收对象">
+                        <div data-push-recipients>正在加载接收对象…</div></div>
+                    </details>` : ''}
                     <form id="capabilitySettingsForm">${sections}</form>
                     <div class="cap-settings-empty d-none" id="capabilitySettingsEmpty">没有匹配的设置</div>
                 </main>
@@ -2270,6 +2309,7 @@ const UI = {
                 if (visible) visibleFields += 1;
             });
             shell.querySelectorAll('.cap-settings-section').forEach(section => {
+                if (section.hasAttribute('data-settings-persistent')) return;
                 section.classList.toggle('d-none', !section.querySelector('.cap-settings-field:not(.d-none)'));
             });
             shell.querySelectorAll('[data-settings-anchor]').forEach(button => {

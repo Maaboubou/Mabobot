@@ -87,7 +87,6 @@ class AssistantConsoleService:
                 "output_max_count": role.output_max_count,
                 "output_strip_trailing_period": bool(role.output_strip_trailing_period),
                 "output_interval_seconds": role.output_interval_seconds,
-                "is_builtin": str(role.is_builtin or "false").lower() == "true",
                 "user_count": counts.get(role.id, 0),
             }
             items.append(item)
@@ -113,7 +112,6 @@ class AssistantConsoleService:
                 "trigger_interval_minutes": judge.trigger_interval_minutes,
                 "cooldown_msg_threshold": judge.cooldown_msg_threshold,
                 "cooldown_minutes": judge.cooldown_minutes,
-                "is_builtin": str(judge.is_builtin or "false").lower() == "true",
                 "user_count": counts.get(judge.id, 0),
             }
             items.append(item)

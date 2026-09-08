@@ -16,7 +16,7 @@ if (-not $tailscalePath) {
     }
 }
 if (-not $tailscalePath) {
-    throw '未找到 tailscale.exe。请先在此机器安装并登录 Tailscale。'
+    throw 'tailscale.exe was not found. Install Tailscale and sign in on this machine first.'
 }
 
 $localUrl = "http://127.0.0.1:$Port"
@@ -28,29 +28,29 @@ if (-not $SkipHealthCheck) {
         }
     }
     catch {
-        throw "本机服务尚未就绪：$localUrl/health。请先启动 mabowx，或明确使用 -SkipHealthCheck。详情：$($_.Exception.Message)"
+        throw "The local service is not ready at $localUrl/health. Start Mabobot first, or explicitly use -SkipHealthCheck. Details: $($_.Exception.Message)"
     }
 }
 
-Write-Host "正在将当前 Tailscale 节点的 HTTPS Serve 转发到 $localUrl ..."
+Write-Host "Configuring this Tailscale node's HTTPS Serve endpoint for $localUrl ..."
 & $tailscalePath serve --bg --yes $localUrl
 if ($LASTEXITCODE -ne 0) {
-    throw "Tailscale Serve 配置失败（退出码 $LASTEXITCODE）。首次使用时，请先打开命令显示的 Tailscale 启用链接完成确认，再重新运行本脚本。"
+    throw "Tailscale HTTPS Serve configuration failed with exit code $LASTEXITCODE. If this is the first Serve endpoint in the tailnet, open the approval URL printed by Tailscale and then run this script again."
 }
 
-Write-Host "正在添加仅 Tailnet 可见的 HTTP 兼容入口 :$Port ..."
+Write-Host "Adding the tailnet-only HTTP endpoint on port $Port ..."
 & $tailscalePath serve --bg --yes --http=$Port $localUrl
 if ($LASTEXITCODE -ne 0) {
-    throw "Tailscale HTTP Serve 配置失败（退出码 $LASTEXITCODE）。HTTPS 入口可能已经生效；请运行 'tailscale serve status' 检查当前状态。"
+    throw "Tailscale HTTP Serve configuration failed with exit code $LASTEXITCODE. The HTTPS endpoint might already be active; run 'tailscale serve status' to inspect it."
 }
 
 Write-Host ''
-Write-Host '当前 Serve 状态：'
+Write-Host 'Current Serve status:'
 & $tailscalePath serve status
 if ($LASTEXITCODE -ne 0) {
-    throw "无法读取 Tailscale Serve 状态（退出码 $LASTEXITCODE）。"
+    throw "Unable to read Tailscale Serve status; tailscale.exe exited with code $LASTEXITCODE."
 }
 
 Write-Host ''
-Write-Host "配置完成。远程设备既可使用 https://<机器名>.<tailnet>.ts.net，也可使用 http://<机器名>:$Port。"
-Write-Host '本脚本不会启用 Tailscale Funnel，也不会修改 Tailnet ACL、黑名单或白名单。'
+Write-Host "Configuration complete. Remote devices can use https://<machine-name>.<tailnet>.ts.net or http://<machine-name>:$Port."
+Write-Host 'This script does not enable Tailscale Funnel or change any tailnet access policy.'

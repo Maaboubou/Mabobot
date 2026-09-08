@@ -21,22 +21,6 @@ class JudgeManager:
         self.judges = {}
         self._load_judges_from_database()
 
-        # 极端兜底：数据库为空时提供内置默认
-        if not self.judges:
-            self.judges["default_judge"] = {
-                "name": "default_judge",
-                "display_name": "默认 Judge",
-                "description": "默认主动回复判断器",
-                "prompt": self._get_default_judge_template(),
-                "prompt_mode": "template",
-                "trigger_msg_threshold": 5,
-                "trigger_interval_minutes": 1,
-                "cooldown_msg_threshold": 5,
-                "cooldown_minutes": 1,
-                "is_builtin": "true",
-            }
-            logger.warning("⚠️ 未从数据库加载到 Judge，启用内置兜底 default_judge")
-
     def _load_judges_from_database(self) -> None:
         """从数据库加载 Judge"""
         try:
@@ -58,7 +42,6 @@ class JudgeManager:
                         "trigger_interval_minutes": int(getattr(judge, "trigger_interval_minutes", 1) or 0),
                         "cooldown_msg_threshold": int(getattr(judge, "cooldown_msg_threshold", 5) or 0),
                         "cooldown_minutes": int(getattr(judge, "cooldown_minutes", 1) or 0),
-                        "is_builtin": judge.is_builtin,
                     }
         except Exception as e:
             logger.error(f"❌ 从数据库加载 Judge 失败: {e}", exc_info=True)

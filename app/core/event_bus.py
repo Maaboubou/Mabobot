@@ -538,17 +538,13 @@ class EventBus:
         # or waits for a model. Keep configured order within each phase.
         final_listeners.sort(key=lambda item: item.propagation != "observe")
         for listener in final_listeners:
-            if (
-                listener.owner_kind == "core"
-                and isinstance(getattr(event, "data", None), dict)
-                and event.data.get("_consumed") is True
-            ):
-                self.logger.debug(
-                    "Skipping core fallback '%s' because an earlier plugin consumed %s",
-                    listener.plugin_name,
-                    event.type.value,
-                )
-                continue
+            # Consumption belongs to one listener. Only its propagation policy
+            # can stop dispatch, including dispatch to the core assistant.
+            for carrier in (getattr(event, "data", None), getattr(event, "context", None)):
+                if isinstance(carrier, dict):
+                    carrier.pop("_consumed", None)
+            consume_proxy = None
+            proxy_installed = False
             try:
                 self.logger.debug(f"Executing handler for {listener.plugin_name} for user {chat_name}")
                 # 为本次调用注入 wx 代理：当插件调用发送相关方法时自动标记已消费
@@ -570,13 +566,11 @@ class EventBus:
                             self._plugin_name = plugin_name
                             self._owner_kind = owner_kind
                             self._display_name = display_name
+                            self.consumed = False
 
                         def _mark_consumed(self):
-                            try:
-                                if isinstance(getattr(self._evt, 'data', {}), dict):
-                                    self._evt.data['_consumed'] = True
-                            except Exception:
-                                pass
+                            # A delayed send cannot consume a different listener's turn.
+                            self.consumed = True
 
                         def _get_bot_display_name(self) -> str:
                             bot_display_name = None
@@ -708,13 +702,14 @@ class EventBus:
                             return getattr(self._wx, name)
 
                     try:
-                        event.context['wx'] = _WxConsumeProxy(
+                        consume_proxy = _WxConsumeProxy(
                             original_wx,
                             event,
                             listener.plugin_name,
                             listener.owner_kind,
                             listener.display_name,
                         )
+                        event.context['wx'] = consume_proxy
                         proxy_installed = True
                     except Exception:
                         proxy_installed = False
@@ -734,18 +729,13 @@ class EventBus:
                 result = None
             # 仅当 Manifest 声明 stop_on_consumed，且处理器报告已消费时停止传播。
             if listener.propagation == "stop_on_consumed":
-                consumed = False
-                try:
-                    if isinstance(result, bool):
-                        consumed = result
-                    elif isinstance(result, dict) and result.get('consumed') is True:
-                        consumed = True
-                    elif isinstance(getattr(event, 'data', {}), dict) and event.data.get('_consumed') is True:
-                        consumed = True
-                    elif isinstance(getattr(event, 'context', {}), dict) and event.context.get('_consumed') is True:
-                        consumed = True
-                except Exception:
-                    consumed = False
+                consumed = (
+                    result is True
+                    or (isinstance(result, dict) and result.get("consumed") is True)
+                    or (consume_proxy is not None and consume_proxy.consumed)
+                    or (isinstance(event.data, dict) and event.data.get("_consumed") is True)
+                    or (isinstance(event.context, dict) and event.context.get("_consumed") is True)
+                )
 
                 if consumed:
                     self.logger.debug(
