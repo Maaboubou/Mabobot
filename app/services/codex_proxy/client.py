@@ -21,7 +21,7 @@ import zlib
 from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from app.services.codex_job_manager import codex_job_manager
 from app.services.file_tools_runtime import (
@@ -1655,6 +1655,7 @@ class CodexCliClient:
         workdir: Optional[str] = None,
         timeout_seconds: int = 600,
         permission_read_roots: Optional[Iterable[str]] = None,
+        codex_home: Optional[str] = None,
     ) -> None:
         self.workdir = str(Path(workdir or os.getenv("CODEX_PROXY_WORKDIR") or Path.cwd()).resolve())
         self.timeout_seconds = timeout_seconds
@@ -1675,7 +1676,9 @@ class CodexCliClient:
                 if str(path).strip().startswith("/")
             )
         )
-        self._generated_images_root_cache: Optional[str] = None
+        self._generated_images_root_cache: Optional[str] = (
+            str(codex_home).rstrip("/") + "/generated_images" if codex_home else None
+        )
 
     @staticmethod
     def _resolve_codex_bin(configured: Optional[str]) -> str:
@@ -1892,7 +1895,9 @@ class CodexCliClient:
                 recovered.append(materialized)
         return recovered
 
-    async def chat(self, request: Dict[str, Any]) -> Dict[str, Any]:
+    async def chat(
+        self, request: Dict[str, Any], *, on_image: Optional[Callable[[Path], None]] = None,
+    ) -> Dict[str, Any]:
         model = str(request.get("model") or os.getenv("CODEX_PROXY_MODEL") or "gpt-5.6-sol")
         extra_body = request.get("extra_body") if isinstance(request.get("extra_body"), dict) else {}
         reasoning_effort = (
@@ -2059,6 +2064,12 @@ class CodexCliClient:
             ),
             text_only=text_only,
         )
+        if on_image is not None:
+            prompt += (
+                "\nImage streaming instructions: retain every complete generated image, including "
+                "intermediate versions, as separate files. Do not delete or overwrite drafts. "
+                "The host delivers complete images as they become available.\n"
+            )
         image_paths: List[Path] = []
         temporary_image_paths: List[Path] = []
         runtime_image_paths: List[str] = []
@@ -2205,6 +2216,11 @@ class CodexCliClient:
             output_dir,
         )
 
+        image_stream = None
+        if on_image is not None:
+            from app.services.codex_proxy.image_stream import CodexImageStream
+
+            image_stream = CodexImageStream(self, output_dir, request_id, on_image)
         usage: Dict[str, Any] = {}
         try:
             try:
@@ -2249,13 +2265,20 @@ class CodexCliClient:
                 ) from exc
             try:
                 stdout_b, stderr_b = await asyncio.wait_for(
-                    proc.communicate(prompt.encode("utf-8")),
+                    (image_stream.communicate(proc, prompt.encode("utf-8"))
+                     if image_stream is not None else proc.communicate(prompt.encode("utf-8"))),
                     timeout=timeout,
                 )
             except asyncio.TimeoutError as exc:
                 await self._terminate_process_tree(proc, runtime_output_path, request_id)
                 raise CodexProxyError(f"Codex CLI timed out after {timeout}s") from exc
+            except BaseException:
+                if image_stream is not None and proc.returncode is None:
+                    await self._terminate_process_tree(proc, runtime_output_path, request_id)
+                raise
 
+            if image_stream is not None:
+                await image_stream.finish()
             stdout = stdout_b.decode("utf-8", errors="replace")
             stderr = stderr_b.decode("utf-8", errors="replace")
             codex_thread_id = parse_codex_thread_id(stdout)
@@ -2406,6 +2429,8 @@ class CodexCliClient:
             )
             raise
         finally:
+            if image_stream is not None:
+                await image_stream.finish()
             request_dir_safe = _artifact_request_dir_is_safe(request_dir)
             if request_dir_safe:
                 try:

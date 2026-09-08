@@ -1,0 +1,13 @@
+{
+  "schema_version": 2,
+  "plugin_api_version": 2,
+  "storage": {"cache_retention_days": 7, "cache_limit_mb": 2048},
+  "backup": {"schema_version": 1, "include_persistent_storage": true, "include_generated_files": true, "supports_restore_migration": true, "sensitive": false},
+  "health": {"critical": false, "timeout_seconds": 5},
+  "listeners": [
+    {"event": "text_message_received", "handler": "handle_text_message", "title": "开始或补充图片编辑", "trigger": {"kind": "keyword", "summary": "消息以图片编辑触发词开头，或当前聊天存在编辑会话", "config_keys": ["trigger_keyword"], "conditions": ["触发词后可附参考图数量、生成数量和描述"]}, "scope": {"level": "global", "chat_types": ["group", "user"]}, "propagation": "stop_on_consumed"},
+    {"event": "image_message_received", "handler": "handle_image_message", "title": "接收编辑素材", "trigger": {"kind": "session", "summary": "当前聊天存在等待图片的编辑会话", "config_keys": [], "conditions": []}, "scope": {"level": "global", "chat_types": ["group", "user"]}, "propagation": "stop_on_consumed"},
+    {"event": "quote_image_message_received", "handler": "handle_quote_image_message", "title": "引用图片编辑", "trigger": {"kind": "keyword", "summary": "引用图片并命中编辑触发词或已有编辑会话", "config_keys": ["trigger_keyword"], "conditions": ["引用内容必须包含图片"]}, "scope": {"level": "global", "chat_types": ["group", "user"]}, "propagation": "stop_on_consumed"}
+  ],
+  "jobs": []
+}
