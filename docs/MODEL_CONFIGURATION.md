@@ -2,6 +2,8 @@
 
 Web 控制台的 `/ai/models` 用于管理“模型连接”。一个连接由配置名称、供应商、服务端模型、凭据引用和可选运行参数组成；插件和任务路由只引用配置名称，因此可以在不修改插件的情况下替换实际模型。
 
+交互式助手的账号模型、聊天绑定、会话隔离与工具权限，统一见 [Codex Profile 配置与权限架构](CODEX_PROFILE_ARCHITECTURE.md)。
+
 ## 推荐录入流程
 
 1. 选择 OpenAI、Anthropic、Gemini、DeepSeek、OpenRouter，或本地 Codex。

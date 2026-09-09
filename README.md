@@ -101,6 +101,7 @@ tests/             自动化测试
 
 - [mabowx 与主程序边界](docs/MABOWX_BOUNDARY.md)
 - [Web 控制台架构](docs/WEB_CONSOLE_ARCHITECTURE.md)
+- [Codex Profile 配置与权限架构](docs/CODEX_PROFILE_ARCHITECTURE.md)
 - [聊天档案与线程上下文](docs/CHAT_ARCHIVE_OPERATIONS.md)
 - [模型用量与计价](docs/LLM_USAGE.md)
 - [安全策略](SECURITY.md)

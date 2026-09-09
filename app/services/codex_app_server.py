@@ -28,6 +28,9 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from app.services.codex_job_manager import codex_job_manager
+from app.services.codex_delivery import (
+    DeliveryError, collect_selected_files, delivery_instructions, delivery_schema, parse_delivery,
+)
 from app.services.codex_browser_tool import (
     BrowserToolContext,
     CodexBrowserToolError,
@@ -51,7 +54,6 @@ from app.services.codex_proxy.client import (
     _as_runtime_path,
     _collect_artifact_attachments,
     _detect_runtime_file_commands,
-    _direct_image_request_mode,
     _is_link_like,
     _materialize_codex_generated_image,
     _permission_profile_config_args,
@@ -1492,6 +1494,7 @@ class CodexAppServerManager:
         turn_trackers: Iterable[_TurnTracker],
         image_request_mode: Optional[str],
         request_id: str,
+        selected_paths: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Collect outputs and host-recover direct imagegen results when needed."""
         if not _artifact_output_dir_is_safe(output_dir):
@@ -1501,25 +1504,43 @@ class CodexAppServerManager:
                 {},
             )
             raise CodexAppServerError("Codex artifact output directory became unsafe")
-        attachments = _collect_artifact_attachments(output_dir)
-        if not image_request_mode or any(
-            attachment.get("type") == "image" for attachment in attachments
-        ):
-            return attachments
-
         generated_paths: List[str] = []
         for tracker in turn_trackers:
             for saved_path in tracker.generated_image_paths:
                 if saved_path and saved_path not in generated_paths:
                     generated_paths.append(saved_path)
+        if selected_paths is not None:
+            started = time.monotonic()
+            try:
+                attachments = collect_selected_files(
+                    selected_paths, generated_paths=generated_paths,
+                    output_dir=output_dir, use_wsl=self.use_wsl,
+                )
+                elapsed_ms = round((time.monotonic() - started) * 1000, 1)
+                if selected_paths or generated_paths:
+                    codex_job_manager.record_event(request_id, "artifact_delivery_validated", {
+                        "selected_count": len(selected_paths),
+                        "generated_count": len(generated_paths),
+                        "attachment_count": len(attachments), "elapsed_ms": elapsed_ms,
+                    })
+                    logger.info(
+                        "Codex attachment delivery validated: request=%s selected=%s attachments=%s elapsed_ms=%s",
+                        request_id, len(selected_paths), len(attachments), elapsed_ms,
+                    )
+                return attachments
+            except DeliveryError as exc:
+                codex_job_manager.record_event(request_id, "artifact_delivery_failed", {})
+                raise CodexAppServerError(str(exc)) from exc
+
+        # Compatibility for providers that still return the old reply shape.
+        # Actual tool events trigger recovery even for colloquial follow-ups.
+        attachments = _collect_artifact_attachments(output_dir)
+        if attachments:
+            return attachments
         if not generated_paths:
             return attachments
 
-        selected_paths = (
-            generated_paths
-            if image_request_mode == "multiple"
-            else generated_paths[-1:]
-        )
+        selected_paths = generated_paths
         materialized_paths: List[Path] = []
         for index, saved_path in enumerate(selected_paths, start=1):
             materialized = _materialize_codex_generated_image(
@@ -2479,6 +2500,10 @@ class CodexAppServerManager:
         text_only = _as_bool(
             request.get("codex_text_only", extra_body.get("codex_text_only")), False
         )
+        reply_is_json = output_schema is not None
+        structured_delivery = not text_only
+        if structured_delivery:
+            output_schema = delivery_schema(output_schema)
 
         runtime_profile = str(request.get("codex_runtime_profile") or "").strip()
         state = self.state_store.get(chat_id)
@@ -2685,10 +2710,9 @@ class CodexAppServerManager:
             )
 
         image_urls = extract_image_urls(delta.messages, allow_image_input=allow_image_input)
-        image_request_mode = None if text_only else _direct_image_request_mode(
-            delta.messages,
-            has_image_input=bool(image_urls),
-        )
+        # Attachment recovery is driven by completed tool events and the final
+        # delivery list, never by a regex classification of the user's message.
+        image_request_mode = None
         temporary_image_paths: List[Path] = []
         runtime_image_paths: List[str] = []
         image_staging_dir = (
@@ -2716,6 +2740,8 @@ class CodexAppServerManager:
             available_file_commands=_detect_runtime_file_commands(self.use_wsl),
             text_only=text_only,
         )
+        if structured_delivery:
+            prompt += "\n" + delivery_instructions(reply_is_json=reply_is_json)
         if delta.resume:
             prompt = (
                 "Continue the existing conversation. The conversation block below contains only "
@@ -2832,11 +2858,18 @@ class CodexAppServerManager:
 
             response_messages = tracker.final_messages or tracker.unclassified_messages
             text = response_messages[-1].strip() if response_messages else ""
+            selected_paths = None
+            if structured_delivery:
+                try:
+                    text, selected_paths = parse_delivery(text, reply_is_json=reply_is_json)
+                except DeliveryError as exc:
+                    raise CodexAppServerError(str(exc)) from exc
             attachments = [] if text_only else self._collect_response_attachments(
                 output_dir=output_dir,
                 turn_trackers=turn_trackers,
                 image_request_mode=image_request_mode,
                 request_id=request_id,
+                selected_paths=selected_paths,
             )
             _write_artifact_manifest(
                 request_dir,
@@ -2943,11 +2976,18 @@ class CodexAppServerManager:
 
                 response_messages = tracker.final_messages or tracker.unclassified_messages
                 text = response_messages[-1].strip() if response_messages else ""
+                selected_paths = None
+                if structured_delivery:
+                    try:
+                        text, selected_paths = parse_delivery(text, reply_is_json=reply_is_json)
+                    except DeliveryError as exc:
+                        raise CodexAppServerError(str(exc)) from exc
                 attachments = [] if text_only else self._collect_response_attachments(
                     output_dir=output_dir,
                     turn_trackers=turn_trackers,
                     image_request_mode=image_request_mode,
                     request_id=request_id,
+                    selected_paths=selected_paths,
                 )
                 _write_artifact_manifest(
                     request_dir,
