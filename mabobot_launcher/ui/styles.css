@@ -324,3 +324,13 @@ input:disabled + .switch { opacity: .55; }
 .close-options label span { display: grid; gap: 5px; }
 .close-options small, .close-settings-hint { color: var(--muted); font-size: 12px; }
 .remember-close { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+
+#compatibilityBadge { margin-left: auto; }
+#compatibilityBadge.is-warning { color: var(--warning); }
+.compatibility-values { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.compatibility-values .settings-line { gap: 12px; }
+.compatibility-values .value-pill { white-space: normal; text-align: right; }
+.compatibility-actions { align-items: center; flex-wrap: wrap; }
+.compatibility-actions .inline-link { margin-right: auto; }
+.compatibility-actions .inline-link:disabled { opacity: .5; cursor: default; }
+.compatibility-notice { margin: 0; padding: 10px 16px; color: var(--warning); font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }

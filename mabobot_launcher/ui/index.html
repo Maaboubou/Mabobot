@@ -7,7 +7,7 @@
     <meta name="theme-color" content="#faf9f5">
     <title>Mabobot</title>
     <link rel="icon" href="mabobot-icon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="styles.css?v=wechat-compatibility-1">
     <link rel="stylesheet" href="notifications/email_notifications.css?v=2">
 </head>
 <body>
@@ -172,6 +172,22 @@
                             <label class="settings-line" for="closeBehavior"><span><strong>关闭主窗口时</strong><small id="closeBehaviorHint">首次关闭时询问，可随时修改</small></span><select id="closeBehavior" aria-label="关闭主窗口时"><option value="ask">每次询问</option><option value="tray">最小化到系统托盘</option><option value="exit">停止服务并退出</option></select></label>
                             <div class="settings-line readonly"><span><strong>重复启动</strong><small>再次双击 START.bat 时恢复现有窗口</small></span><span class="value-pill">单实例</span></div>
                         </article>
+                        <article class="panel settings-card wide-card" id="compatibilityPanel" aria-label="微信兼容性">
+                            <div class="settings-card-heading"><span class="setting-icon"><svg><use href="#i-message"/></svg></span><div><h2>微信兼容性</h2><p>检查前，请在微信主窗口打开会话。</p></div><span class="value-pill" id="compatibilityBadge">读取中</span></div>
+                            <div class="compatibility-values">
+                                <div class="settings-line readonly"><span><strong>微信版本</strong></span><span class="value-pill" id="compatibilityVersion">—</span></div>
+                                <div class="settings-line readonly"><span><strong>适配配置</strong></span><span class="value-pill" id="compatibilityProfile">—</span></div>
+                                <div class="settings-line readonly"><span><strong>对比基线</strong></span><span class="value-pill" id="compatibilityBaseVersion">未设置</span></div>
+                                <div class="settings-line readonly"><span><strong>定位检查</strong><small>不含发送、下载验收</small></span><span class="value-pill" id="compatibilityMessage" role="status" aria-live="polite">未检查</span></div>
+                            </div>
+                            <p class="compatibility-notice" id="compatibilityDetail" role="status" hidden></p>
+                            <div class="settings-card-actions compatibility-actions">
+                                <button class="inline-link" id="compatibilityBaseline" data-action="compatibility-baseline" disabled>设为基线</button>
+                                <button class="button button-secondary" id="compatibilityReport" data-action="compatibility-report" disabled>查看报告</button>
+                                <button class="button button-secondary" id="compatibilityDiff" data-action="compatibility-diff" disabled>查看差异</button>
+                                <button class="button button-primary" id="compatibilityRun" data-action="compatibility-run">开始检查</button>
+                            </div>
+                        </article>
                         <article class="panel settings-card wide-card">
                             <div class="settings-card-heading"><span class="setting-icon"><svg><use href="#i-wrench"/></svg></span><div><h2>本地环境</h2><p>检查依赖、打开工作目录或执行完整修复。</p></div></div>
                             <div class="settings-environment" id="settingsEnvironment"></div>
@@ -202,6 +218,6 @@
     </div>
     <div class="toast-stack" id="toastStack" aria-live="polite"></div>
     <script src="notifications/email_notifications.js"></script>
-    <script src="app.js"></script>
+    <script src="app.js?v=wechat-compatibility-1"></script>
 </body>
 </html>

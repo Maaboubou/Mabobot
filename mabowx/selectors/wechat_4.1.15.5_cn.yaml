@@ -1,0 +1,111 @@
+version: 4.1.15.5
+locale: cn
+validation: pending
+window:
+  main:
+    control_type: WindowControl
+    name: 微信
+    class_name: mmui::MainWindow
+  login:
+    class_name: mmui::LoginWindow
+navigation:
+  tabs:
+    chat: 微信
+    contacts: 通讯录
+    favorites: 收藏
+    moments: 朋友圈
+  tab_bar:
+    control_type: ToolBarControl
+    class_name: mmui::MainTabBar
+    automation_id: MainView.main_tabbar
+  tab_item:
+    class_name: mmui::XTabBarItem
+session:
+  container:
+    class_name: mmui::ChatSessionList
+  list:
+    control_type: ListControl
+    automation_id: session_list
+  item:
+    class_name: mmui::ChatSessionCell
+    automation_id_prefix: session_item_
+  context_menu:
+    class_name: mmui::XMenu
+    item_class: mmui::XMenuView
+    open_separate_window_options:
+    - 独立窗口显示
+    - 在独立窗口打开
+search:
+  input_group:
+    class_name: mmui::XSearchField
+  input:
+    control_type: EditControl
+    class_name: mmui::XValidatorTextEdit
+  popover:
+    control_type: WindowControl
+    name: Weixin
+    class_name: mmui::SearchContentPopover
+  result_list:
+    automation_id: search_list
+    class_name: mmui::XTableView
+  exact_contact_result:
+    class_name: mmui::SearchContentCellView
+    automation_id_prefix: search_item_
+  sub_window:
+    class_name: mmui::ChatSingleWindow
+chat:
+  detail:
+    class_name: mmui::ChatDetailView
+  page:
+    class_name: mmui::ChatMessagePage
+  title:
+    class_name: mmui::XTextView
+    automation_id_suffix: current_chat_name_label
+  message_view:
+    class_name: mmui::MessageView
+  message_list:
+    control_type: ListControl
+    automation_id: chat_message_list
+  input:
+    control_type: EditControl
+    class_name: mmui::ChatInputField
+    automation_id: chat_input_field
+  input_toolbar:
+    control_type: ToolBarControl
+    class_name: mmui::XHBoxView
+    automation_id: tool_bar_accessible
+  input_toolbar_left:
+    class_name: mmui::ChatInputToolbarLeftView
+    automation_id: tool_bar_accessible.chatinput_toolbar_left_view
+  input_toolbar_right:
+    class_name: mmui::ChatInputToolbarRightView
+    automation_id: tool_bar_accessible.chatinput_toolbar_right_view
+  send_button:
+    control_type: ButtonControl
+    name: 发送
+    class_name: mmui::XOutlineButton
+message_types:
+  text: mmui::ChatTextItemView
+  voice: mmui::ChatVoiceItemView
+  bubble: mmui::ChatBubbleItemView
+  bubble_refer: mmui::ChatBubbleReferItemView
+  note_card: mmui::ChatNoteCardItemView
+  personal_card: mmui::ChatPersonalCardItemView
+  app_reader: mmui::ChatAppReaderItemView
+  system: mmui::ChatSystemInfoItemView
+  generic_item: mmui::ChatItemView
+  head: mmui::ContactHeadView
+dialog:
+  xdialog:
+    class_name: mmui::XDialog
+  menu:
+    class_name: mmui::XMenu
+  outline_button:
+    class_name: mmui::XOutlineButton
+  toast:
+    class_name: mmui::XToast
+update:
+  ignore:
+    control_type: ButtonControl
+    name: 忽略本次更新
+copied_from: 4.1.12.26

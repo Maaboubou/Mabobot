@@ -4,6 +4,7 @@
 
 version: "4.1.12"
 locale: cn
+validation: pending
 
 window:
   main:
@@ -21,7 +22,6 @@ navigation:
     moments: 朋友圈
   tab_bar:
     control_type: ToolBarControl
-    name: 导航
     class_name: "mmui::MainTabBar"
     automation_id: MainView.main_tabbar
   tab_item:
@@ -32,8 +32,6 @@ session:
     class_name: "mmui::ChatSessionList"
   list:
     control_type: ListControl
-    name: 会话
-    class_name: "mmui::XTableView"
     automation_id: session_list
   item:
     class_name: "mmui::ChatSessionCell"
@@ -50,7 +48,6 @@ search:
     class_name: "mmui::XSearchField"
   input:
     control_type: EditControl
-    name: 搜索
     class_name: "mmui::XValidatorTextEdit"
   popover:
     control_type: WindowControl
@@ -70,7 +67,6 @@ chat:
     class_name: "mmui::ChatDetailView"
   page:
     class_name: "mmui::ChatMessagePage"
-    automation_id: chat_message_page
   title:
     class_name: "mmui::XTextView"
     automation_id_suffix: current_chat_name_label
@@ -78,8 +74,6 @@ chat:
     class_name: "mmui::MessageView"
   message_list:
     control_type: ListControl
-    name: 消息
-    class_name: "mmui::RecyclerListView"
     automation_id: chat_message_list
   input:
     control_type: EditControl
@@ -121,3 +115,8 @@ dialog:
     class_name: "mmui::XOutlineButton"
   toast:
     class_name: "mmui::XToast"
+
+update:
+  ignore:
+    control_type: ButtonControl
+    name: 忽略本次更新

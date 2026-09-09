@@ -43,6 +43,7 @@ json-repair>=0.59,<1
 psutil
 watchdog
 python-dotenv
+PyYAML>=6,<7
 loguru
 comtypes
 pywin32>=311; sys_platform == "win32"

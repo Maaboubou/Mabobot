@@ -80,7 +80,32 @@
         renderRecentLogs();
         renderLogStream();
         renderEnvironment();
+        renderCompatibility();
         renderSettings();
+    }
+
+    function renderCompatibility() {
+        const c = ui.snapshot.compatibility || {};
+        const latest = c.latest;
+        const current = latest && latest.version === c.version;
+        const warning = c.needs_check || c.error || c.detection_error || (current && latest.failures.length);
+        $('#compatibilityBadge').textContent = c.running ? '检查中' : warning ? '待检查' : current ? '已检查' : '等待微信';
+        $('#compatibilityBadge').classList.toggle('is-warning', Boolean(warning));
+        $('#compatibilityVersion').textContent = c.version || '未运行';
+        $('#compatibilityProfile').textContent = c.selection ? `${c.selection.profile_version}${c.selection.validation === 'pending' ? ' · 待验证' : ''}` : '—';
+        $('#compatibilityProfile').title = c.copied_from ? `沿用 ${c.copied_from}，未自动修改定位规则` : '';
+        $('#compatibilityBaseVersion').textContent = c.baseline_version || '未设置';
+        $('#compatibilityMessage').textContent = c.running ? '正在检查…' : current ? `${latest.passed}/${latest.total} 项通过` : '未检查';
+        let notice = c.error || c.detection_error || '';
+        if (!notice && c.needs_check) notice = '微信版本已变化，请运行一次检查。';
+        if (!notice && current && latest.failures.length) notice = `${latest.failures.length} 项需要排查，详情见报告。`;
+        $('#compatibilityDetail').textContent = notice;
+        $('#compatibilityDetail').hidden = !notice;
+        $('#compatibilityRun').disabled = c.running || !c.version;
+        $('#compatibilityRun').textContent = c.running ? '检查中…' : '开始检查';
+        $('#compatibilityReport').disabled = !c.has_report;
+        $('#compatibilityDiff').disabled = !c.has_diff;
+        $('#compatibilityBaseline').disabled = !c.can_set_baseline;
     }
 
     function renderOverall() {
@@ -222,7 +247,7 @@
     }
 
     function renderEnvironment() {
-        const checks = ui.snapshot.environment || [];
+        const checks = (ui.snapshot.environment || []).map(item => item.key === 'wechat' && ui.snapshot.compatibility?.version ? { ...item, detail: ui.snapshot.compatibility.version } : item);
         const readyCount = checks.filter(item => item.ready).length;
         $('#environmentSummary').textContent = `${readyCount}/${checks.length} 就绪`;
         $('#environmentList').innerHTML = checks.map(item => `
@@ -398,6 +423,10 @@
             const action = actionButton.dataset.action;
             if (action === 'open-web') return execute('open_web_console');
             if (action === 'open-folder') return execute('open_project_folder');
+            if (action === 'compatibility-run') return execute('run_compatibility_check', [], '兼容性检查已启动，结果将在此处更新');
+            if (action === 'compatibility-report') return execute('open_compatibility_report', [false]);
+            if (action === 'compatibility-diff') return execute('open_compatibility_report', [true]);
+            if (action === 'compatibility-baseline') return confirmAction('设为对比基线', '后续检查将与这份报告比较，旧报告仍会保留。这不会标记完整功能已兼容。', '设为基线', () => execute('set_compatibility_baseline', [], '对比基线已更新'));
             if (action === 'start-all') return execute('start_all', [], 'Mabobot 启动请求已提交');
             if (action === 'restart-all') return execute('restart_all', [], 'Mabobot 已重启');
             if (action === 'stop-all') {

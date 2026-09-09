@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from mabowx.core import uia
+from mabowx.core.selectors import runtime_selector
 from mabowx.core.locks import uilock
 
 from .base import BaseUISubWnd, BaseUIWnd
@@ -18,9 +19,7 @@ class NavigationBox(BaseUISubWnd):
         self.parent = None
         self.control = uia.find_descendant(
             root.control,
-            control_type="ToolBarControl",
-            class_name=self._ui_cls_name,
-            automation_id="MainView.main_tabbar",
+            **runtime_selector(root, "navigation.tab_bar"),
             timeout=2.0,
         )
 

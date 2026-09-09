@@ -29,6 +29,7 @@ from .constants import (
 from .settings import PreferenceStore, WindowsLoginStartup
 from .state import clear_launcher_state, consume_control_signal, write_launcher_state
 from .supervisor import ServiceSupervisor
+from .compatibility import CompatibilityMonitor
 
 
 _UI_LOAD_TIMEOUT_SECONDS = 8.0
@@ -140,6 +141,23 @@ class LauncherApi:
     def open_project_folder(self) -> dict[str, Any]:
         return self._application.open_path(PROJECT_ROOT)
 
+    def run_compatibility_check(self) -> dict[str, Any]:
+        return self._application.compatibility.start()
+
+    def set_compatibility_baseline(self) -> dict[str, Any]:
+        return self._application.compatibility.set_baseline()
+
+    def open_compatibility_report(self, diff: bool = False) -> dict[str, Any]:
+        try:
+            path = self._application.compatibility.document(bool(diff))
+            if os.name == 'nt':
+                os.startfile(str(path))
+            else:
+                subprocess.Popen(['xdg-open', str(path)])
+            return {'ok': True}
+        except Exception as exc:
+            return {'ok': False, 'error': str(exc)}
+
     def open_logs_folder(self) -> dict[str, Any]:
         return self._application.open_path(PROJECT_ROOT / "logs")
 
@@ -179,6 +197,7 @@ class DesktopLauncher:
     def __init__(self, *, startup_mode: bool = False):
         self.startup_mode = startup_mode
         self.supervisor = ServiceSupervisor()
+        self.compatibility = CompatibilityMonitor()
         self.preferences = PreferenceStore()
         self.startup = WindowsLoginStartup()
         self.api = LauncherApi(self)
@@ -425,6 +444,7 @@ class DesktopLauncher:
                 "tray_available": self._tray_available,
             },
             "environment": self._environment_status(),
+            "compatibility": self.compatibility.snapshot(),
             "repairing": self._repairing,
             "startup_mode": self.startup_mode,
         }

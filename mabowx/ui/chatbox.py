@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from mabowx.core import uia
+from mabowx.core.selectors import runtime_selector
 from mabowx.core.clipboard import set_files, set_text
 from mabowx.core.locks import ui_transaction, uilock
 from mabowx.core.operation_sequencer import OrderedOperationSequencer
@@ -864,29 +865,24 @@ class ChatBox(BaseUISubWnd):
             return
         self.control = uia.find_descendant(
             self.root.control,
-            class_name=self._ui_cls_name,
+            **runtime_selector(self.root, "chat.page"),
             timeout=2.0,
         )
         if self.control is None:
             self.control = self.root.control
         self._input = uia.find_descendant(
             self.root.control,
-            control_type="EditControl",
-            class_name="mmui::ChatInputField",
-            automation_id="chat_input_field",
+            **runtime_selector(self.root, "chat.input"),
             timeout=1.5,
         )
         self._send_btn = uia.find_descendant(
             self.root.control,
-            control_type="ButtonControl",
-            name="发送",
-            class_name="mmui::XOutlineButton",
+            **runtime_selector(self.root, "chat.send_button"),
             timeout=1.0,
         )
         self._message_list = uia.find_descendant(
             self.root.control,
-            control_type="ListControl",
-            automation_id="chat_message_list",
+            **runtime_selector(self.root, "chat.message_list"),
             timeout=1.0,
         )
 
@@ -939,9 +935,7 @@ class ChatBox(BaseUISubWnd):
         if self._send_btn is None or not self._send_btn.Exists(0):
             self._send_btn = uia.find_descendant(
                 self.root.control,
-                control_type="ButtonControl",
-                name="发送",
-                class_name="mmui::XOutlineButton",
+                **runtime_selector(self.root, "chat.send_button"),
                 timeout=1.0,
             )
         return self._send_btn
@@ -953,8 +947,7 @@ class ChatBox(BaseUISubWnd):
         if self._message_list is None or not self._message_list.Exists(0):
             self._message_list = uia.find_descendant(
                 self.root.control,
-                control_type="ListControl",
-                automation_id="chat_message_list",
+                **runtime_selector(self.root, "chat.message_list"),
                 timeout=1.0,
             )
         return self._message_list

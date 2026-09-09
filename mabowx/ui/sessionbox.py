@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from mabowx.core import uia
+from mabowx.core.selectors import runtime_selector
 from mabowx.core.locks import uilock
 from mabowx.core.win32 import post_left_click, post_double_click
 from mabowx.logger import wxlog
@@ -179,14 +180,13 @@ class SessionBox(BaseUISubWnd):
             return
         self.control = uia.find_descendant(
             self.root.control,
-            class_name=self._ui_cls_name,
+            **runtime_selector(self.root, "session.container"),
             timeout=2.0,
         )
         if self.control is not None:
             self._list = uia.find_descendant(
                 self.control,
-                control_type="ListControl",
-                automation_id="session_list",
+                **runtime_selector(self.root, "session.list"),
                 timeout=1.5,
             )
 
@@ -207,14 +207,13 @@ class SessionBox(BaseUISubWnd):
         if self._search_edit is None or not self._search_edit.Exists(0):
             group = uia.find_descendant(
                 self.root.control,
-                class_name="mmui::XSearchField",
+                **runtime_selector(self.root, "search.input_group"),
                 timeout=2.0,
             )
             if group is not None:
                 self._search_edit = uia.find_descendant(
                     group,
-                    control_type="EditControl",
-                    class_name="mmui::XValidatorTextEdit",
+                    **runtime_selector(self.root, "search.input"),
                     timeout=1.0,
                 )
         return self._search_edit
