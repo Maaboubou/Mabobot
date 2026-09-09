@@ -2025,11 +2025,11 @@ const LLMManager = {
         const cache = m.cache_input_tokens > 0 ? `${(m.cached_tokens / m.cache_input_tokens * 100).toFixed(1)}%` : '—';
         const models = Object.entries(m.models || {}).sort((a, b) => b[1] - a[1]).map(([name, count]) => `${this.escapeHtml(name)} · ${this.usageNumber(count)} 次`).join('<br>') || '—';
         const facts = [
-            ['请求结果', `成功 ${this.usageNumber(m.successes)} 次 · 失败 ${this.usageNumber(m.failures)} 次<small>共 ${this.usageNumber(m.calls)} 次尝试，包含重试与模型回退</small>`],
+            [row.key === 'assistant.chat' ? '回复结果' : '请求结果', `成功 ${this.usageNumber(m.successes)} ${row.key === 'assistant.chat' ? '轮' : '次'} · 失败 ${this.usageNumber(m.failures)} 次<small>共 ${this.usageNumber(m.calls)} 次尝试，包含重试与模型回退</small>`],
             ['输入 / 输出 Token', `${m.input_calls ? this.usageNumber(m.input_tokens) : '—'} / ${m.output_calls ? this.usageNumber(m.output_tokens) : '—'}`],
             ['平均耗时', `${average}<small>所选周期内 ${this.usageNumber(m.duration_calls)} 次已记录调用</small>`],
             ['缓存命中率', `${cache}<small>按输入 Token 加权 · ${this.usageNumber(m.cache_calls)} 次有缓存明细</small>`],
-            ['缓存写入 / 推理 Token', `${this.usageNumber(m.cache_write_tokens)} / ${this.usageNumber(m.reasoning_tokens)}`],
+            ['缓存写入 / 推理 Token', `${this.usageNumber(m.cache_write_tokens)} / ${this.usageNumber(m.reasoning_tokens)}<small>缓存命中率统计读取量；写入与推理未上报时也会显示 0</small>`],
             ['最近调用', this.usageDate(m.last_call)], ['使用模型', models],
             ['统计完整性', `${this.usageNumber(m.token_calls)} 次有 Token · ${this.usageNumber(m.cost_calls)} 次有计价${m.estimated_calls ? `<br>${this.usageNumber(m.estimated_calls)} 次 Token 为估算` : ''}`],
         ];
@@ -2062,6 +2062,9 @@ const LLMManager = {
                     ${this.escapeHtml(row.scope === 'codex_turn' ? 'Codex 整轮用量' : '逐次请求')} · ${row.success ? '成功' : '失败'} · 输入 ${this.usageNumber(row.usage?.prompt_tokens)} / 输出 ${this.usageNumber(row.usage?.completion_tokens)} / 缓存 ${this.usageNumber(row.usage?.cached_tokens)}<br>
                     请求 ${this.escapeHtml(row.id)}<br>业务调用 ${this.escapeHtml(row.logical_id)}</div></details>`;
             }).join('') || '<span class="usage-secondary">暂无请求明细</span>';
+            target.insertAdjacentHTML('afterbegin', `<div class="usage-secondary">${result.data.request_count_exact
+                ? `已记录模型调用：${this.usageNumber(result.data.request_count)} 次`
+                : `已记录逐次调用：${this.usageNumber(result.data.request_count)} 次；另有 ${this.usageNumber(result.data.summary_count)} 条整轮汇总，实际调用总次数未知`}</div>`);
             target.insertAdjacentHTML('beforeend', `<div class="usage-pagination"><button type="button" data-requests-prev ${offset === 0 ? 'disabled' : ''}>上一页</button><span>${Math.floor(offset / 10) + 1} / ${Math.max(1, Math.ceil(result.data.total / 10))}</span><button type="button" data-requests-next ${offset + 10 >= result.data.total ? 'disabled' : ''}>下一页</button></div>`);
             target.querySelector('[data-requests-prev]').onclick = () => this.loadUsageRequests(task, offset - 10);
             target.querySelector('[data-requests-next]').onclick = () => this.loadUsageRequests(task, offset + 10);

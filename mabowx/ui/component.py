@@ -15,6 +15,8 @@ from mabowx.core.win32 import (
     enum_windows_by_pid,
     force_foreground,
     get_foreground_window,
+    get_cursor_position,
+    get_root_window_at_point,
     get_process_name,
     get_window_owner,
     is_window,
@@ -51,10 +53,42 @@ class UpdateWindow(BaseUISubWnd):
             self.control = candidates[0]
             self._sync_hwnd()
 
+    @uilock
     def ignore(self, timeout: float = 2.0) -> bool:
         """Choose "ignore this update" and verify the modal really closed."""
         if self.control is None or not self.exists():
             return True
+        point = None
+
+        def report(reason: str) -> None:
+            try:
+                foreground = get_foreground_window()
+                cursor = get_cursor_position()
+                hit = get_root_window_at_point(*point) if point else None
+            except Exception:
+                foreground = cursor = hit = None
+            wxlog.warning(
+                f"微信更新弹窗关闭失败: {reason}; hwnd={self.HWND} "
+                f"foreground={foreground} point={point} hit={hit} cursor={cursor}"
+            )
+
+        # 必须激活弹窗本身。激活被模态窗口阻塞的聊天窗口不能保证
+        # 随后的全局坐标点击落在更新弹窗上。
+        try:
+            self._sync_hwnd()
+            if not self.HWND:
+                report("弹窗没有窗口句柄")
+                return False
+            if get_foreground_window() != self.HWND:
+                force_foreground(self.HWND)
+            if get_foreground_window() != self.HWND:
+                report("弹窗未能切到前台，取消点击")
+                return False
+        except Exception as exc:
+            report(f"激活弹窗异常: {exc}")
+            return False
+
+        # 激活后重新读取按钮，避免使用窗口移动前的坐标。
         button = uia.find_descendant(
             self.control,
             control_type="ButtonControl",
@@ -62,8 +96,12 @@ class UpdateWindow(BaseUISubWnd):
             timeout=min(max(timeout, 0.1), 1.0),
         )
         if button is None:
+            report("未找到忽略按钮")
             return False
         try:
+            if not button.IsEnabled or button.IsOffscreen:
+                report("忽略按钮不可用或不在屏幕内")
+                return False
             rect = button.BoundingRectangle
             left, top, right, bottom = (
                 int(rect.left),
@@ -72,10 +110,18 @@ class UpdateWindow(BaseUISubWnd):
                 int(rect.bottom),
             )
             if right <= left or bottom <= top:
+                report("忽略按钮坐标无效")
                 return False
-            uia.click_screen((left + right) // 2, (top + bottom) // 2, wait=0.3)
+            point = ((left + right) // 2, (top + bottom) // 2)
+            if (
+                get_foreground_window() != self.HWND
+                or get_root_window_at_point(*point) != self.HWND
+            ):
+                report("按钮被遮挡或前台已变化，取消点击")
+                return False
+            uia.click_screen(*point, wait=0.3)
         except Exception as exc:
-            wxlog.warning(f"微信更新弹窗关闭失败: {exc}")
+            report(f"点击异常: {exc}")
             return False
 
         deadline = time.monotonic() + max(timeout, 0.1)
@@ -87,7 +133,7 @@ class UpdateWindow(BaseUISubWnd):
                 wxlog.info("已忽略微信本次更新提示")
                 return True
             time.sleep(0.05)
-        wxlog.warning("已点击“忽略本次更新”，但弹窗仍存在")
+        report("已发送忽略按钮点击，但弹窗仍存在")
         return False
 
 

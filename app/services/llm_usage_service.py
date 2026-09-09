@@ -67,6 +67,7 @@ class LLMUsageService:
                 run_id TEXT NOT NULL, subject TEXT NOT NULL, task TEXT NOT NULL, payload TEXT NOT NULL)""")
             db.execute("CREATE INDEX IF NOT EXISTS usage_request_scope ON usage_request(subject, task, recorded_at)")
             db.execute("CREATE INDEX IF NOT EXISTS usage_request_time ON usage_request(recorded_at)")
+            db.execute("CREATE INDEX IF NOT EXISTS usage_request_logical ON usage_request(subject, task, logical_id)")
             db.execute("BEGIN IMMEDIATE")
             if self._meta(db, "schema_version") != "2":
                 # Explicit product reset: no old usage or unlabelled amounts survive.
@@ -74,6 +75,30 @@ class LLMUsageService:
                     db.execute(f"DELETE FROM {table}")
                 self._set_meta(db, "schema_version", "2")
                 self._set_meta(db, "initialized_at", self.run_started_at)
+            self._migrate_reply_counts(db)
+
+    def _migrate_reply_counts(self, db):
+        """Recount existing chat successes without changing usage or price history."""
+        if self._meta(db, "reply_count_version") == "1":
+            return
+        counts = {}
+        seen = set()
+        for row in db.execute("SELECT * FROM usage_request WHERE task='assistant.chat' ORDER BY recorded_at, id"):
+            payload = json.loads(row["payload"])
+            key = (row["subject"], row["logical_id"])
+            if not payload.get("success") or key in seen:
+                continue
+            seen.add(key)
+            for bucket in ("total", f"day:{row['recorded_at'][:10]}", f"run:{row['run_id']}"):
+                bucket_key = (bucket, row["subject"])
+                counts[bucket_key] = counts.get(bucket_key, 0) + 1
+        rows = db.execute("SELECT * FROM usage_aggregate WHERE task='assistant.chat'").fetchall()
+        for row in rows:
+            payload = json.loads(row["payload"])
+            payload["successes"] = counts.get((row["bucket"], row["subject"]), 0)
+            db.execute("UPDATE usage_aggregate SET payload=? WHERE bucket=? AND subject=? AND task=?",
+                       (json.dumps(payload, ensure_ascii=False), row["bucket"], row["subject"], row["task"]))
+        self._set_meta(db, "reply_count_version", "1")
 
     @contextmanager
     def _connect(self):
@@ -147,6 +172,13 @@ class LLMUsageService:
             metrics.update(duration_total=number(duration), duration_calls=1)
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            if task == "assistant.chat" and success:
+                previous = db.execute(
+                    "SELECT payload FROM usage_request WHERE subject=? AND task=? AND logical_id=?",
+                    (subject["key"], task, logical_id or request_id),
+                )
+                if any(json.loads(row[0]).get("success") for row in previous):
+                    metrics["successes"] = 0
             inserted = db.execute("INSERT OR IGNORE INTO usage_request VALUES (?, ?, ?, ?, ?, ?, ?)",
                                   (request_id, logical_id or request_id, now.isoformat(), self.run_id,
                                    subject["key"], task, json.dumps(payload, ensure_ascii=False, allow_nan=False)))
@@ -239,6 +271,14 @@ class LLMUsageService:
                     params.append(value)
             sql = " AND ".join(where) or "1=1"
             total = db.execute(f"SELECT COUNT(*) FROM usage_request WHERE {sql}", params).fetchone()[0]
+            scopes = db.execute(
+                f"SELECT json_extract(payload, '$.scope') AS scope, COUNT(*) AS count FROM usage_request WHERE {sql} GROUP BY scope",
+                params,
+            ).fetchall()
+            request_count = sum(row["count"] for row in scopes if row["scope"] == "request")
+            unknown_count = sum(row["count"] for row in scopes if row["scope"] != "request")
             rows = db.execute(f"SELECT payload FROM usage_request WHERE {sql} ORDER BY recorded_at DESC, id DESC LIMIT ? OFFSET ?",
                               [*params, max(1, min(100, limit)), max(0, offset)]).fetchall()
-        return {"rows": [json.loads(row[0]) for row in rows], "total": total}
+        return {"rows": [json.loads(row[0]) for row in rows], "total": total,
+                "request_count": request_count, "summary_count": unknown_count,
+                "request_count_exact": unknown_count == 0}

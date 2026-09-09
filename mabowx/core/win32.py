@@ -301,6 +301,19 @@ def get_foreground_window() -> int | None:
     return int(hwnd) if hwnd else None
 
 
+def get_root_window_at_point(x: int, y: int) -> int | None:
+    """返回屏幕点位实际命中的顶层窗口，保留弹窗自身而非其 owner。"""
+    _, _, win32gui, _ = _require_win32()
+    hwnd = win32gui.WindowFromPoint((int(x), int(y)))
+    root = win32gui.GetAncestor(hwnd, 2) if hwnd else 0  # GA_ROOT
+    return int(root) if root else None
+
+
+def get_cursor_position() -> tuple[int, int]:
+    _, _, win32gui, _ = _require_win32()
+    return win32gui.GetCursorPos()
+
+
 def get_window_owner(hwnd: int) -> int | None:
     """Return the exact top-level owner of a popup window, if any."""
 
