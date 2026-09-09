@@ -49,6 +49,7 @@ class WeChatMonitorService:
         self.last_relogin_result = None
         self._relogin_lock = threading.Lock()
         self.last_listener_status = None
+        self.last_blocked_listeners = []
         self.last_missing_listeners = []
 
         # 缺失监听使用与管理页“恢复监听”相同的 add_listen_chat 入口恢复。
@@ -406,12 +407,21 @@ class WeChatMonitorService:
         recovered = set(recovery["recovered"])
         unresolved = [chat_name for chat_name in missing if chat_name not in recovered]
         self.last_missing_listeners = unresolved
-        current_listener_status = "degraded" if unresolved else "healthy"
+        blocked = self._normalized_listener_names(status.get("blocked"))
+        if blocked != self.last_blocked_listeners:
+            if blocked:
+                diagnostics = status.get("message_delivery") or {}
+                self.logger.warning("⚠️ 监听线程存活但消息交付受阻: %s; recovery=%s",
+                                    blocked, {name: diagnostics.get(name) for name in blocked})
+            elif self.last_blocked_listeners:
+                self.logger.info("✅ 消息交付恢复: %s", self.last_blocked_listeners)
+        self.last_blocked_listeners = blocked
+        current_listener_status = "degraded" if unresolved or blocked else "healthy"
 
         if self.last_listener_status != current_listener_status:
             if unresolved:
                 self.logger.warning("⚠️ 监听健康检查发现缺失监听: %s", unresolved)
-            else:
+            elif not blocked:
                 self.logger.info("✅ 监听健康检查正常")
             self.last_listener_status = current_listener_status
 
@@ -429,6 +439,7 @@ class WeChatMonitorService:
             )
         return {
             "monitoring": self.is_monitoring,
+            "last_blocked_listeners": list(self.last_blocked_listeners),
             "bot_name": self.bot_name,
             "check_interval": self.check_interval,
             "offline_email_sent": self.offline_email_sent,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
 import math
 import threading
 import time
@@ -320,9 +321,29 @@ def messages_before_history_overlap(page: list, frontier: list) -> list | None:
     return None
 
 
+def messages_after_history_overlap(frontier: list, page: list) -> list | None:
+    """Join a downward page even when UIA changes its buffered older prefix."""
+    appended = messages_before_history_overlap(list(reversed(page)), list(reversed(frontier)))
+    return None if appended is None else list(reversed(appended))
+
+
 MESSAGE_SIGNATURE_TTL_SEC = 15.0
 MUTABLE_MEDIA_ANCHOR_TYPES = frozenset({"image", "video", "voice", "file"})
 ANCHOR_RECOVERY_MAX_FAILURES = 3
+ANCHOR_RECOVERY_COOLDOWN_SEC = 60.0
+
+
+def anchor_snapshot_summary(snapshot) -> dict[str, object]:
+    """Compact diagnostics without copying whole chat messages into health JSON."""
+    tokens = tuple(snapshot)
+    def describe(token):
+        return {"id": token[0], "signature_hash": hashlib.sha256(
+            str(token[1]).encode("utf-8")).hexdigest()[:12]}
+    return {
+        "count": len(tokens),
+        "first": describe(tokens[0]) if tokens else None,
+        "last": describe(tokens[-1]) if tokens else None,
+    }
 
 
 def _anchor_type_attr(signature: str) -> tuple[str, str]:
@@ -825,8 +846,9 @@ class ChatBox(BaseUISubWnd):
         self._last_anchor_missing = False
         self._anchor_recovery_last_attempt = 0.0
         self._anchor_recovery_failures = 0
-        self._anchor_recovery_circuit_logged = False
         self._last_anchor_recovery_result: dict[str, object] = {}
+        self._anchor_missing_since: float | None = None
+        self._anchor_wait_control_snapshot = ()
         self._message_read_lock = threading.Lock()
         self._sent_texts: dict[str, float] = {}
         self._sent_filenames: dict[str, float] = {}
@@ -1795,8 +1817,10 @@ class ChatBox(BaseUISubWnd):
             self._anchor_miss_rounds = 0
             self._last_anchor_missing = False
             self._anchor_recovery_failures = 0
-            self._anchor_recovery_circuit_logged = False
+            self._anchor_recovery_last_attempt = 0.0
             self._last_anchor_recovery_result = {}
+            self._anchor_missing_since = None
+            self._anchor_wait_control_snapshot = ()
 
     @uilock
     def get_messages(
@@ -1861,6 +1885,12 @@ class ChatBox(BaseUISubWnd):
     def _consume_messages(self, messages: list) -> list:
         """更新缓存并返回本轮真正位于旧尾锚点之后的消息。"""
         had_anchor = bool(self._tail_message_id or self._tail_message_signature)
+        if had_anchor and not messages:
+            self._last_anchor_missing = True
+            if getattr(self, "_anchor_missing_since", None) is None:
+                self._anchor_missing_since = time.monotonic()
+            self._anchor_wait_control_snapshot = ()
+            return []
         self._last_anchor_missing = False
         current_snapshot = tuple(
             (
@@ -1919,7 +1949,8 @@ class ChatBox(BaseUISubWnd):
             self._anchor_miss_snapshot = None
             self._anchor_miss_rounds = 0
             self._anchor_recovery_failures = 0
-            self._anchor_recovery_circuit_logged = False
+            self._anchor_missing_since = None
+            self._anchor_wait_control_snapshot = ()
         elif messages and had_anchor and not anchor_found:
             snapshot = tuple(
                 (
@@ -1934,13 +1965,19 @@ class ChatBox(BaseUISubWnd):
                 self._anchor_miss_snapshot = snapshot
                 self._anchor_miss_rounds = 1
             self._last_anchor_missing = True
+            if getattr(self, "_anchor_missing_since", None) is None:
+                self._anchor_missing_since = time.monotonic()
+            self._anchor_wait_control_snapshot = current_control_snapshot
             # 绝不能像旧实现那样在三轮后静默重建基线；那会把整批消息永久
             # 吞掉。由 get_new_messages 启动有界历史恢复，失败时保留旧锚点
             # 并退避重试，同时留下明确告警。
             if self._anchor_miss_rounds in {1, 3}:
                 wxlog.warning(
                     "消息尾锚点缺失，保留旧基线等待有界历史恢复: "
-                    f"chat={self.who!r} rounds={self._anchor_miss_rounds}"
+                    f"chat={self.who!r} rounds={self._anchor_miss_rounds} "
+                    f"baseline={anchor_snapshot_summary(self._visible_control_snapshot)} "
+                    f"visible={anchor_snapshot_summary(current_control_snapshot)} "
+                    f"retry_in_sec={self._anchor_retry_in():.1f}"
                 )
 
         if recovered_from_overlap and new_messages:
@@ -1998,7 +2035,32 @@ class ChatBox(BaseUISubWnd):
         self._anchor_miss_rounds = 0
         self._last_anchor_missing = False
         self._anchor_recovery_failures = 0
-        self._anchor_recovery_circuit_logged = False
+        self._anchor_missing_since = None
+        self._anchor_wait_control_snapshot = ()
+
+    def _anchor_retry_in(self) -> float:
+        failures = getattr(self, "_anchor_recovery_failures", 0)
+        delay = (ANCHOR_RECOVERY_COOLDOWN_SEC if failures >= ANCHOR_RECOVERY_MAX_FAILURES
+                 else min(15.0, float(2 ** failures)))
+        return max(0.0, getattr(self, "_anchor_recovery_last_attempt", 0.0)
+                   + delay - time.monotonic())
+
+    def message_delivery_status(self) -> dict[str, object]:
+        """Only cached Python state: health checks must never acquire UI locks."""
+        missing = self._last_anchor_missing
+        failures = self._anchor_recovery_failures
+        since = getattr(self, "_anchor_missing_since", None)
+        return {
+            "state": ("cooldown" if failures >= ANCHOR_RECOVERY_MAX_FAILURES else "recovering")
+                     if missing else "healthy",
+            "anchor_missing": missing,
+            "blocked_for_sec": round(max(0.0, time.monotonic() - since), 1) if since is not None else 0.0,
+            "recovery_failures": failures,
+            "retry_in_sec": round(self._anchor_retry_in(), 1) if missing else 0.0,
+            "last_recovery": dict(self._last_anchor_recovery_result),
+            "baseline": anchor_snapshot_summary(self._visible_control_snapshot),
+            "delivery_sequence": self._delivery_sequence,
+        }
 
     def _prepare_recovered_messages(self, visible_page: list, messages: list) -> None:
         """Resolve only new occurrences while their historical page is visible."""
@@ -2013,8 +2075,8 @@ class ChatBox(BaseUISubWnd):
     def _recover_messages_after_missing_anchor(
         self,
         *,
-        max_pages: int = 32,
-        timeout: float = 8.0,
+        max_pages: int = 128,
+        timeout: float = 30.0,
         wheel_times: int = 4,
         settle_interval: float = 0.12,
     ) -> tuple[list | None, list, dict[str, object]]:
@@ -2031,6 +2093,9 @@ class ChatBox(BaseUISubWnd):
             "messages_recovered": 0,
             "collection_pages": 0,
             "collection_elapsed_ms": 0.0,
+            "baseline": anchor_snapshot_summary(previous_control_snapshot),
+            "max_pages": max_pages,
+            "timeout_sec": timeout,
         }
         if not previous_control_snapshot:
             result["status"] = "missing_control_snapshot"
@@ -2050,7 +2115,9 @@ class ChatBox(BaseUISubWnd):
         accumulated: list = []
         collection_started = time.monotonic()
         collection_ok = bool(probe.get("found"))
-        down_scrolls = max(0, int(probe.get("scrolls", 0) or 0))
+        stationary_rounds = 0
+        result["collection_scrolls"] = 0
+        result["recent_pages"] = []
 
         try:
             if collection_ok:
@@ -2086,7 +2153,10 @@ class ChatBox(BaseUISubWnd):
                     self._prepare_recovered_messages(anchor_page, candidates)
                     accumulated = list(anchor_page)
 
-            for _ in range(down_scrolls if collection_ok else 0):
+            # Resolving an offscreen row can itself scroll the list. Upward
+            # and downward scroll counts therefore cannot be paired. Continue
+            # until the bottom is stationary, with explicit page/time bounds.
+            for _ in range(max_pages * 2 if collection_ok else 0):
                 if time.monotonic() - collection_started >= timeout * 2:
                     result["status"] = "collection_timeout"
                     collection_ok = False
@@ -2097,20 +2167,45 @@ class ChatBox(BaseUISubWnd):
                         collection_ok = False
                         break
                     before_scroll = self._read_control_anchor_snapshot()
+                    before_position = self._message_scroll_position()
                     self._scroll_message_list(-max(1, int(wheel_times)))
-                self._wait_message_page(before_scroll, timeout=max(0.2, settle_interval))
+                    result["collection_scrolls"] = int(result["collection_scrolls"]) + 1
+                self._wait_message_page(before_scroll, timeout=max(0.35, settle_interval))
                 page = self.get_messages(
                     resolve_group_senders=False, probe_avatar_direction=False,
                 )
+                after_position = self._message_scroll_position()
                 result["collection_pages"] = int(result["collection_pages"]) + 1
-                overlap = message_page_overlap_length(accumulated, page)
-                if overlap <= 0:
+                appended = messages_after_history_overlap(accumulated, page)
+                page_metrics = {
+                    "page": result["collection_pages"],
+                    "before": anchor_snapshot_summary(before_scroll),
+                    "after": anchor_snapshot_summary(tuple(_message_control_token(m) for m in page)),
+                    "appended": None if appended is None else len(appended),
+                    "moved": before_position != after_position,
+                    "row_y": [(entry[1], entry[2]) for entry in after_position] if isinstance(after_position, tuple) else [],
+                }
+                result["recent_pages"] = (list(result["recent_pages"]) + [page_metrics])[-8:]
+                wxlog.debug(f"消息恢复翻页: chat={self.who!r} metrics={page_metrics}")
+                if appended is None:
                     result["status"] = "collection_page_gap"
+                    result["gap_before"] = anchor_snapshot_summary(tuple(_message_control_token(m) for m in accumulated[-12:]))
+                    result["gap_after"] = anchor_snapshot_summary(tuple(_message_control_token(m) for m in page))
+                    wxlog.debug(f"恢复翻页未能衔接: chat={self.who!r} "
+                                f"before={[_message_control_token(m) for m in accumulated[-8:]]!r} "
+                                f"after={[_message_control_token(m) for m in page]!r}")
                     collection_ok = False
                     break
-                appended = list(page[overlap:])
                 self._prepare_recovered_messages(page, appended)
                 accumulated.extend(appended)
+                stationary_rounds = stationary_rounds + 1 if not appended and before_position == after_position else 0
+                if stationary_rounds >= 2:
+                    result["bottom_confirmed"] = True
+                    break
+            else:
+                if collection_ok:
+                    result["status"] = "collection_max_pages"
+                    collection_ok = False
         except Exception as exc:
             result["status"] = "collection_error"
             result["error"] = f"{type(exc).__name__}: {exc}"
@@ -2137,11 +2232,12 @@ class ChatBox(BaseUISubWnd):
                 result["status"] = str(probe.get("status") or "not_found")
             return None, final_visible, result
 
-        final_overlap = message_page_overlap_length(accumulated, final_visible)
-        if final_overlap <= 0:
+        final_appended = messages_after_history_overlap(accumulated, final_visible)
+        if final_appended is None:
             result["status"] = "concurrent_bottom_gap"
+            result["gap_before"] = anchor_snapshot_summary(tuple(_message_control_token(m) for m in accumulated[-12:]))
+            result["gap_after"] = anchor_snapshot_summary(tuple(_message_control_token(m) for m in final_visible))
             return None, final_visible, result
-        final_appended = list(final_visible[final_overlap:])
         self._prepare_recovered_messages(final_visible, final_appended)
         accumulated.extend(final_appended)
 
@@ -2178,7 +2274,12 @@ class ChatBox(BaseUISubWnd):
         This is the existing delivery baseline, never a sender/direction cache.
         New or changed rows still receive fresh avatar identification.
         """
-        if not self._visible_control_snapshot or self._last_anchor_missing:
+        if self._last_anchor_missing:
+            waiting = getattr(self, "_anchor_wait_control_snapshot", ())
+            if not waiting or self._anchor_retry_in() <= 0:
+                return False
+            return tuple(control_anchor_token(row) for row in self.get_visible_messages()) == waiting
+        if not self._visible_control_snapshot:
             return False
         snapshot = tuple(control_anchor_token(row) for row in self.get_visible_messages())
         return snapshot == self._visible_control_snapshot
@@ -2193,51 +2294,43 @@ class ChatBox(BaseUISubWnd):
 
         if (
             self._last_anchor_missing
-            and self._visible_control_snapshot
-            and self._anchor_recovery_failures < ANCHOR_RECOVERY_MAX_FAILURES
+            and self._anchor_retry_in() <= 0
         ):
-            now = time.monotonic()
-            retry_delay = min(15.0, float(2 ** self._anchor_recovery_failures))
-            if now - self._anchor_recovery_last_attempt >= retry_delay:
-                self._anchor_recovery_last_attempt = now
+            wxlog.warning(
+                "消息尾锚点开始有界恢复: "
+                f"chat={self.who!r} attempt={self._anchor_recovery_failures + 1} "
+                f"after_cooldown={self._anchor_recovery_failures >= ANCHOR_RECOVERY_MAX_FAILURES} "
+                f"baseline={anchor_snapshot_summary(self._visible_control_snapshot)}"
+            )
+            try:
                 recovered, final_visible, recovery_result = (
                     self._recover_messages_after_missing_anchor()
                 )
-                self._last_anchor_recovery_result = recovery_result
-                if recovered is not None:
-                    visible_messages = final_visible
-                    messages = recovered
-                    self._adopt_visible_baseline(final_visible)
-                    self._anchor_recovery_failures = 0
-                    self._anchor_recovery_circuit_logged = False
-                    wxlog.warning(
-                        "消息尾锚点历史恢复成功: "
-                        f"chat={self.who!r} count={len(messages)} "
-                        f"metrics={recovery_result}"
-                    )
-                else:
-                    self._anchor_recovery_failures += 1
-                    wxlog.error(
-                        "消息尾锚点历史恢复未能证明连续性，未重建基线: "
-                        f"chat={self.who!r} failures={self._anchor_recovery_failures} "
-                        f"metrics={recovery_result}"
-                    )
-        elif (
-            self._last_anchor_missing
-            and self._anchor_recovery_failures >= ANCHOR_RECOVERY_MAX_FAILURES
-            and not self._anchor_recovery_circuit_logged
-        ):
-            self._anchor_recovery_circuit_logged = True
-            self._last_anchor_recovery_result = {
-                **self._last_anchor_recovery_result,
-                "status": "circuit_open",
-                "failures": self._anchor_recovery_failures,
-            }
-            wxlog.error(
-                "消息尾锚点自动恢复连续失败，已熔断且保留旧基线，"
-                "不会继续无限翻页: "
-                f"chat={self.who!r} failures={self._anchor_recovery_failures}"
-            )
+            except Exception as exc:
+                recovered, final_visible = None, []
+                recovery_result = {"status": "recovery_exception", "error": f"{type(exc).__name__}: {exc}"}
+                wxlog.exception(f"消息尾锚点恢复异常: chat={self.who!r}")
+            # Start backoff after the attempt finishes, including exceptions.
+            # A slow failed attempt must not immediately start another one.
+            self._anchor_recovery_last_attempt = time.monotonic()
+            self._last_anchor_recovery_result = recovery_result
+            if recovered is not None:
+                visible_messages = final_visible
+                messages = recovered
+                self._adopt_visible_baseline(final_visible)
+                wxlog.warning(
+                    "消息尾锚点历史恢复成功: "
+                    f"chat={self.who!r} count={len(messages)} metrics={recovery_result}"
+                )
+            else:
+                self._anchor_recovery_failures += 1
+                if final_visible:
+                    self._anchor_wait_control_snapshot = tuple(_message_control_token(m) for m in final_visible)
+                wxlog.error(
+                    "消息尾锚点历史恢复失败，保留基线并定时重试: "
+                    f"chat={self.who!r} failures={self._anchor_recovery_failures} "
+                    f"retry_in_sec={self._anchor_retry_in():.1f} metrics={recovery_result}"
+                )
 
         # RuntimeId belongs to a recyclable UI row, so it must never become the
         # durable identity used by an asynchronous plugin.  Attach a UUID to
@@ -2321,15 +2414,24 @@ class ChatBox(BaseUISubWnd):
         if deadline is not None:
             end = min(end, deadline)
         previous = tuple(previous)
-        last = previous
+        last = None
+        stable_since = time.monotonic()
         while True:
             with ui_transaction(timeout=0.5):
                 current = self._read_control_anchor_snapshot()
-            if current and current != previous and current == last:
+                position = self._message_scroll_position()
+            state = (current, position)
+            now = time.monotonic()
+            if state != last:
+                stable_since = now
+            # Qt animates rows while their tokens stay unchanged. Reading at
+            # the first repeated token set produced stale/zero rectangles and
+            # even sent recovery scrolling in the wrong direction.
+            if current and state == last and now - stable_since >= 0.08:
                 return current
-            if time.monotonic() >= end:
+            if now >= end:
                 return current
-            last = current
+            last = state
             time.sleep(min(0.025, max(0.0, end - time.monotonic())))
 
     def _message_scroll_position(self):
@@ -2346,10 +2448,25 @@ class ChatBox(BaseUISubWnd):
         deadline = time.monotonic() + 2.0
         while True:
             with ui_transaction(timeout=0.5):
-                if control_anchor_token(message.control) != _message_control_token(message):
-                    raise RuntimeError("历史消息在滚动期间已变化")
+                expected = _message_control_token(message)
+                # A COM element can keep the old name/RuntimeId after its row
+                # disappears, yet return a zero rectangle. Reacquire from the
+                # live list; never interpret (0,0,0,0) as 'above the viewport'.
+                matches = [row for row in self.get_visible_messages()
+                           if control_anchor_token(row) == expected]
+                if len(matches) != 1:
+                    raise RuntimeError(
+                        f"历史消息在滚动期间已变化: matches={len(matches)} "
+                        f"target={anchor_snapshot_summary((expected,))}"
+                    )
+                message.control = matches[0]
                 viewport = self.message_list.BoundingRectangle
                 row = message.control.BoundingRectangle
+                if row.right <= row.left or row.bottom <= row.top:
+                    raise RuntimeError(
+                        f"历史消息控件矩形无效: id={expected[0]} "
+                        f"rect={(row.left, row.top, row.right, row.bottom)}"
+                    )
                 point = group_sender_head_point(message.control, "friend")
                 y = point[1] if point is not None else int((row.top + row.bottom) // 2)
                 if viewport.top + 2 <= y < viewport.bottom - 2:
@@ -2357,7 +2474,7 @@ class ChatBox(BaseUISubWnd):
                 if time.monotonic() >= deadline:
                     raise TimeoutError("历史消息无法滚动到可见区域")
                 self._scroll_message_list(1 if y < viewport.top + 2 else -1)
-            time.sleep(0.025)
+            self._wait_message_page((), timeout=0.35, deadline=deadline)
 
     def _read_history_message(self, message, page):
         # Full identity/media work is performed once, while this occurrence is

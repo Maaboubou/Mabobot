@@ -66,6 +66,36 @@ class ChatListener:
         self._callback_lock = threading.Lock()
         self._callback_queue = deque()
         self._callback_worker_running = False
+        self._last_poll_at: float | None = None
+        self._last_poll_started = time.monotonic()
+        self._last_poll_finished = self._last_poll_started
+        self._last_delivery_at: float | None = None
+        self._poll_errors = 0
+        self._last_poll_error: str | None = None
+        self._last_delivery_state = "starting"
+
+    def delivery_status(self) -> dict:
+        """Read cached state only, including a stalled poll or missing cursor."""
+        core = getattr(self.chat, "core", None)
+        box = getattr(core, "_chatbox", None)
+        read_status = getattr(box, "message_delivery_status", None)
+        status = read_status() if callable(read_status) else {"state": "starting"}
+        age = max(0.0, time.monotonic() - self._last_poll_finished)
+        if not self.is_alive:
+            status["state"] = "stopped"
+        elif age > max(120.0, self.interval * 5):
+            status["state"] = "stalled"
+        elif self._poll_errors:
+            status["state"] = "poll_error"
+        return {
+            **status,
+            "last_poll_at": self._last_poll_at,
+            "last_poll_age_sec": round(age, 1),
+            "last_delivery_at": self._last_delivery_at,
+            "consecutive_poll_errors": self._poll_errors,
+            "last_poll_error": self._last_poll_error,
+            "callback_queue_size": len(self._callback_queue),
+        }
 
     def _try_rebind(self) -> bool:
         """用主窗口重新枚举同名独立窗口，替换失效的 Chat/UIA 对象。"""
@@ -144,8 +174,29 @@ class ChatListener:
                     self._stop_event.wait(self.interval)
                     continue
                 missing_since = None
+                self._last_poll_started = time.monotonic()
                 messages = self.chat.GetNewMessage()
+                self._last_poll_finished = time.monotonic()
+                self._last_poll_at = time.time()
+                self._poll_errors = 0
+                self._last_poll_error = None
+                status = self.delivery_status()
+                if status["state"] != self._last_delivery_state:
+                    wxlog.info(
+                        f"监听消息交付状态变化: chat={self.nickname!r} "
+                        f"from={self._last_delivery_state} to={status['state']} "
+                        f"failures={status.get('recovery_failures', 0)} "
+                        f"retry_in_sec={status.get('retry_in_sec', 0)}"
+                    )
+                    self._last_delivery_state = status["state"]
                 if messages:
+                    self._last_delivery_at = time.time()
+                    wxlog.info(
+                        f"监听消息交付批次: chat={self.nickname!r} count={len(messages)} "
+                        f"poll_ms={(self._last_poll_finished - self._last_poll_started) * 1000:.1f} "
+                        f"sequence={getattr(messages[0], 'delivery_sequence', None)}"
+                        f"..{getattr(messages[-1], 'delivery_sequence', None)}"
+                    )
                     # 哪个聊天来了新消息，先把该聊天的独立窗口切到前台，
                     # 再触发回调。
                     if _embedded_browser_is_foreground():
@@ -163,7 +214,9 @@ class ChatListener:
                             break
                         self._submit_callback(message)
             except Exception as exc:
-                wxlog.error(f"监听消息失败: {self.nickname}: {exc}")
+                self._poll_errors += 1
+                self._last_poll_error = f"{type(exc).__name__}: {exc}"
+                wxlog.exception(f"监听消息失败: {self.nickname}: {exc}")
             self._stop_event.wait(self.interval)
 
     def _submit_callback(self, message) -> None:
@@ -271,6 +324,11 @@ class ListenerManager:
             return sorted(
                 name for name, listener in self.listeners.items() if listener.is_alive
             )
+
+    def delivery_status(self) -> dict[str, dict]:
+        with self._lock:
+            listeners = list(self.listeners.items())
+        return {name: listener.delivery_status() for name, listener in listeners}
 
     def get_chat(self, nickname: str):
         """获取监听中的 Chat 对象；未监听返回 None。"""

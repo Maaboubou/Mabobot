@@ -610,9 +610,13 @@ def _listener_status_payload(desired_snapshot: dict, library_status: dict) -> di
     actual = list(library_status.get("actual") or [])
     actual_set = set(actual)
     missing = [name for name in desired_snapshot.keys() if name not in actual_set]
+    message_delivery = dict(library_status.get("message_delivery") or {})
+    blocked = [name for name in desired_snapshot if
+               name in message_delivery and message_delivery[name].get("state")
+               not in {"healthy", "starting"}]
     if not desired_snapshot:
         listener_status = "empty"
-    elif missing:
+    elif missing or blocked:
         listener_status = "degraded"
     else:
         listener_status = "healthy"
@@ -622,6 +626,8 @@ def _listener_status_payload(desired_snapshot: dict, library_status: dict) -> di
         "desired": list(desired_snapshot.keys()),
         "actual": actual,
         "missing": missing,
+        "blocked": blocked,
+        "message_delivery": message_delivery,
         "desired_meta": _listener_status_meta_snapshot(desired_snapshot),
         "probe_skipped": False,
         "actual_snapshot_at": time.time(),

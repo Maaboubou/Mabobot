@@ -216,6 +216,7 @@ class WeChat:
             "registered": self.listener_manager.active_names(),
             "windows": self.main_wnd.get_sub_window_names(),
             "running": self.IsListening(),
+            "message_delivery": self.listener_manager.delivery_status(),
             "window_auto_repair": self.listener_window_monitor.status(),
         }
 

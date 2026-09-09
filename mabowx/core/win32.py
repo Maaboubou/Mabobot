@@ -442,7 +442,7 @@ def post_double_click(hwnd: int, screen_x: int, screen_y: int) -> bool:
 
 
 def scroll_window(hwnd: int, rect, wheel_times: int) -> bool:
-    """Send a signed wheel delta to this window without moving the mouse.
+    """Send individual wheel detents to this window without moving the mouse.
 
     WM_MOUSEWHEEL uses screen coordinates. A zero window-procedure result is
     valid; success here means delivery, and callers must verify page movement.
@@ -459,11 +459,16 @@ def scroll_window(hwnd: int, rect, wheel_times: int) -> bool:
         if right - left < 4 or bottom - top < 4:
             return False
         point = (int((left + right) // 2), int((top + bottom) // 2))
-        win32gui.SendMessageTimeout(
-            hwnd, win32con.WM_MOUSEWHEEL, (120 * wheel_times & 0xffff) << 16,
-            win32api.MAKELONG(*point),
-            win32con.SMTO_ABORTIFHUNG | win32con.SMTO_BLOCK, 500,
-        )
+        # WeChat 4.1.12 moves one step per event even when delta is 480.
+        # Multiplying delta silently made a 32-page search cover only about
+        # 1,600 px. Preserve wheel_times as an actual count of detents.
+        delta = 120 if wheel_times > 0 else -120
+        for _ in range(abs(wheel_times)):
+            win32gui.SendMessageTimeout(
+                hwnd, win32con.WM_MOUSEWHEEL, (delta & 0xffff) << 16,
+                win32api.MAKELONG(*point),
+                win32con.SMTO_ABORTIFHUNG | win32con.SMTO_BLOCK, 500,
+            )
         return True
     except Exception:
         return False

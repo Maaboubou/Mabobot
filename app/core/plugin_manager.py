@@ -290,7 +290,10 @@ class PluginManager:
     def plugin_for_source_path(self, source_path: Path) -> Optional[str]:
         candidate = source_path.resolve()
         with self._lock:
-            plugins = [(name, Path(info.path).resolve()) for name, info in self.plugins.items()]
+            plugin_paths = [(name, info.path) for name, info in self.plugins.items()]
+        # resolve() performs filesystem I/O and releases the GIL. Do not keep
+        # a live registry iterator across it while startup discovers plugins.
+        plugins = [(name, Path(path).resolve()) for name, path in plugin_paths]
         for plugin_name, plugin_path in sorted(plugins, key=lambda item: len(item[1].parts), reverse=True):
             if candidate == plugin_path or plugin_path in candidate.parents:
                 return plugin_name
@@ -344,7 +347,8 @@ class PluginManager:
                 config=config,
                 kind="plugin",
             )
-            self.plugins[plugin_key] = plugin_info
+            with self._lock:
+                self.plugins[plugin_key] = plugin_info
             self.logger.debug(f"Found plugin: {plugin_key}")
 
         self.logger.debug(f"Discovery complete. Found {len(self.plugins)} total plugins.")
