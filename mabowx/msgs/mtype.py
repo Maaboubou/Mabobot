@@ -1449,14 +1449,50 @@ class CardMessage(HumanMessage):
         except Exception:
             return point
 
+    def _log_card_ui(self, stage: str, *, point=None) -> None:
+        """只读、尽力记录点击证据；诊断失败不能影响原有操作。"""
+        try:
+            from mabowx.core.win32 import get_window_geometry
+
+            def probe(operation):
+                try:
+                    return operation()
+                except Exception as exc:
+                    return {"probe_error": str(exc)[:160]}
+
+            def rect(control):
+                value = control.BoundingRectangle
+                return tuple(int(getattr(value, key)) for key in ("left", "top", "right", "bottom"))
+
+            parent = getattr(self, "parent", None)
+            window = getattr(parent, "root", None)
+            hwnd = probe(lambda: int(window.HWND))
+            details = {
+                "stage": stage,
+                "raw_runtime_id": getattr(self, "id", None),
+                "delivery_id": getattr(self, "delivery_id", None),
+                "point": point,
+                "row_rect": probe(lambda: rect(self.control)),
+                "viewport_rect": probe(lambda: rect(parent.message_list)),
+                "chat_hwnd": hwnd,
+                "chat_geometry": probe(lambda: get_window_geometry(hwnd)) if isinstance(hwnd, int) and hwnd else None,
+                "foreground": media_foreground_snapshot(),
+            }
+            wxlog.info(f"链接卡片 UI 诊断: {details}")
+        except Exception:
+            pass
+
     @uilock
     def _click_visible_card(self) -> None:
+        self._log_card_ui("before_activate")
         if not self._activate_source_window():
             raise RuntimeError("卡片所属聊天窗口未能安全激活")
         point = self._visible_click_point()
         if point is None:
             raise RuntimeError("卡片当前没有可点击的可见区域")
+        self._log_card_ui("before_click", point=point)
         uia.click_screen(point[0], point[1], wait=0.5)
+        self._log_card_ui("after_click", point=point)
 
     @uilock
     def get_url(self, timeout: float = 15.0) -> str:
@@ -1467,7 +1503,10 @@ class CardMessage(HumanMessage):
 
         original_clipboard = get_text()
         browser = None
+        started_at = time.monotonic()
+        stage = "before_scroll"
         try:
+            self._log_card_ui(stage)
             # 可见消息列表会保留上下边缘被裁切的 ListItem。直接点击这种
             # 控件时，方向偏移点可能落到标题栏/窗口外而没有任何效果。
             # 先滚到完整可见位置，再重新绑定一次被微信虚拟化重绘的控件。
@@ -1475,11 +1514,23 @@ class CardMessage(HumanMessage):
                 time.sleep(0.15)
             if not self._refresh_visible_control():
                 raise RuntimeError("卡片滚动后控件已失效")
+            stage = "after_scroll"
+            self._log_card_ui(stage)
+            stage = "click_card"
             self._click_visible_card()
+            stage = "wait_browser"
             browser = WeChatBrowser(timeout=timeout)
             if not browser.exists():
                 raise RuntimeError("微信内置浏览器未打开")
+            stage = "copy_url"
             response = browser.copy_url(timeout=timeout)
+        except Exception as exc:
+            self._log_card_ui(f"failed:{stage}")
+            wxlog.warning(
+                f"链接卡片解析失败: stage={stage} timeout={timeout} "
+                f"elapsed={time.monotonic() - started_at:.3f}s error={exc}"
+            )
+            raise
         finally:
             if browser is not None:
                 close_response = browser.close()
@@ -1489,6 +1540,8 @@ class CardMessage(HumanMessage):
                 set_text(original_clipboard)
             except Exception as exc:
                 wxlog.warning(f"恢复链接解析前的文本剪贴板失败: {exc}")
+            self._log_card_ui("after_cleanup")
+            wxlog.info(f"链接卡片解析结束: stage={stage} elapsed={time.monotonic() - started_at:.3f}s")
         if not response.is_success:
             raise RuntimeError(response["message"])
         return str(response["data"]["url"])

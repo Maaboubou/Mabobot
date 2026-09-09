@@ -1119,10 +1119,19 @@ def _log_image_download_audit(
 
 def _download_inbound_file(msg, *, chat_name: str, sender: str, received_at: float) -> dict:
     """Download one live FileMessage into managed per-message storage."""
+    original_filename = extract_file_name_from_message(getattr(msg, "content", ""))
+    # 微信可能把视频卡片暴露为 FileMessage；MP4 不做接收时预下载，
+    # 也不凭扩展名改变消息类型。必须在创建归档和任何 UI 操作之前返回。
+    if Path(original_filename).suffix.casefold() == ".mp4":
+        logger.info(
+            "跳过 MP4 文件预下载: chat=%s sender=%s name=%s raw_runtime_id=%s type=%s",
+            chat_name, sender, original_filename,
+            getattr(msg, "id", ""), getattr(msg, "type", ""),
+        )
+        return {}
     store = get_wechat_file_store()
     file_id = f"file_{uuid.uuid4().hex}"
     source_message_id = _message_identity(chat_name, msg)
-    original_filename = extract_file_name_from_message(getattr(msg, "content", ""))
     download_dir = store.prepare_download_dir(
         chat_name=chat_name,
         file_id=file_id,

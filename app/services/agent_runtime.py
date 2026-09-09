@@ -93,6 +93,7 @@ class CodexCompatibilityProbe:
     REQUIRED_PROTOCOL_MARKERS = (
         '"thread/start"',
         '"thread/resume"',
+        '"developerInstructions"',
         '"turn/start"',
         '"turn/interrupt"',
         '"item/completed"',
@@ -717,6 +718,8 @@ class CodexAgentRuntime:
     @staticmethod
     def _fallback_is_safe(exc: BaseException) -> bool:
         message = str(exc).lower()
+        if "unable to migrate existing codex thread instructions" in message:
+            return False
         return any(
             marker in message
             for marker in (

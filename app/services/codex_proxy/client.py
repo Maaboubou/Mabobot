@@ -1161,6 +1161,7 @@ def render_chat_prompt(
     available_file_commands: Optional[Iterable[str]] = None,
     text_only: bool = False,
     host_managed_images: bool = False,
+    native_instructions: bool = False,
 ) -> str:
     """Render OpenAI chat messages into a single Codex exec prompt."""
     rendered: List[str] = [
@@ -1168,7 +1169,9 @@ def render_chat_prompt(
         "Answer the latest user request directly.",
         "Do not inspect local project files or modify repository files unless explicitly asked.",
         "Do not mention Codex unless asked.",
-        "Preserve the behavior requested by system and developer messages below.",
+        ("Follow the role and response rules supplied in the session developer instructions."
+         if native_instructions else
+         "Preserve the behavior requested by system and developer messages below."),
     ]
     rendered.extend(["", "Conversation:"])
     for message in messages:

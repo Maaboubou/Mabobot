@@ -856,27 +856,52 @@ class WeChatBrowser(BaseUISubWnd):
 
     def _find(self, timeout: float):
         deadline = time.monotonic() + timeout
+        started_at = time.monotonic()
+        attempts = 0
+        max_candidates = 0
+        observed = []
         while time.monotonic() < deadline:
             candidates = uia.find_top_level_controls(
                 class_name=self._ui_cls_name,
                 name=self._ui_name,
                 max_results=20,
             )
+            attempts += 1
+            max_candidates = max(max_candidates, len(candidates))
             for control in candidates:
+                detail = {}
                 try:
                     pid = int(control.ProcessId or 0)
-                    if str(get_process_name(pid) or "").casefold() == "wechatappex.exe":
-                        if uia.find_descendant(
+                    process_name = str(get_process_name(pid) or "").casefold()
+                    detail.update(pid=pid, process_name=process_name)
+                    if process_name == "wechatappex.exe":
+                        more = uia.find_descendant(
                             control,
                             control_type="ButtonControl",
                             name="更多",
                             class_name="AppMenuButton",
                             timeout=0.4,
-                        ) is not None:
+                        )
+                        detail["more_button_found"] = more is not None
+                        if more is not None:
+                            wxlog.info(
+                                f"链接浏览器识别成功: attempts={attempts} "
+                                f"elapsed={time.monotonic() - started_at:.3f}s candidate={detail}"
+                            )
                             return control
-                except Exception:
+                except Exception as exc:
+                    detail["probe_error"] = str(exc)[:160]
                     continue
+                finally:
+                    if detail not in observed and len(observed) < 12:
+                        observed.append(detail)
             time.sleep(0.25)
+        wxlog.warning(
+            f"链接浏览器识别超时: timeout={timeout} attempts={attempts} "
+            f"elapsed={time.monotonic() - started_at:.3f}s "
+            f"expected_class={self._ui_cls_name!r} expected_name={self._ui_name!r} "
+            f"max_candidates={max_candidates} observed={observed}"
+        )
         return None
 
     def exists(self, wait: float = 0.0) -> bool:

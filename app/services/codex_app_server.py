@@ -2090,6 +2090,7 @@ class CodexAppServerManager:
         workdir: Path,
         permission_profile: str,
         approval_policy: str,
+        developer_instructions: str = "",
     ) -> str:
         return "|".join(
             (
@@ -2098,6 +2099,7 @@ class CodexAppServerManager:
                 permission_profile,
                 approval_policy,
                 self.dynamic_tool_signature,
+                hashlib.sha256(developer_instructions.encode("utf-8")).hexdigest(),
             )
         )
 
@@ -2115,6 +2117,7 @@ class CodexAppServerManager:
         permission_profile: str = "",
         approval_policy: str = CODEX_APPROVAL_POLICY,
         runtime_workspace_roots: Optional[List[Path]] = None,
+        developer_instructions: str = "",
     ) -> str:
         runtime_workdir = _as_runtime_path(Path(workdir or self.workdir), self.use_wsl)
         thread_config = self._thread_config(
@@ -2140,6 +2143,7 @@ class CodexAppServerManager:
                 "approvalPolicy": approval_policy,
                 "ephemeral": bool(ephemeral),
                 "config": thread_config,
+                "developerInstructions": developer_instructions,
                 **({"dynamicTools": self.dynamic_tool_specs} if self.dynamic_tool_specs else {}),
                 **execution_policy,
             },
@@ -2154,6 +2158,7 @@ class CodexAppServerManager:
             workdir=Path(workdir or self.workdir),
             permission_profile=permission_profile,
             approval_policy=approval_policy,
+            developer_instructions=developer_instructions,
         )
         return thread_id
 
@@ -2171,6 +2176,7 @@ class CodexAppServerManager:
         permission_profile: str = "",
         approval_policy: str = CODEX_APPROVAL_POLICY,
         runtime_workspace_roots: Optional[List[Path]] = None,
+        developer_instructions: str = "",
     ) -> None:
         thread_config = self._thread_config(
             reasoning_effort,
@@ -2182,6 +2188,7 @@ class CodexAppServerManager:
             workdir=Path(workdir or self.workdir),
             permission_profile=permission_profile,
             approval_policy=approval_policy,
+            developer_instructions=developer_instructions,
         )
         if self._loaded_threads.get(thread_id) == config_signature:
             return
@@ -2205,6 +2212,7 @@ class CodexAppServerManager:
                     "cwd": runtime_workdir,
                     "approvalPolicy": approval_policy,
                     "config": thread_config,
+                    "developerInstructions": developer_instructions,
                     **execution_policy,
                 },
                 timeout=min(timeout, 120),
@@ -2474,6 +2482,14 @@ class CodexAppServerManager:
 
         runtime_profile = str(request.get("codex_runtime_profile") or "").strip()
         state = self.state_store.get(chat_id)
+        developer_instructions = "\n\n".join(
+            text for message in messages
+            if message.get("role") in {"system", "developer"}
+            if (text := _content_to_text(message.get("content")))
+        )
+        migrating_instructions = bool(
+            state and state.get("instruction_transport_version") != 1
+        )
         incremental_context = bool(request.get("mabobot_incremental_context")) and not ephemeral
         access_signature = str(request.get("codex_access_signature") or "").strip()
         context_window_hint = _nonnegative_int(
@@ -2536,8 +2552,14 @@ class CodexAppServerManager:
                     permission_profile=permission_profile,
                     approval_policy=approval_policy,
                     runtime_workspace_roots=runtime_workspace_roots,
+                    developer_instructions=developer_instructions,
                 )
             except _ResumeThreadError as exc:
+                if migrating_instructions:
+                    raise CodexAppServerError(
+                        "Unable to migrate existing Codex thread instructions; history was preserved. "
+                        "Check the remote Codex version and retry: " + str(exc)
+                    ) from exc
                 logger.warning(
                     "Codex thread %s for chat %s cannot be resumed (%s); rotating",
                     thread_id,
@@ -2608,6 +2630,7 @@ class CodexAppServerManager:
                 permission_profile=permission_profile,
                 approval_policy=approval_policy,
                 runtime_workspace_roots=runtime_workspace_roots,
+                developer_instructions=developer_instructions,
             )
             logger.info(
                 "Codex persistent thread started: chat=%s thread=%s reason=%s",
@@ -2683,7 +2706,9 @@ class CodexAppServerManager:
             runtime_image_paths.append(_as_runtime_path(image_path, self.use_wsl))
 
         prompt = render_chat_prompt(
-            delta.messages,
+            # Native instructions are configured on the thread, never quoted as user input.
+            [m for m in delta.messages if m.get("role") not in {"system", "developer"}],
+            native_instructions=True,
             artifact_output_dir=runtime_output_dir,
             native_web_search_enabled=web_search_enabled,
             input_image_count=len(runtime_image_paths),
@@ -2848,6 +2873,7 @@ class CodexAppServerManager:
                             permission_profile=permission_profile,
                             approval_policy=approval_policy,
                             runtime_workspace_roots=runtime_workspace_roots,
+                            developer_instructions=developer_instructions,
                         )
                         recovery_search_disabled = True
                     except Exception as exc:
@@ -2900,6 +2926,7 @@ class CodexAppServerManager:
                                 permission_profile=permission_profile,
                                 approval_policy=approval_policy,
                                 runtime_workspace_roots=runtime_workspace_roots,
+                                developer_instructions=developer_instructions,
                             )
                         except Exception as exc:
                             self._loaded_threads.pop(thread_id, None)
@@ -3125,10 +3152,12 @@ class CodexAppServerManager:
                 "fallback_count": int((state or {}).get("fallback_count") or 0),
                 "last_fallback_at": (state or {}).get("last_fallback_at"),
                 "last_fallback_reason": (state or {}).get("last_fallback_reason"),
+                "instruction_transport_version": 1,
                 "codex_version": self.codex_version,
                 "schema_hash": self.schema_hash,
                 "config_signature": self._runtime_config_signature(
                     self._thread_config(reasoning_effort, web_search_mode, reasoning_summary),
+                    developer_instructions=developer_instructions,
                     workdir=workdir,
                     permission_profile=permission_profile,
                     approval_policy=approval_policy,
