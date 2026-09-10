@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import threading
 import time
 from pathlib import Path
 from typing import Callable
@@ -785,6 +786,7 @@ class QuoteMessage(HumanMessage):
         stale, bind only when the visible quote is unambiguous; choosing the
         latest similar quote could download the wrong image.
         """
+        self._quote_lookup_failure = ""
         getter = getattr(self.parent, "get_messages", None)
         if not callable(getter):
             return self._control_is_clickable(self.control)
@@ -796,9 +798,11 @@ class QuoteMessage(HumanMessage):
                 and self._control_is_clickable(getattr(candidate, "control", None))
             ]
         except Exception as exc:
+            self._quote_lookup_failure = f"visible_read_error:{type(exc).__name__}"
             wxlog.warning(f"刷新引用消息控件失败: {exc}")
             return False
         if not candidates:
+            self._quote_lookup_failure = "quote_not_visible_or_not_clickable"
             return False
 
         original_id = str(getattr(self, "id", "") or "")
@@ -812,6 +816,7 @@ class QuoteMessage(HumanMessage):
         elif len(candidates) == 1:
             chosen = candidates[0]
         else:
+            self._quote_lookup_failure = f"ambiguous_quote:count={len(candidates)}"
             wxlog.warning(
                 "可见区存在多条无法区分的相同引用消息，已拒绝猜测引用图片: "
                 f"count={len(candidates)} content={self.content[:60]!r}"
@@ -826,6 +831,10 @@ class QuoteMessage(HumanMessage):
     def click_quote(self) -> bool:
         """点击引用消息，打开被引用图片/视频的预览窗口。"""
         if not self._refresh_visible_control():
+            wxlog.warning(
+                f"引用媒体定位失败: reason={getattr(self, '_quote_lookup_failure', 'unknown')} "
+                f"delivery_id={getattr(self, 'delivery_id', None)} runtime_id={self.id}"
+            )
             return False
         if not self._activate_source_window():
             raise RuntimeError("引用消息所属聊天窗口未能安全激活，已取消点击")
@@ -835,6 +844,8 @@ class QuoteMessage(HumanMessage):
             point = quote_media_fallback_point(self.control, self.direction)
             source = "geometry"
         if point is None:
+            self._quote_lookup_failure = "quote_click_point_unavailable"
+            wxlog.warning(f"引用媒体点击位置不可用: runtime_id={self.id} direction={self.direction}")
             return False
         wxlog.debug(
             f"点击引用媒体: source={source} direction={self.direction} point={point}"
@@ -879,7 +890,7 @@ class QuoteMessage(HumanMessage):
                 "引用图片操作开始前已有预览窗口，拒绝猜测预览归属"
             )
         if not self.click_quote():
-            raise RuntimeError("无法点击引用消息")
+            raise RuntimeError(f"无法点击引用消息: {getattr(self, '_quote_lookup_failure', '') or 'unknown'}")
         return download_media_via_preview(
             self,
             dir_path=dir_path,
@@ -1367,6 +1378,9 @@ class LocationMessage(HumanMessage):
     type = "location"
 
 
+_LINK_BROWSER_LOCK = threading.Lock()
+
+
 class LinkMessage(HumanMessage):
     type = "link"
 
@@ -1407,21 +1421,26 @@ class CardMessage(HumanMessage):
             # 兼容手工构造的消息对象；正常监听消息都有 ChatBox parent。
             return self.exists()
         try:
-            messages = getter()
+            # Rebinding geometry must not re-identify every sender in the
+            # viewport. Identity was resolved when this message was delivered.
+            messages = getter(resolve_group_senders=False, probe_avatar_direction=False)
         except Exception as exc:
             wxlog.warning(f"刷新链接卡片控件失败: {exc}")
             return False
-        for candidate in reversed(messages):
-            if (
+        candidates = [candidate for candidate in messages if (
                 getattr(candidate, "type", "") == self.type
                 and getattr(candidate, "content", "") == self.content
                 and self._control_is_clickable(getattr(candidate, "control", None))
-            ):
-                self.control = candidate.control
-                self.parent = candidate.parent
-                self.control_class_name = getattr(candidate, "control_class_name", "")
-                return True
-        return False
+            )]
+        if len(candidates) != 1:
+            if candidates:
+                wxlog.warning(f"可见区存在多张相同链接卡片，已拒绝猜测: count={len(candidates)}")
+            return False
+        candidate = candidates[0]
+        self.control = candidate.control
+        self.parent = candidate.parent
+        self.control_class_name = getattr(candidate, "control_class_name", "")
+        return True
 
     def _visible_click_point(self) -> tuple[int, int] | None:
         """把方向点击点约束到消息列表与卡片行的真实可见交集。"""
@@ -1494,36 +1513,52 @@ class CardMessage(HumanMessage):
         uia.click_screen(point[0], point[1], wait=0.5)
         self._log_card_ui("after_click", point=point)
 
-    @uilock
     def get_url(self, timeout: float = 15.0) -> str:
-        """点击卡片，从微信内置浏览器复制并返回 URL。"""
-        if not self._refresh_visible_control():
-            raise RuntimeError("卡片消息当前不可见或已失效")
+        """Serialize link requests separately from short desktop transactions."""
+        timeout = max(0.1, float(timeout))
+        if not _LINK_BROWSER_LOCK.acquire(timeout=timeout):
+            raise TimeoutError("等待链接解析任务超时")
+        try:
+            return self._get_url_serialized(timeout)
+        finally:
+            _LINK_BROWSER_LOCK.release()
+
+    def _get_url_serialized(self, timeout: float) -> str:
         from mabowx.ui.component import WeChatBrowser
 
-        original_clipboard = get_text()
         browser = None
         started_at = time.monotonic()
+        deadline = started_at + timeout
         stage = "before_scroll"
+
+        def remaining():
+            value = deadline - time.monotonic()
+            if value <= 0:
+                raise TimeoutError(f"链接解析超时: stage={stage}")
+            return value
+
         try:
-            self._log_card_ui(stage)
-            # 可见消息列表会保留上下边缘被裁切的 ListItem。直接点击这种
-            # 控件时，方向偏移点可能落到标题栏/窗口外而没有任何效果。
-            # 先滚到完整可见位置，再重新绑定一次被微信虚拟化重绘的控件。
-            if self.roll_into_view():
-                time.sleep(0.15)
-            if not self._refresh_visible_control():
-                raise RuntimeError("卡片滚动后控件已失效")
-            stage = "after_scroll"
-            self._log_card_ui(stage)
-            stage = "click_card"
-            self._click_visible_card()
+            # Only source positioning/clicking owns the desktop. Waiting for
+            # the browser must not starve listeners in every other chat.
+            with ui_transaction(timeout=min(3.0, remaining())):
+                if not self._refresh_visible_control():
+                    raise RuntimeError("卡片消息当前不可见或已失效")
+                self._log_card_ui(stage)
+                if self.roll_into_view():
+                    time.sleep(0.15)
+                if not self._refresh_visible_control():
+                    raise RuntimeError("卡片滚动后控件已失效")
+                stage = "click_card"
+                self._click_visible_card()
             stage = "wait_browser"
-            browser = WeChatBrowser(timeout=timeout)
+            browser = WeChatBrowser(timeout=remaining())
             if not browser.exists():
                 raise RuntimeError("微信内置浏览器未打开")
             stage = "copy_url"
-            response = browser.copy_url(timeout=timeout)
+            response = browser.copy_url(timeout=remaining())
+            if not response.is_success:
+                raise RuntimeError(response["message"])
+            return str(response["data"]["url"])
         except Exception as exc:
             self._log_card_ui(f"failed:{stage}")
             wxlog.warning(
@@ -1536,15 +1571,8 @@ class CardMessage(HumanMessage):
                 close_response = browser.close()
                 if not close_response.is_success:
                     wxlog.warning(f"微信内置浏览器清理未完成: {close_response['message']}")
-            try:
-                set_text(original_clipboard)
-            except Exception as exc:
-                wxlog.warning(f"恢复链接解析前的文本剪贴板失败: {exc}")
             self._log_card_ui("after_cleanup")
             wxlog.info(f"链接卡片解析结束: stage={stage} elapsed={time.monotonic() - started_at:.3f}s")
-        if not response.is_success:
-            raise RuntimeError(response["message"])
-        return str(response["data"]["url"])
 
 
 class EmotionMessage(HumanMessage):

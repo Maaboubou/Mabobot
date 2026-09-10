@@ -253,6 +253,21 @@ def _message_control_token(message) -> tuple[str, str]:
     )
 
 
+def messages_after_control_tail(messages: list, previous_snapshot) -> tuple[list, bool]:
+    """Match the delivered tail without depending on its current avatar visibility.
+
+    Only the previous tail proves the delivery boundary. An earlier overlapping
+    row still needs the normal recovery path to avoid replaying delivered rows.
+    """
+    overlap = find_control_snapshot_overlap(
+        tuple(_message_control_token(message) for message in messages),
+        previous_snapshot,
+    )
+    if overlap is None or overlap[0] != len(previous_snapshot) - 1:
+        return [], False
+    return list(messages[overlap[1] + 1:]), True
+
+
 def message_page_overlap_length(previous_page: list, current_page: list) -> int:
     """返回相邻历史页的最长“前页后缀 / 后页前缀”重叠长度。"""
     previous_tokens = [_message_control_token(message) for message in previous_page]
@@ -1912,6 +1927,10 @@ class ChatBox(BaseUISubWnd):
         )
         recovered_from_overlap = False
         if had_anchor and not anchor_found:
+            after_anchor, anchor_found = messages_after_control_tail(
+                messages, getattr(self, "_visible_control_snapshot", ()),
+            )
+        if had_anchor and not anchor_found:
             after_overlap, overlap_found = messages_after_previous_overlap(
                 messages,
                 getattr(self, "_visible_message_snapshot", ()),
@@ -2106,6 +2125,7 @@ class ChatBox(BaseUISubWnd):
         result["probe"] = probe
         final_visible: list = []
         accumulated: list = []
+        recovered_start: int | None = None
         collection_started = time.monotonic()
         collection_ok = bool(probe.get("found"))
         stationary_rounds = 0
@@ -2118,22 +2138,28 @@ class ChatBox(BaseUISubWnd):
                     resolve_group_senders=False, probe_avatar_direction=False,
                 )
                 result["collection_pages"] = 1
-                # The lightweight page has provisional direction. Resolve the
-                # matched old occurrence too, so a self-sent anchor can match
-                # its previously recorded type/content/direction signature.
+                # A delivered long row can have its avatar far above the
+                # viewport. Raw tail identity already proves the boundary;
+                # do not scroll back through that old row just to reparse it.
+                candidates, anchor_found = messages_after_control_tail(
+                    anchor_page, previous_control_snapshot,
+                )
+                if anchor_found:
+                    recovered_start = len(anchor_page) - len(candidates)
                 overlap_anchor = find_control_snapshot_overlap(
                     tuple(_message_control_token(m) for m in anchor_page),
                     previous_control_snapshot,
                 )
-                if overlap_anchor is not None:
+                if not anchor_found and overlap_anchor is not None:
                     self._prepare_recovered_messages(
                         anchor_page, [anchor_page[overlap_anchor[1]]],
                     )
-                candidates, anchor_found = messages_after_anchor(
-                    anchor_page,
-                    self._tail_message_id,
-                    self._tail_message_signature,
-                )
+                if not anchor_found:
+                    candidates, anchor_found = messages_after_anchor(
+                        anchor_page,
+                        self._tail_message_id,
+                        self._tail_message_signature,
+                    )
                 if not anchor_found:
                     candidates, anchor_found = messages_after_previous_overlap(
                         anchor_page,
@@ -2234,11 +2260,14 @@ class ChatBox(BaseUISubWnd):
         self._prepare_recovered_messages(final_visible, final_appended)
         accumulated.extend(final_appended)
 
-        recovered, anchor_found = messages_after_anchor(
-            accumulated,
-            self._tail_message_id,
-            self._tail_message_signature,
-        )
+        if recovered_start is not None:
+            recovered, anchor_found = accumulated[recovered_start:], True
+        else:
+            recovered, anchor_found = messages_after_anchor(
+                accumulated,
+                self._tail_message_id,
+                self._tail_message_signature,
+            )
         if not anchor_found:
             recovered, anchor_found = messages_after_previous_overlap(
                 accumulated,

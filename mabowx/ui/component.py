@@ -10,7 +10,7 @@ from typing import Any
 
 from mabowx.core import uia
 from mabowx.core.clipboard import get_text, set_text
-from mabowx.core.locks import uilock
+from mabowx.core.locks import ui_transaction, uilock
 from mabowx.core.win32 import (
     enum_windows_by_pid,
     force_foreground,
@@ -996,78 +996,80 @@ class WeChatBrowser(BaseUISubWnd):
             wxlog.debug(f"浏览器菜单节点已失效，等待下一轮查找: {exc}")
             return None
 
-    @uilock
-    def select_options(self, option: str, timeout: float = 15.0) -> WxResponse:
-        """高频点击“更多”，菜单里一出现目标项就立即点击。
+    def _select_option_once(self, option: str, deadline: float) -> bool:
+        """One short menu attempt; caller holds the desktop transaction."""
+        if not self._identity_is_safe():
+            raise RuntimeError("微信浏览器窗口身份发生变化")
+        if not force_foreground(self._hwnd) or get_foreground_window() != self._hwnd:
+            return False
+        more = self._find_menu_control(
+            control_type="ButtonControl", name="更多",
+            class_name="AppMenuButton", timeout=0.15,
+        )
+        if more is None:
+            return False
+        rect = more.BoundingRectangle
+        uia.click_screen(int((rect.left + rect.right) // 2),
+                         int((rect.top + rect.bottom) // 2), wait=0.05)
+        try:
+            for _ in range(5):
+                if time.monotonic() >= deadline:
+                    break
+                item = self._find_option_fast(option)
+                try:
+                    ready = item is not None and item.Exists(0)
+                except Exception as exc:
+                    code = getattr(exc, "hresult", exc.args[0] if exc.args else None)
+                    if code not in (-2147220991, -2147417848):
+                        raise
+                    ready = False
+                if ready:
+                    rect = item.BoundingRectangle
+                    uia.click_screen(int((rect.left + rect.right) // 2),
+                                     int((rect.top + rect.bottom) // 2), wait=0.08)
+                    return True
+                time.sleep(0.03)
+            return False
+        finally:
+            # Never leave a menu open when another UI operation takes over.
+            self.control.SendKeys("{Esc}", waitTime=0.02)
 
-        与 Mabobot 补丁一致的快路径：坐标直点 + 30-80ms 轮询；
-        不再等待固定 0.6s，也不使用慢速 UIA 全树搜索。
-        """
+    def _select_options(self, option: str, timeout: float, *, copy_url: bool = False) -> WxResponse:
         if not self.exists():
             return WxResponse.failure("微信内置浏览器不存在")
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            more = self._find_menu_control(
-                control_type="ButtonControl",
-                name="更多",
-                class_name="AppMenuButton",
-                timeout=0.25,
-            )
-            if more is not None:
-                try:
-                    rect = more.BoundingRectangle
-                    uia.click_screen(
-                        int(rect.left + (rect.right - rect.left) // 2),
-                        int(rect.top + (rect.bottom - rect.top) // 2),
-                        wait=0.05,
-                    )
-                except Exception:
-                    more.Click(simulateMove=False, waitTime=0.05)
-                for _ in range(10):
-                    if time.monotonic() >= deadline:
-                        break
-                    item = self._find_option_fast(option)
+            try:
+                with ui_transaction(timeout=min(0.75, max(0.01, deadline - time.monotonic()))):
+                    # Capture, copy, read and restore atomically in this short
+                    # attempt. Other chats may use the clipboard between tries.
+                    original = get_text() if copy_url else None
                     try:
-                        ready = item is not None and item.Exists(0)
-                    except Exception as exc:
-                        code = getattr(exc, "hresult", exc.args[0] if exc.args else None)
-                        if code not in (-2147220991, -2147417848):
-                            raise
-                        ready = False
-                    if ready:
-                        try:
-                            rect = item.BoundingRectangle
-                            uia.click_screen(
-                                int(rect.left + (rect.right - rect.left) // 2),
-                                int(rect.top + (rect.bottom - rect.top) // 2),
-                                wait=0.08,
-                            )
-                        except Exception:
-                            item.Click(simulateMove=False, waitTime=0.08)
-                        return WxResponse.success()
-                    time.sleep(0.03)
-                try:
-                    self.control.SendKeys("{Esc}", waitTime=0.05)
-                except Exception:
-                    pass
+                        if copy_url:
+                            set_text("")
+                        if self._select_option_once(option, min(deadline, time.monotonic() + 0.75)):
+                            if not copy_url:
+                                return WxResponse.success()
+                            time.sleep(0.1)
+                            url = get_text().strip()
+                            if url.startswith(("http://", "https://")):
+                                return WxResponse.success(data={"url": url})
+                            return WxResponse.failure("复制链接后未获得有效 URL")
+                    finally:
+                        if copy_url:
+                            set_text(original)
+            except TimeoutError:
+                # Another desktop transaction is active. Yield between tries.
+                pass
             time.sleep(0.05)
         return WxResponse.failure(f"未找到浏览器菜单项：{option}")
 
-    @uilock
-    def copy_url(self, timeout: float = 15.0) -> WxResponse:
-        """复制当前内置浏览器页面的 URL。"""
-        response = self.select_options("复制链接", timeout=timeout)
-        if not response.is_success:
-            return response
-        time.sleep(0.1)
-        url = get_text().strip()
-        if not url:
-            return WxResponse.failure("复制链接后剪贴板为空")
-        if not url.startswith(("http://", "https://")):
-            return WxResponse.failure(f"剪贴板内容不是 URL: {url!r}")
-        return WxResponse.success(data={"url": url})
+    def select_options(self, option: str, timeout: float = 15.0) -> WxResponse:
+        return self._select_options(option, timeout)
 
-    @uilock
+    def copy_url(self, timeout: float = 15.0) -> WxResponse:
+        return self._select_options("复制链接", timeout, copy_url=True)
+
     def close(self, max_tabs: int = 3) -> WxResponse:
         """只关闭构造时捕获的微信内置浏览器窗口。
 
@@ -1092,10 +1094,13 @@ class WeChatBrowser(BaseUISubWnd):
                 return WxResponse.success()
             if not self._identity_is_safe():
                 return WxResponse.failure("浏览器窗口身份发生变化，已取消快捷键关闭")
-            if not force_foreground(self._hwnd) or get_foreground_window() != self._hwnd:
-                return WxResponse.failure("浏览器窗口无法安全切到前台，已取消快捷键关闭")
             try:
-                self.control.SendKeys("{Ctrl}w", waitTime=0.8)
+                with ui_transaction(timeout=0.75):
+                    if not self._identity_is_safe():
+                        return WxResponse.failure("浏览器窗口身份发生变化，已取消快捷键关闭")
+                    if not force_foreground(self._hwnd) or get_foreground_window() != self._hwnd:
+                        return WxResponse.failure("浏览器窗口无法安全切到前台，已取消快捷键关闭")
+                    self.control.SendKeys("{Ctrl}w", waitTime=0.1)
             except Exception as exc:
                 return WxResponse.error(f"关闭内置浏览器失败: {exc}")
             deadline = time.monotonic() + 2.0

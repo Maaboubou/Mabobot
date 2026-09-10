@@ -281,6 +281,12 @@ class EventBus:
 
         # Add event to user's queue
         try:
+            prepare = self.context.get("quote_image_prefetch")
+            if callable(prepare):
+                try:
+                    prepare(event)
+                except Exception:
+                    self.logger.exception("Quote image ingress preparation failed")
             self._user_queues[chat_name].put(event, block=False)
             self.logger.debug(f"Enqueued event {event.type} for user '{chat_name}'")
         except queue.Full:

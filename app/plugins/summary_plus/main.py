@@ -23,7 +23,7 @@ from app.services.plugin_runtime import PluginContext
 from app.services.runtime_operations import OperationContext
 from app.utils.plugin_config import get_config
 from .asr_service import bili_transcribe_local, douyin_transcribe_local
-from .browser_service import browser_summarize, open_blank_worker_tab
+from .browser_service import browser_summarize
 from .browser_runtime import BrowserRuntimeMixin
 from .mindmap_service import (
     MINDMAP_SYSTEM_PROMPT_DEFAULT,
@@ -335,6 +335,7 @@ class SummaryService(BrowserRuntimeMixin, MediaPipelineMixin, XiaohongshuMixin):
         self.driver: Optional[webdriver.Chrome] = None
         self.driver_lock = threading.RLock()
         self.driver_operation_lock = get_shared_chrome_operation_lock()
+        self.background_operation_lock = threading.RLock()
         with self.driver_lock:
             self._init_webdriver()
 
@@ -392,9 +393,10 @@ class SummaryService(BrowserRuntimeMixin, MediaPipelineMixin, XiaohongshuMixin):
         if self.dispatcher is not None:
             self.dispatcher.close()
         operation_lock = getattr(self, "driver_operation_lock", threading.RLock())
-        with operation_lock:
-            with self.driver_lock:
-                self._close_driver()
+        with self.background_operation_lock:
+            with operation_lock:
+                with self.driver_lock:
+                    self._close_driver()
 
     def _load_local_assets(self):
         """预加载本地 JS 依赖以供 HTML 模板使用"""
@@ -574,30 +576,17 @@ class SummaryService(BrowserRuntimeMixin, MediaPipelineMixin, XiaohongshuMixin):
         """在浏览器操作锁内刷新 B 站 Cookie。"""
         cookies_path = self._get_bili_cookies_path()
         try:
-            driver = self._ensure_driver_available()
-            self.logger.info("🔄 正在通过 Selenium 提取 B 站 Cookie...")
+            driver = self.driver
+            if driver is None:
+                self.logger.warning("共享浏览器未连接，无法读取 B 站登录态")
+                return False
+            self.logger.info("🔄 正在通过 CDP 后台提取 B 站 Cookie...")
 
-            # 记录原始窗口和 URL
-            original_handle = driver.current_window_handle
-            # 通过 CDP/Selenium 创建工作标签页。直接依赖 window.open 可能被
-            # Chrome 拦截，并导致下方从空句柄列表取 [0] 时越界。
-            open_blank_worker_tab(driver, self.logger)
-            driver.get("https://www.bilibili.com")
-
-            # 等待 B 站加载一点点
-            time.sleep(1.5)
-
-            cookies = driver.get_cookies()
-
-            # 关闭临时标签页并切换回原始窗口
-            try:
-                driver.close()
-            except Exception:
-                pass
-            try:
-                driver.switch_to.window(original_handle)
-            except Exception:
-                pass
+            # Read the browser cookie store without opening or selecting tabs.
+            cookies = [cookie for cookie in driver.execute_cdp_cmd(
+                "Network.getAllCookies", {},
+            ).get("cookies", []) if str(cookie.get("domain", "")).lstrip(".") == "bilibili.com"
+                or str(cookie.get("domain", "")).endswith(".bilibili.com")]
 
             if not cookies:
                 self.logger.warning("⚠️ Selenium 未能获取到任何 Cookie")
@@ -971,7 +960,7 @@ class SummaryService(BrowserRuntimeMixin, MediaPipelineMixin, XiaohongshuMixin):
         chat_name: str = "",
         sender: str = "",
     ) -> Optional[str]:
-        operation_lock = getattr(self, "driver_operation_lock", threading.RLock())
+        operation_lock = self.background_operation_lock
         with operation_lock:
             return browser_summarize(
                 self,

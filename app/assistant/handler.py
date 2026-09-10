@@ -1749,6 +1749,8 @@ class AssistantHandler:
                 if is_video_quote:
                     visual_inputs, video_transcript = self._process_quoted_video_media(event.data, wx_manager)
                 else:
+                    from app.assistant.quote_prefetch import resolve_quote_image_prefetch
+                    resolve_quote_image_prefetch(event)
                     image_base64 = self._process_quoted_image(event.data, wx_manager)
                     visual_inputs = [
                         {
@@ -1759,11 +1761,13 @@ class AssistantHandler:
                     ] if image_base64 else []
                 if not visual_inputs and not is_video_quote:
                     logger.warning(
-                        "🤖 引用%s不可用，本次保持微信静默: chat=%s message_id=%s",
+                        "🤖 引用%s不可用: chat=%s message_id=%s",
                         media_label,
                         chat_name,
                         event.data.get("message_id", ""),
                     )
+                    if wx_manager and (is_mention or chat_type in {"private", "friend", "user"}):
+                        wx_manager.send_message(chat_name, "这条引用图片暂时读取失败，请把原图重新发送并附上问题。")
                     return False
                 if is_video_quote and not visual_inputs and not video_transcript:
                     logger.warning(
@@ -2826,7 +2830,7 @@ messages 是你要发送到微信的消息数组。请像真实微信用户一�
                 image_path = quote_image_path
                 logger.debug(f"🤖 使用已有引用图片路径: {image_path}")
             # 2) 如果有引用图片标记但没有路径，进行按需下载
-            elif has_quote_image and wx_manager and message_id:
+            elif has_quote_image and wx_manager and message_id and not message.get("quote_image_prefetch_attempted"):
                 try:
                     logger.info(f"🤖 开始按需下载引用图片: {chat_name}:{message_id}")
                     image_path = wx_manager.download_quote_image(chat_name, message_id=message_id)

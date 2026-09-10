@@ -17,6 +17,15 @@ from app.utils.subprocess_utils import hidden_process_kwargs
 class BrowserRuntimeMixin:
     """Own the single automation browser and its recovery lifecycle."""
 
+    def _open_background_page(self, url):
+        from .background_page import BackgroundPage
+        # The existing Chrome owns the login/profile. Never attach Selenium to
+        # a new tab, activate it, or launch a replacement foreground browser.
+        return BackgroundPage(
+            self.chrome_debug_port, url,
+            command_timeout=max(3, int(self.webdriver_command_timeout_sec or 8)),
+        )
+
     def _set_webdriver_command_timeout(self, driver: Optional[webdriver.Chrome] = None) -> None:
         """降低当前 Selenium 会话命令超时，不修改进程级全局状态。"""
         timeout = max(3, int(self.webdriver_command_timeout_sec or 8))

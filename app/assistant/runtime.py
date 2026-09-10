@@ -24,6 +24,7 @@ class AssistantRuntime:
         self._handler: Optional[AssistantHandler] = None
         self._listener_ids: List[str] = []
         self._last_error = ""
+        self._quote_prefetch = None
 
     @property
     def handler(self) -> Optional[AssistantHandler]:
@@ -80,6 +81,9 @@ class AssistantRuntime:
             with self._lock:
                 self._handler = handler
                 self._listener_ids = listener_ids
+                from app.assistant.quote_prefetch import QuoteImagePrefetch
+                self._quote_prefetch = QuoteImagePrefetch(handler, event_bus.db_session_factory)
+                event_bus.context["quote_image_prefetch"] = self._quote_prefetch.submit
             logger.info("Core Codex assistant started with %s listeners", len(listener_ids))
             return True
         except Exception as exc:
@@ -102,12 +106,17 @@ class AssistantRuntime:
             event_bus = self._event_bus
             listener_ids = list(self._listener_ids)
             handler = self._handler
+            prefetch = self._quote_prefetch
+            self._quote_prefetch = None
             self._listener_ids = []
             self._handler = None
             self._event_bus = None
         if event_bus is not None:
+            event_bus.context.pop("quote_image_prefetch", None)
             for listener_id in listener_ids:
                 event_bus.unsubscribe(listener_id)
+        if prefetch is not None:
+            prefetch.close()
         if handler is not None:
             try:
                 handler.close()

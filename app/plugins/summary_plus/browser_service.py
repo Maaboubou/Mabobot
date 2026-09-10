@@ -5,8 +5,7 @@ import re
 import time
 from typing import Optional
 
-from selenium.common.exceptions import TimeoutException, WebDriverException
-from selenium.webdriver.common.by import By
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.support.ui import WebDriverWait
 from .content_cleaner import build_clean_stats, clean_extracted_article_text, strip_markdown
 
@@ -64,45 +63,11 @@ LOGIN_GATE_PHRASES = (
 )
 
 
-def safe_get_window_handles(driver):
-    try:
-        return driver.window_handles
-    except Exception:
-        return []
-
-
 def safe_get_current_url(driver):
     try:
         return driver.current_url or ""
     except Exception:
         return ""
-
-
-def open_blank_worker_tab(driver, logger) -> str:
-    """Create a clean tab without running JavaScript in the current tab."""
-    try:
-        target = driver.execute_cdp_cmd("Target.createTarget", {"url": "about:blank"})
-        handle = target.get("targetId")
-        if handle:
-            time.sleep(0.2)
-            driver.switch_to.window(handle)
-            logger.info(f"✅ 已通过 CDP 创建工作标签页 {handle}")
-            return handle
-    except Exception as e:
-        logger.warning(f"⚠️ CDP 创建工作标签页失败，改用 Selenium 新标签页: {e}")
-
-    try:
-        driver.switch_to.new_window("tab")
-        handle = driver.current_window_handle
-        logger.info(f"✅ 已通过 Selenium 创建工作标签页 {handle}")
-        return handle
-    except Exception:
-        driver.execute_script("window.open('about:blank', '_blank');")
-        time.sleep(0.5)
-        handle = driver.window_handles[-1]
-        driver.switch_to.window(handle)
-        logger.info(f"✅ 已通过 window.open 创建工作标签页 {handle}")
-        return handle
 
 
 def is_valid_content_url(url: str) -> bool:
@@ -169,10 +134,9 @@ def wait_for_page_load(driver, page_load_timeout: int, page_content_stabilize_de
             def page_fully_loaded(d):
                 try:
                     ready_state = d.execute_script("return document.readyState")
-                    if ready_state == "complete":
-                        return True
-                    loading_indicators = d.find_elements(By.CSS_SELECTOR, ".loading, .spinner, [aria-busy='true']")
-                    return len(loading_indicators) == 0
+                    if d.current_url.startswith("about:"):
+                        return False
+                    return ready_state == "complete"
                 except Exception:
                     return False
 
@@ -264,53 +228,15 @@ def browser_summarize(
             f"is_link_message={is_link_message}, "
             f"url={(url or '')[:180]}"
         )
-        driver = ctx._ensure_driver_available()
-        ctx.logger.info("✅ WebDriver 已就绪，准备打开/复用页面")
-
-        original_handle = None
-        safe_handles = safe_get_window_handles(driver)
-        if safe_handles:
-            original_handle = safe_handles[0]
-
-        worker_handle = None
+        if not url or not url.startswith(("https://", "http://")):
+            ctx.logger.warning("后台摘要需要已解析的 HTTP URL")
+            return None
+        # Even legacy link events must provide the resolved URL. Never reuse
+        # an interactive browser tab or fall back to foreground automation.
+        driver = ctx._open_background_page(url)
+        ctx.logger.info("✅ 已通过 CDP 打开后台摘要页面，不激活浏览器标签页")
 
         try:
-            if is_link_message:
-                ctx.logger.info("🔗 Link消息：复用已打开的页面")
-                initial_handles = list(driver.window_handles)
-                initial_count = len(initial_handles)
-                start_ts = time.time()
-                while time.time() - start_ts < ctx.page_load_timeout:
-                    current_handles = safe_get_window_handles(driver)
-                    if not current_handles:
-                        time.sleep(ctx.RETRY_DELAY)
-                        continue
-
-                    if len(current_handles) > initial_count:
-                        candidate = current_handles[-1]
-                        driver.switch_to.window(candidate)
-                        current_url = safe_get_current_url(driver)
-                        if is_valid_content_url(current_url):
-                            worker_handle = candidate
-                            break
-                        time.sleep(ctx.WINDOW_HANDLE_STABILIZE_DELAY)
-                    else:
-                        if driver.window_handles:
-                            active = driver.current_window_handle
-                            current_url = safe_get_current_url(driver)
-                            if is_valid_content_url(current_url):
-                                worker_handle = active
-                                break
-                    time.sleep(ctx.RETRY_DELAY)
-                if not worker_handle and driver.window_handles:
-                    worker_handle = driver.window_handles[-1]
-                    driver.switch_to.window(worker_handle)
-            else:
-                if not url:
-                    return "❌ 缺少URL"
-                worker_handle = open_blank_worker_tab(driver, ctx.logger)
-                time.sleep(ctx.RETRY_DELAY)
-                driver.get(url)
 
             wait_for_page_load(
                 driver=driver,
@@ -407,39 +333,9 @@ def browser_summarize(
             summary_text = strip_markdown(response.strip())
             return strip_summary_tag_section(summary_text)
         finally:
-            try:
-                handles_before_cleanup = len(safe_get_window_handles(driver)) if driver else 0
+            driver.close()
+            ctx.logger.info("✅ 已关闭本次后台摘要页面")
 
-                safe_handles = safe_get_window_handles(driver)
-                if worker_handle and worker_handle in safe_handles:
-                    try:
-                        driver.switch_to.window(worker_handle)
-                        if safe_handles and worker_handle == safe_handles[0]:
-                            driver.get("about:blank")
-                            ctx.logger.info(f"✅ Root 标签页已重置为空白 {worker_handle}")
-                        else:
-                            driver.close()
-                            ctx.logger.info(f"✅ 已关闭工作标签页 {worker_handle}")
-                    except WebDriverException as e:
-                        ctx.logger.warning(f"⚠️ 处理工作标签页时出错: {e}")
-
-                remaining_handles = safe_get_window_handles(driver)
-                if original_handle and original_handle in remaining_handles:
-                    try:
-                        driver.switch_to.window(original_handle)
-                    except WebDriverException:
-                        pass
-                elif remaining_handles:
-                    try:
-                        driver.switch_to.window(remaining_handles[0])
-                        ctx.logger.warning("⚠️ 原始窗口已失效，已切换到第一个可用窗口")
-                    except WebDriverException:
-                        pass
-
-                handles_after_cleanup = len(safe_get_window_handles(driver)) if driver else 0
-                ctx.logger.info(f"📊 窗口清理: {handles_before_cleanup} → {handles_after_cleanup}")
-            except Exception as e:
-                ctx.logger.warning(f"⚠️ 最终清理时发生不可预期的错误: {e}")
     except Exception as e:
         error_type = type(e).__name__
         ctx.logger.error(f"❌ 浏览器摘要失败: {error_type} - {e}", exc_info=True)
