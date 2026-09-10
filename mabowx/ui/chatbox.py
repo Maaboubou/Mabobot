@@ -268,6 +268,42 @@ def messages_after_control_tail(messages: list, previous_snapshot) -> tuple[list
     return list(messages[overlap[1] + 1:]), True
 
 
+def confirmed_append_prefix(previous_snapshot, current_snapshot) -> int:
+    """Return an unchanged old prefix length, or zero to require a full read.
+
+    This optimization is deliberately stricter than delivery deduplication:
+    exact ordered suffix/prefix overlap, two unambiguous anchors, real runtime
+    IDs, and no reuse of a previous row ID in the appended portion. Content-only
+    matching and history recovery must never authorize skipping identification.
+    """
+    previous = tuple(tuple(token) for token in previous_snapshot)
+    current = tuple(tuple(token) for token in current_snapshot)
+    if len(previous) < 2 or len(current) < 3:
+        return 0
+    previous_ids = [token[0] for token in previous]
+    current_ids = [token[0] for token in current]
+    if any(not rid or rid.startswith("rect:") for rid in (*previous_ids, *current_ids)):
+        return 0
+    if len(set(previous_ids)) != len(previous_ids) or len(set(current_ids)) != len(current_ids):
+        return 0
+    try:
+        start = previous.index(current[0])
+    except ValueError:
+        return 0
+    overlap = previous[start:]
+    boundary = len(overlap)
+    if boundary < 2 or boundary >= len(current) or current[:boundary] != overlap:
+        return 0
+    if set(previous_ids).intersection(current_ids[boundary:]):
+        return 0
+    # Identical text/media placeholders cannot serve as unique boundary proof.
+    for _rid, signature in overlap[-2:]:
+        if (not signature or sum(token[1] == signature for token in previous) != 1
+                or sum(token[1] == signature for token in current) != 1):
+            return 0
+    return boundary
+
+
 def message_page_overlap_length(previous_page: list, current_page: list) -> int:
     """返回相邻历史页的最长“前页后缀 / 后页前缀”重叠长度。"""
     previous_tokens = [_message_control_token(message) for message in previous_page]
@@ -866,6 +902,7 @@ class ChatBox(BaseUISubWnd):
         self._anchor_missing_since: float | None = None
         self._anchor_wait_control_snapshot = ()
         self._message_read_lock = threading.Lock()
+        self._delivery_direction_snapshot = None
         self._sent_texts: dict[str, float] = {}
         self._sent_filenames: dict[str, float] = {}
         self._cache_chat_name: str | None = None
@@ -1821,6 +1858,7 @@ class ChatBox(BaseUISubWnd):
             self._tail_message_signature = ""
             self._visible_message_snapshot = ()
             self._visible_control_snapshot = ()
+            self._delivery_direction_snapshot = None
             self._anchor_miss_snapshot = None
             self._anchor_miss_rounds = 0
             self._last_anchor_missing = False
@@ -1837,6 +1875,7 @@ class ChatBox(BaseUISubWnd):
         *,
         probe_avatar_direction: bool = True,
         controls: list | None = None,
+        _confirmed_directions: dict | None = None,
     ) -> list:
         """读取当前可见消息并解析为消息对象。
 
@@ -1853,7 +1892,12 @@ class ChatBox(BaseUISubWnd):
                 msg_type = getattr(msg_cls, "type", "other")
                 content = parse_content(msg_type, raw_name)
                 anchor_token = control_anchor_token(control)
-                if probe_avatar_direction:
+                if _confirmed_directions and anchor_token in _confirmed_directions:
+                    # Only the delivery reader can supply a proven old prefix.
+                    # Never reuse sender names or identify new rows from this map.
+                    direction = _confirmed_directions[anchor_token]
+                    avatar_sender, direction_source = "", "confirmed_prefix"
+                elif probe_avatar_direction:
                     direction, avatar_sender, direction_source = self._identity_for(control)
                 else:
                     # A startup baseline records order, not sender identity. Do
@@ -2015,6 +2059,7 @@ class ChatBox(BaseUISubWnd):
 
     def _adopt_visible_baseline(self, messages: list) -> None:
         """在成功恢复后把最终底部页原子地设为下一轮监听基线。"""
+        self._delivery_direction_snapshot = None
         if not messages:
             return
         tail = messages[-1]
@@ -2309,10 +2354,19 @@ class ChatBox(BaseUISubWnd):
     def _get_new_messages_serialized(self) -> list:
         if self._visible_list_is_unchanged():
             return []
-        visible_messages = self.get_messages(
-            resolve_group_senders=False,
-        )
+        visible_messages = self._read_delivery_messages()
         messages = self._consume_messages(visible_messages)
+        # Keep direction evidence only for this exact visible delivery baseline.
+        # No sender names or live controls are retained for this optimization.
+        if not self._last_anchor_missing:
+            self._delivery_direction_snapshot = (
+                tuple(_message_control_token(m) for m in visible_messages),
+                {
+                    _message_control_token(m): m.direction for m in visible_messages
+                    if getattr(m, "direction_source", "") in {"avatar", "confirmed_prefix"}
+                    and getattr(m, "direction", None) in {"friend", "self"}
+                },
+            )
 
         if (
             self._last_anchor_missing
@@ -2337,6 +2391,7 @@ class ChatBox(BaseUISubWnd):
             self._anchor_recovery_last_attempt = time.monotonic()
             self._last_anchor_recovery_result = recovery_result
             if recovered is not None:
+                self._delivery_direction_snapshot = None
                 visible_messages = final_visible
                 messages = recovered
                 self._adopt_visible_baseline(final_visible)
@@ -2380,6 +2435,47 @@ class ChatBox(BaseUISubWnd):
         return messages
 
     @uilock
+    def _read_delivery_messages(self) -> list:
+        """Identify all new rows; skip avatar work only for a proven old prefix."""
+        evidence = getattr(self, "_delivery_direction_snapshot", None)
+        if (self._last_anchor_missing or not evidence or not evidence[1]
+                or evidence[0] != tuple(self._visible_control_snapshot)):
+            return self.get_messages(resolve_group_senders=False)
+        try:
+            self._sync_chat_cache()
+            if evidence[0] != tuple(self._visible_control_snapshot):
+                return self.get_messages(resolve_group_senders=False)
+            rows = self.get_visible_messages()
+            snapshot = tuple(control_anchor_token(row) for row in rows)
+            boundary = confirmed_append_prefix(evidence[0], snapshot)
+            directions = {token: evidence[1][token] for token in snapshot[:boundary]
+                          if token in evidence[1]}
+            if not boundary or not directions:
+                return self.get_messages(resolve_group_senders=False)
+            messages = self.get_messages(
+                resolve_group_senders=False, controls=rows,
+                _confirmed_directions=directions,
+            )
+            # UIA can recycle rows even while our desktop mutex is held. Reject
+            # partial parses and any concurrent list mutation before committing.
+            parsed_snapshot = tuple(_message_control_token(m) for m in messages)
+            after, found = messages_after_anchor(
+                messages, self._tail_message_id, self._tail_message_signature,
+            )
+            if (parsed_snapshot != snapshot or not found or after != messages[boundary:]
+                    or tuple(control_anchor_token(row) for row in self.get_visible_messages()) != snapshot):
+                wxlog.debug("增量身份校验未通过，回退完整识别")
+                return self.get_messages(resolve_group_senders=False)
+            wxlog.debug(
+                f"监听增量身份识别: chat={self.who!r} visible={len(rows)} "
+                f"old_avatar_skipped={len(directions)} new_rows={len(rows) - boundary}"
+            )
+            return messages
+        except Exception as exc:
+            wxlog.debug(f"增量身份读取失败，回退完整识别: {exc}")
+            return self.get_messages(resolve_group_senders=False)
+
+    @uilock
     def prime_message_cache(
         self,
         settle_time: float = 0.0,
@@ -2391,6 +2487,7 @@ class ChatBox(BaseUISubWnd):
         ``settle_time`` 是最长等待时间；默认参数仍只采样一次，以保持
         普通 ``Chat`` 构造的性能。监听窗口创建/重绑时会要求多轮稳定。
         """
+        self._delivery_direction_snapshot = None
         deadline = time.monotonic() + max(0.0, float(settle_time))
         required = max(1, int(stable_rounds))
         previous: tuple[tuple[str, str], ...] | None = None
