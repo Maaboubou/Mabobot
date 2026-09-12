@@ -166,6 +166,8 @@ def create_tables():
     from . import chatbot_role    # 后导入引用WeChatUser的模型
     from . import chatbot_judge   # Judge 配置与用户绑定
     from . import assistant_policy
+    from . import chat_plugin_config
+    from . import plugin_config_template
 
     Base.metadata.create_all(bind=engine)
     drop_legacy_memory_columns()

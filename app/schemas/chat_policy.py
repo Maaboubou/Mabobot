@@ -37,6 +37,13 @@ class PluginGrantPatch(BaseModel):
     require_mention: bool = False
 
 
+class PluginConfigPatch(BaseModel):
+    model_config = {"extra": "forbid"}
+    set: Dict[str, Any] = Field(default_factory=dict, max_length=100)
+    reset_fields: List[str] = Field(default_factory=list, max_length=100)
+    reset_all: bool = False
+
+
 class ChatPolicyPatch(BaseModel):
     expected_version: int = Field(ge=1)
     chat: Optional[ChatSettingsPatch] = None
@@ -44,3 +51,4 @@ class ChatPolicyPatch(BaseModel):
     codex: Optional[CodexSettingsPatch] = None
     # Omitted means preserve. An explicit empty list removes every plugin grant.
     plugin_grants: Optional[List[PluginGrantPatch]] = Field(default=None, max_length=200)
+    plugin_configs: Optional[Dict[str, PluginConfigPatch]] = Field(default=None, max_length=200)

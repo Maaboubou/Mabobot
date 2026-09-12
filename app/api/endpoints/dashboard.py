@@ -2,7 +2,7 @@
 Dashboard API endpoints
 提供 Dashboard 页面所需的统计数据
 """
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime, timedelta
@@ -18,7 +18,12 @@ from pathlib import Path
 from app.models.base import get_db
 from app.models.user_permission import WeChatUser
 from app.services.config_service import get_setting
-from app.utils.dashboard_events import get_latest_dashboard_event, get_recent_dashboard_events
+from app.services.chat_log_index import get_chat_log_index
+from app.utils.dashboard_events import (
+    get_latest_dashboard_event,
+    get_recent_dashboard_events,
+    get_recent_events,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -33,107 +38,29 @@ def _get_chat_logs_dir() -> Path:
 
 
 def _count_today_messages() -> int:
-    """统计今日消息总数"""
+    """统计今日消息总数（走增量索引，避免每次全量扫描日志）"""
     try:
-        logs_dir = _get_chat_logs_dir()
-        if not logs_dir.exists():
-            return 0
-
-        today = datetime.now().date()
-        total = 0
-
-        for log_file in logs_dir.glob("*.jsonl"):
-            try:
-                with open(log_file, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        try:
-                            entry = json.loads(line.strip())
-                            # 字段名是 'time' 而不是 'timestamp'
-                            time_str = entry.get('time', '')
-                            if not time_str:
-                                continue
-                            # 解析时间 "2026-01-27 17:09:03"
-                            timestamp = datetime.strptime(time_str, '%Y-%m-%d %H:%M:%S')
-                            if timestamp.date() == today:
-                                total += 1
-                        except (json.JSONDecodeError, ValueError, KeyError):
-                            continue
-            except Exception:
-                continue
-
-        return total
-    except Exception:
+        return get_chat_log_index().today_totals()[0]
+    except Exception as exc:
+        logger.warning("统计今日消息失败: %s", exc)
         return 0
 
 
 def _count_today_ai_replies() -> int:
-    """统计今日 AI 回复数"""
+    """统计今日 AI 回复数（走增量索引）"""
     try:
-        logs_dir = _get_chat_logs_dir()
-        if not logs_dir.exists():
-            return 0
-
-        today = datetime.now().date()
-        total = 0
-        bot_name = get_setting("WECHAT_BOT_NAME", "刘局")
-
-        for log_file in logs_dir.glob("*.jsonl"):
-            try:
-                with open(log_file, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        try:
-                            entry = json.loads(line.strip())
-                            time_str = entry.get('time', '')
-                            if not time_str:
-                                continue
-                            timestamp = datetime.strptime(time_str, '%Y-%m-%d %H:%M:%S')
-                            sender = entry.get('sender', '')
-                            if timestamp.date() == today and sender == bot_name:
-                                total += 1
-                        except (json.JSONDecodeError, ValueError, KeyError):
-                            continue
-            except Exception:
-                continue
-
-        return total
-    except Exception:
+        return get_chat_log_index().today_totals()[1]
+    except Exception as exc:
+        logger.warning("统计今日 AI 回复失败: %s", exc)
         return 0
 
 
 def _count_active_users_today() -> int:
-    """统计今日活跃用户数"""
+    """统计今日活跃聊天数（走增量索引）"""
     try:
-        logs_dir = _get_chat_logs_dir()
-        if not logs_dir.exists():
-            return 0
-
-        today = datetime.now().date()
-        active_users = set()
-        bot_name = get_setting("WECHAT_BOT_NAME", "刘局")
-
-        for log_file in logs_dir.glob("*.jsonl"):
-            try:
-                with open(log_file, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        try:
-                            entry = json.loads(line.strip())
-                            time_str = entry.get('time', '')
-                            if not time_str:
-                                continue
-                            timestamp = datetime.strptime(time_str, '%Y-%m-%d %H:%M:%S')
-                            sender = entry.get('sender', '')
-                            if timestamp.date() == today and sender != bot_name:
-                                # 从文件名获取聊天名称
-                                chat_name = log_file.stem
-                                active_users.add(chat_name)
-                                break  # 该用户已计数，跳到下一个文件
-                        except (json.JSONDecodeError, ValueError, KeyError):
-                            continue
-            except Exception:
-                continue
-
-        return len(active_users)
-    except Exception:
+        return get_chat_log_index().today_totals()[2]
+    except Exception as exc:
+        logger.warning("统计今日活跃聊天失败: %s", exc)
         return 0
 
 
@@ -190,59 +117,34 @@ def _get_recent_activities(limit: int = 20) -> List[Dict[str, Any]]:
 
 
 def _get_top_users_today(limit: int = 5) -> List[Dict[str, Any]]:
-    """获取今日最活跃用户"""
+    """获取今日最活跃聊天（走增量索引 + 数据库补 is_group）"""
     try:
-        logs_dir = _get_chat_logs_dir()
-        if not logs_dir.exists():
+        snapshot = get_chat_log_index().snapshot(hours=1, days=1)
+        ranked = [
+            item for item in snapshot.get("top_chats", [])
+            if int(item.get("received") or 0) > 0
+        ][: max(1, min(int(limit), 20))]
+        if not ranked:
             return []
 
-        today = datetime.now().date()
-        user_counts = {}
-        bot_name = get_setting("WECHAT_BOT_NAME", "刘局")
-
-        for log_file in logs_dir.glob("*.jsonl"):
-            try:
-                chat_name = log_file.stem
-                count = 0
-
-                with open(log_file, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        try:
-                            entry = json.loads(line.strip())
-                            time_str = entry.get('time', '')
-                            if not time_str:
-                                continue
-                            timestamp = datetime.strptime(time_str, '%Y-%m-%d %H:%M:%S')
-                            sender = entry.get('sender', '')
-                            if timestamp.date() == today and sender != bot_name:
-                                count += 1
-                        except (json.JSONDecodeError, ValueError, KeyError):
-                            continue
-
-                if count > 0:
-                    user_counts[chat_name] = count
-            except Exception:
-                continue
-
-        # 排序并获取 top N
-        sorted_users = sorted(user_counts.items(), key=lambda x: x[1], reverse=True)[:limit]
-
-        # 获取用户的 is_group 信息
         from app.models.base import SessionLocal
         db = SessionLocal()
         try:
             result = []
-            for chat_name, count in sorted_users:
+            for item in ranked:
+                chat_name = item.get("chat_name") or ""
                 user = db.query(WeChatUser).filter(WeChatUser.chat_name == chat_name).first()
                 result.append({
-                    'chat_name': chat_name,
-                    'is_group': user.is_group if user else False,
-                    'message_count': count
+                    "chat_name": chat_name,
+                    "is_group": user.is_group if user else False,
+                    "message_count": int(item.get("received") or 0),
+                    "reply_count": int(item.get("replies") or 0),
                 })
             return result
         finally:
             db.close()
-    except Exception:
+    except Exception as exc:
+        logger.warning("统计今日活跃聊天失败: %s", exc)
         return []
 
 
@@ -949,3 +851,471 @@ async def get_latest_search():
             "result_length": None,
             "reason": f"获取失败: {str(e)}"
         }
+
+
+# ==================== 值班台聚合数据 ====================
+
+_ATTENTION_LIMIT = 8
+_EVENT_LIMIT = 60
+_INCIDENT_WINDOW_HOURS = 24
+
+
+@router.get("/timeseries")
+def get_dashboard_timeseries(
+    hours: int = Query(24, ge=1, le=168),
+    days: int = Query(7, ge=1, le=30),
+):
+    """按小时/天聚合的聊天活动趋势，供概览页的 KPI 与图表使用。"""
+    try:
+        return get_chat_log_index().snapshot(hours=hours, days=days)
+    except Exception as exc:
+        logger.warning("读取聊天趋势失败: %s", exc)
+        return {
+            "error": str(exc),
+            "hours": hours,
+            "days": days,
+            "hourly": [],
+            "daily": [],
+            "today": {"received": 0, "replies": 0, "chats": 0, "reply_rate": 0},
+            "yesterday": {"received": 0, "replies": 0, "chats": 0},
+            "top_chats": [],
+            "last_activity_at": None,
+        }
+
+
+@router.get("/pulse")
+def get_dashboard_pulse() -> Dict[str, Any]:
+    """五秒级"还在进消息吗"脉搏：最近 1/5/15/60 分钟的收发计数。
+
+    只读内存索引（允许比趋势窗口更短的扫描间隔），供概览页常驻显示，
+    请求体不超过几百字节。
+    """
+    try:
+        return get_chat_log_index().pulse()
+    except Exception as exc:
+        logger.warning("读取聊天脉搏失败: %s", exc)
+        return {
+            "error": str(exc),
+            "generated_at": None,
+            "last_activity_at": None,
+            "windows": {},
+        }
+
+
+def _attention_item(
+    key: str,
+    severity: str,
+    title: str,
+    detail: str = "",
+    *,
+    at: Optional[Any] = None,
+    action: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    return {
+        "key": key,
+        "severity": severity,
+        "title": title,
+        "detail": detail,
+        "at": _timestamp_from_epoch(at) if isinstance(at, (int, float)) else at,
+        "action": action or {},
+    }
+
+
+def _attention_from_wechat(request: Request, items: List[Dict[str, Any]]) -> None:
+    try:
+        wechat_manager = getattr(request.app.state, "wechat_manager", None)
+        if wechat_manager is not None and not wechat_manager.is_connected_cached():
+            items.append(_attention_item(
+                "wechat.offline", "critical", "微信未连接",
+                "机器人当前收不到消息，请检查微信客户端登录状态。",
+                action={"label": "查看运行状态", "tab": "settings", "section": "operations",
+                        "path": "/system/operations"},
+            ))
+    except Exception as exc:
+        logger.debug("读取微信连接状态失败: %s", exc)
+
+    try:
+        from app.services.wechat_monitor_service import get_monitor_service
+
+        monitor = get_monitor_service().get_status()
+        if monitor and not monitor.get("monitoring", True):
+            items.append(_attention_item(
+                "wechat.monitor_stopped", "warning", "微信监控未运行",
+                "断线自动恢复已失效，重启后才会恢复巡检。",
+                action={"label": "查看运行状态", "tab": "settings", "section": "operations",
+                        "path": "/system/operations"},
+            ))
+        missing = monitor.get("last_missing_listeners") or []
+        if missing:
+            names = "、".join(str(name) for name in list(missing)[:3])
+            items.append(_attention_item(
+                "wechat.listeners_missing", "warning", f"监听器缺失 {len(missing)} 个",
+                f"{names}{' 等' if len(missing) > 3 else ''} 需要恢复。",
+                action={"label": "查看运行状态", "tab": "settings", "section": "operations",
+                        "path": "/system/operations"},
+            ))
+        if monitor.get("relogin_in_progress"):
+            items.append(_attention_item(
+                "wechat.relogin", "info", "正在自动重新登录微信",
+                "恢复完成前消息可能延迟处理。",
+            ))
+    except Exception as exc:
+        logger.debug("读取微信监控状态失败: %s", exc)
+
+
+def _attention_from_health(request: Request, items: List[Dict[str, Any]]) -> None:
+    try:
+        state = getattr(request.app, "state", None)
+        # 启动流程完成时才会写入 event_bus 与 plugin_manager；两者同时写入，
+        # 因此只有“启动完成但组件仍为空”才是真故障，启动前的空状态不该误报。
+        if (
+            state is not None
+            and hasattr(state, "event_bus")
+            and getattr(state, "plugin_manager", None) is None
+        ):
+            items.append(_attention_item(
+                "health.plugin_manager", "critical", "插件管理器未就绪",
+                "插件能力当前不可用。",
+                action={"label": "查看运行状态", "tab": "settings", "section": "operations",
+                        "path": "/system/operations"},
+            ))
+    except Exception as exc:
+        logger.debug("读取插件管理器状态失败: %s", exc)
+
+    try:
+        from app.services.plugin_runtime import get_plugin_runtime_registry
+
+        runtime_plugins = get_plugin_runtime_registry().snapshot(include_storage=False)
+        unhealthy = [
+            item for item in runtime_plugins
+            if (item.get("health") or {}).get("status") in {"unhealthy", "failed"}
+        ]
+        for item in unhealthy[:2]:
+            health = item.get("health") or {}
+            items.append(_attention_item(
+                f"plugin.{item.get('plugin_id')}", "warning",
+                f"插件 {item.get('plugin_id')} 健康检查未通过",
+                str(health.get("message") or "健康探针报告异常。"),
+                at=health.get("checked_at"),
+                action={"label": "查看插件", "tab": "plugins", "path": "/plugins"},
+            ))
+        degraded = [
+            item for item in runtime_plugins
+            if (item.get("health") or {}).get("status") == "degraded"
+        ]
+        if degraded:
+            names = "、".join(str(item.get("plugin_id")) for item in degraded[:3])
+            items.append(_attention_item(
+                "plugin.degraded", "info", f"{len(degraded)} 个插件降级运行",
+                f"{names}{' 等' if len(degraded) > 3 else ''} 只是部分能力受限。",
+                action={"label": "查看插件", "tab": "plugins", "path": "/plugins"},
+            ))
+    except Exception as exc:
+        logger.debug("读取插件运行时状态失败: %s", exc)
+
+    try:
+        from app.services.llm_manager import get_llm_manager
+
+        health = get_llm_manager().get_model_health()
+        open_circuits = [item for item in health if item.get("status") == "open"]
+        for item in open_circuits[:2]:
+            items.append(_attention_item(
+                f"model.{item.get('model')}", "warning", f"模型熔断：{item.get('model')}",
+                str(item.get("last_error") or "连续调用失败，已暂停路由。"),
+                at=item.get("last_failure_at"),
+                action={"label": "查看调用记录", "tab": "usage", "section": "llm-history",
+                        "path": "/usage/calls"},
+            ))
+    except Exception as exc:
+        logger.debug("读取模型健康失败: %s", exc)
+
+    try:
+        from app.services.backup_service import get_backup_service
+
+        pending = get_backup_service().overview().get("pending_restore")
+        if pending:
+            items.append(_attention_item(
+                "backup.pending_restore", "warning", "有待恢复的备份",
+                "恢复尚未执行，确认后才会替换当前数据。",
+                action={"label": "查看备份", "tab": "settings", "section": "backups",
+                        "path": "/system/backups"},
+            ))
+    except Exception as exc:
+        logger.debug("读取备份状态失败: %s", exc)
+
+
+async def _attention_from_codex(items: List[Dict[str, Any]]) -> None:
+    try:
+        status = await _get_codex_status_payload(refresh=False)
+    except Exception as exc:
+        logger.debug("读取 Codex 额度失败: %s", exc)
+        return
+    if not status.get("profile_id"):
+        return
+    if not status.get("profile_available"):
+        items.append(_attention_item(
+            "codex.profile", "warning", "默认助手配置不可用",
+            str(status.get("quota_message") or "Codex Profile 未就绪。"),
+            action={"label": "查看 Codex", "tab": "codex", "path": "/codex"},
+        ))
+        return
+    if not status.get("quota_available"):
+        return
+    for label, limit in (("主要限额", (status.get("rate_limits") or {}).get("primary")),
+                         ("次要限额", (status.get("rate_limits") or {}).get("secondary"))):
+        if not isinstance(limit, dict):
+            continue
+        remaining = limit.get("remaining_percent")
+        if not isinstance(remaining, (int, float)):
+            used = limit.get("used_percent")
+            remaining = 100 - used if isinstance(used, (int, float)) else None
+        if remaining is None:
+            continue
+        if remaining <= 10:
+            severity = "critical"
+        elif remaining <= 30:
+            severity = "warning"
+        else:
+            continue
+        resets_at = limit.get("resets_at")
+        detail = f"剩余 {round(float(remaining))}%"
+        if isinstance(resets_at, (int, float)):
+            detail += f"，{datetime.fromtimestamp(resets_at).strftime('%m-%d %H:%M')} 重置"
+        items.append(_attention_item(
+            f"codex.quota.{label}", severity, f"Codex {label}即将耗尽", detail,
+            action={"label": "查看 Codex", "tab": "codex", "path": "/codex"},
+        ))
+
+
+def _attention_from_storage(items: List[Dict[str, Any]]) -> None:
+    try:
+        import psutil
+
+        usage = psutil.disk_usage("/")
+        percent = (usage.used / usage.total * 100) if usage.total else 0
+        if percent >= 80:
+            items.append(_attention_item(
+                "storage.disk", "critical" if percent >= 90 else "warning",
+                f"磁盘占用 {percent:.0f}%",
+                f"剩余 {usage.free / (1024 ** 3):.1f} GB，建议先做存储清理。",
+                action={"label": "查看存储", "tab": "settings", "section": "operations",
+                        "path": "/system/operations"},
+            ))
+    except Exception as exc:
+        logger.debug("读取磁盘占用失败: %s", exc)
+
+
+def _attention_from_incidents(items: List[Dict[str, Any]]) -> None:
+    try:
+        from app.services.incident_service import get_incident_service
+
+        # 只有最近仍在复发的运行错误才需要人处理：同一指纹只要继续写日志，
+        # last_seen 就会前移并留在待处理里；停止 24 小时后自动退出队列。
+        incidents = get_incident_service().list(limit=6, within_hours=_INCIDENT_WINDOW_HOURS)
+        for incident in incidents[:2]:
+            level = str(incident.get("level") or "").upper()
+            if level not in {"ERROR", "CRITICAL"}:
+                continue
+            items.append(_attention_item(
+                f"incident.{incident.get('fingerprint')}",
+                "critical" if level == "CRITICAL" else "warning",
+                f"{incident.get('component') or '运行日志'} 出现错误",
+                f"{str(incident.get('message') or '')[:120]}（累计 {incident.get('count') or 1} 次）",
+                at=incident.get("last_seen"),
+                action={"label": "查看运行与日志", "tab": "settings", "section": "operations",
+                        "path": "/system/operations"},
+            ))
+    except Exception as exc:
+        logger.debug("读取运行事件失败: %s", exc)
+
+
+def _collect_attention_blocking(request: Request) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    _attention_from_wechat(request, items)
+    _attention_from_health(request, items)
+    _attention_from_storage(items)
+    _attention_from_incidents(items)
+    return items
+
+
+@router.get("/attention")
+async def get_dashboard_attention(request: Request) -> Dict[str, Any]:
+    """汇总需要人工处理的异常；没有事项时返回空列表，概览页会整块隐藏。"""
+    items = await asyncio.to_thread(_collect_attention_blocking, request)
+    await _attention_from_codex(items)
+
+    severity_rank = {"critical": 0, "warning": 1, "info": 2}
+    # 先按时间倒序，再按严重度稳定排序：同级内最新的排在前面。
+    items.sort(key=lambda item: str(item.get("at") or ""), reverse=True)
+    items.sort(key=lambda item: severity_rank.get(item.get("severity"), 3))
+    summary = {
+        "critical": sum(item["severity"] == "critical" for item in items),
+        "warning": sum(item["severity"] == "warning" for item in items),
+        "info": sum(item["severity"] == "info" for item in items),
+    }
+    summary["total"] = len(items)
+    return {
+        "items": items[:_ATTENTION_LIMIT],
+        "summary": summary,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+def _event_time(value: Any) -> Optional[str]:
+    """把 epoch、ISO 或 "YYYY-MM-DD HH:MM:SS" 统一成可排序的本地时间串。"""
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value)).strftime("%Y-%m-%d %H:%M:%S")
+        except (OverflowError, OSError, ValueError):
+            return None
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if "T" in text:
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return text
+    return text[:19]
+
+
+def _timeline_from_dashboard_events(items: List[Dict[str, Any]]) -> None:
+    for event in get_recent_events(limit=30, event_types=["judge_decision"]):
+        payload = event.get("payload") or {}
+        should_reply = payload.get("should_reply")
+        title = "判决：跳过一次回复" if should_reply is False else "判决：参与对话"
+        detail_parts = [str(payload.get("reason") or "").strip()]
+        role = payload.get("role_name") or payload.get("judge_name")
+        if role:
+            detail_parts.append(f"角色 {role}")
+        items.append({
+            "kind": "judge",
+            "level": "info",
+            "title": title,
+            "detail": " · ".join(part for part in detail_parts if part)[:200],
+            "chat_name": payload.get("chat_name") or None,
+            "at": _event_time(event.get("timestamp")),
+            "action": None,
+        })
+
+
+def _timeline_from_audit(items: List[Dict[str, Any]]) -> None:
+    try:
+        from app.services.runtime_operations import get_runtime_operation_service
+
+        for record in get_runtime_operation_service().list_audit(limit=15):
+            status = str(record.get("status") or "success").lower()
+            level = "error" if status in {"failed", "error"} else ("warning" if status in {"cancelled", "skipped"} else "success")
+            target = str(record.get("target") or "").strip()
+            items.append({
+                "kind": "plugin" if str(record.get("category") or "") == "plugin" else "system",
+                "level": level,
+                "title": f"{record.get('action') or '变更'}{' · ' + target if target else ''}",
+                "detail": str(record.get("summary") or "")[:200],
+                "chat_name": None,
+                "at": _event_time(record.get("created_at")),
+                "action": {"label": "查看审计", "tab": "settings", "section": "operations",
+                           "path": "/system/operations"},
+            })
+    except Exception as exc:
+        logger.debug("读取审计记录失败: %s", exc)
+
+
+def _timeline_from_operations(items: List[Dict[str, Any]]) -> None:
+    try:
+        from app.services.runtime_operations import get_runtime_operation_service
+
+        for record in get_runtime_operation_service().list(limit=12):
+            status = str(record.get("status") or "").lower()
+            if status == "running":
+                continue
+            level = {
+                "completed": "success", "succeeded": "success",
+                "failed": "error", "timeout": "error",
+                "cancelled": "warning", "interrupted": "warning",
+            }.get(status, "info")
+            items.append({
+                "kind": "task",
+                "level": level,
+                "title": str(record.get("title") or "后台任务"),
+                "detail": str(record.get("message") or "").strip()[:200] or f"状态：{status or '未知'}",
+                "chat_name": None,
+                "at": _event_time(record.get("ended_at") or record.get("updated_at") or record.get("created_at")),
+                "action": {"label": "查看任务", "tab": "settings", "section": "operations",
+                           "path": "/system/operations"},
+            })
+    except Exception as exc:
+        logger.debug("读取后台任务失败: %s", exc)
+
+
+def _timeline_from_codex(items: List[Dict[str, Any]]) -> None:
+    try:
+        from app.services.codex_job_manager import codex_job_manager
+
+        for job in codex_job_manager.list_recent(limit=10):
+            status = str(job.get("status") or "").lower()
+            level = {"completed": "success", "failed": "error", "timeout": "error",
+                     "cancelled": "warning"}.get(status, "info")
+            chat_name = str(job.get("chat_name") or "").strip() or None
+            detail_parts = [str(job.get("model") or "").strip(), f"状态：{status or '未知'}"]
+            items.append({
+                "kind": "codex",
+                "level": level,
+                "title": "Codex 任务",
+                "detail": " · ".join(part for part in detail_parts if part)[:200],
+                "chat_name": chat_name,
+                "at": _event_time(job.get("ended_at") or job.get("updated_at") or job.get("started_at")),
+                "action": {"label": "查看 Codex", "tab": "codex", "path": "/codex"},
+            })
+    except Exception as exc:
+        logger.debug("读取 Codex 任务失败: %s", exc)
+
+
+def _timeline_from_llm_failures(items: List[Dict[str, Any]]) -> None:
+    try:
+        from app.services.llm_manager import get_llm_manager
+
+        page = get_llm_manager().usage_service.requests(period="today", limit=50)
+        failures = [
+            row for row in page.get("rows", [])
+            if not row.get("success") and row.get("scope") == "request"
+        ]
+        for row in failures[:3]:
+            pricing = row.get("pricing") if isinstance(row.get("pricing"), dict) else {}
+            reason = str(pricing.get("reason") or "").strip()
+            detail = f"计价状态 {reason}" if reason else "上游请求未成功，失败已计入用量统计"
+            items.append({
+                "kind": "llm",
+                "level": "error",
+                "title": f"模型调用失败 · {row.get('model') or '未知模型'}",
+                "detail": detail[:200],
+                "chat_name": None,
+                "at": _event_time(row.get("recorded_at")),
+                "action": {"label": "查看调用记录", "tab": "usage", "section": "llm-history",
+                           "path": "/usage/calls"},
+            })
+    except Exception as exc:
+        logger.debug("读取模型调用失败记录失败: %s", exc)
+
+
+@router.get("/events")
+def get_dashboard_events(limit: int = Query(40, ge=5, le=100)) -> Dict[str, Any]:
+    """系统级事件时间线：判决、插件与系统变更、后台任务、Codex 任务、调用失败。"""
+    items: List[Dict[str, Any]] = []
+    _timeline_from_dashboard_events(items)
+    _timeline_from_audit(items)
+    _timeline_from_operations(items)
+    _timeline_from_codex(items)
+    _timeline_from_llm_failures(items)
+
+    def sort_key(item: Dict[str, Any]) -> str:
+        return str(item.get("at") or "")
+
+    items = [item for item in items if item.get("at")]
+    items.sort(key=sort_key, reverse=True)
+    kinds = sorted({item["kind"] for item in items})
+    return {
+        "items": items[: max(5, min(int(limit), _EVENT_LIMIT))],
+        "kinds": kinds,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+    }

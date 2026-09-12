@@ -145,7 +145,13 @@ const API = {
     capabilities: {
         getAll: () => API.get('/api/capabilities/'),
         getDetail: (id) => API.get(`/api/capabilities/${encodeURIComponent(id)}`),
-        getSettings: (id) => API.get(`/api/capabilities/settings/${encodeURIComponent(id)}`),
+        getSettings: (id, userId) => API.get(`/api/capabilities/settings/${encodeURIComponent(id)}${userId ? `?user_id=${encodeURIComponent(userId)}` : ''}`),
+        previewTranslation: (payload) => API.post('/api/capabilities/translation-preview', payload),
+        getConfigTemplates: id => API.get(`/api/capabilities/config-templates/${encodeURIComponent(id)}`),
+        saveConfigTemplate: (id, payload) => API.post(`/api/capabilities/config-templates/${encodeURIComponent(id)}`, payload),
+        deleteConfigTemplate: (id, payload) => API.request(`/api/capabilities/config-templates/${encodeURIComponent(id)}`, {
+            method: 'DELETE', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+        }),
         updateSettings: (id, values) => API.put(
             `/api/capabilities/settings/${encodeURIComponent(id)}`,
             { values }
@@ -272,6 +278,20 @@ const API = {
         getListeners: () => API.get('/api/wechat/listened-chats'),
         addListener: (chatName) => API.post('/api/wechat/add-listen-chat', { chat_name: chatName }),
         removeListener: (chatName) => API.post(`/api/wechat/remove-listen-chat/${chatName}`),
+    },
+
+    // 概览值班台：趋势、待处理、事件流、用量趋势
+    dashboard: {
+        getTimeseries: (hours = 24, days = 7) => API.get(
+            `/api/dashboard/timeseries?hours=${encodeURIComponent(hours)}&days=${encodeURIComponent(days)}`
+        ),
+        getAttention: () => API.get('/api/dashboard/attention'),
+        getPulse: () => API.get('/api/dashboard/pulse'),
+        getEvents: (limit = 40) => API.get(`/api/dashboard/events?limit=${encodeURIComponent(limit)}`),
+        getCodexStatus: () => API.get('/api/dashboard/codex-status'),
+        refreshCodexStatus: () => API.request('/api/dashboard/codex-status/refresh', { method: 'POST' }),
+        getUsage: (period = 'today') => API.get(`/api/llm/usage?period=${encodeURIComponent(period)}&view=task`),
+        getUsageSeries: (days = 7) => API.get(`/api/llm/usage/series?days=${encodeURIComponent(days)}`)
     },
 
     // Users & Permissions

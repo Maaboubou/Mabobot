@@ -420,11 +420,13 @@ class EventBus:
         chat_name = event.data.get("chat_name")
         usage_metadata = {"chat_name": chat_name, "chat_type": event.data.get("chat_type"),
                           "usage_scope": "system" if not chat_name else None}
+        event.context.pop("chat_id", None)
         if chat_name:
             db = self.db_session_factory()
             try:
                 user = db.query(WeChatUser).filter(WeChatUser.chat_name == chat_name).first()
                 if user:
+                    event.context["chat_id"] = user.id
                     usage_metadata.update(user_id=user.id, chat_type="group" if user.is_group else "user")
                     sender = str(event.data.get("sender") or "").strip()
                     sender_blacklist = _parse_sender_blacklist(getattr(user, "sender_blacklist", None))

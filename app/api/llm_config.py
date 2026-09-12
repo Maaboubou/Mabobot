@@ -1362,6 +1362,12 @@ def get_usage(
     )}
 
 
+@router.get("/usage/series")
+def get_usage_series(days: int = Query(7, ge=1, le=30)):
+    """Daily usage totals for trend charts."""
+    return {"status": "success", "data": get_llm_manager().usage_service.series(days=days)}
+
+
 @router.get("/stats")
 async def get_stats():
     """获取调用统计"""

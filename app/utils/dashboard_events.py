@@ -13,13 +13,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from app.services.config_service import get_setting
-
 logger = logging.getLogger(__name__)
 
 
 def _get_events_file() -> Path:
     """Return dashboard events file path."""
+    # Imported lazily so the JSONL helpers stay importable without the full
+    # database/config stack (tests and CLI tools read the log directly).
+    from app.services.config_service import get_setting
+
     return Path(get_setting("DASHBOARD_EVENTS_FILE", "logs/dashboard_events.jsonl"))
 
 
@@ -113,4 +115,52 @@ def get_recent_dashboard_events(event_type: str, limit: int = 10) -> List[Dict[s
         return events
     except Exception as e:
         logger.warning(f"Failed to read recent dashboard events '{event_type}': {e}")
+        return []
+
+
+def get_recent_events(
+    limit: int = 50,
+    event_types: Optional[List[str]] = None,
+    max_bytes: int = 512 * 1024,
+) -> List[Dict[str, Any]]:
+    """Return recent events of every requested type, newest first.
+
+    Only the tail of the event log is read so the timeline stays cheap even
+    when the JSONL sink has been running for months.
+    """
+    try:
+        events_file = _get_events_file()
+        if not events_file.exists():
+            return []
+
+        with open(events_file, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - max(1, int(max_bytes))))
+            tail = f.read().decode("utf-8", errors="ignore")
+        lines = tail.splitlines()
+        if size > max_bytes and lines:
+            # The first line may be cut mid-record.
+            lines = lines[1:]
+
+        wanted = {str(item) for item in event_types} if event_types else None
+        events: List[Dict[str, Any]] = []
+        for line in reversed(lines):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(item, dict):
+                continue
+            if wanted is not None and item.get("event_type") not in wanted:
+                continue
+            events.append(item)
+            if len(events) >= max(1, min(int(limit), 500)):
+                break
+        return events
+    except Exception as e:
+        logger.warning(f"Failed to read recent dashboard events: {e}")
         return []

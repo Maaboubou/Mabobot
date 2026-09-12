@@ -17,7 +17,6 @@ const App = {
     currentLogSearchMatches: [],
     currentLogSearchIndex: -1,
     currentLogStatusBase: '就绪',
-    lastCodexStatus: null,
     webRestartSupported: false,
     webRestartUnavailableReason: '正在检查管理控制台状态…',
     restartCapabilities: null,
@@ -65,10 +64,12 @@ const App = {
             document.addEventListener('visibilitychange', () => {
                 if (document.hidden) {
                     this.stopAutoRefresh();
+                    Dashboard.stopPulse();
                     if (this.logAbortController) this.logAbortController.abort();
                 } else {
                     this.startAutoRefresh();
                     this.refreshCurrentTab();
+                    if (this.currentTab === 'dashboard') Dashboard.startPulse();
                 }
             });
 
@@ -104,11 +105,13 @@ const App = {
     async loadTab(tabName, isBackground = false) {
         this.currentTab = tabName;
         this.isLoading = true;
+        // 概览页的脉搏只在概览页跑：切到别的标签立刻停，回到概览时由 load 重新拉起。
+        if (tabName !== 'dashboard') Dashboard.stopPulse();
 
         try {
             switch (tabName) {
                 case 'dashboard':
-                    await this.refreshDashboard();
+                    await Dashboard.load({ quiet: isBackground });
                     break;
                 case 'plugins':
                     await this.loadPlugins(!isBackground);
@@ -334,427 +337,6 @@ const App = {
 
     // --- Tab Actions ---
 
-    async refreshDashboard() {
-        // Each panel owns its failure state. One slow integration must not
-        // prevent otherwise healthy dashboard sections from refreshing.
-        const requests = [
-                API.request('/api/dashboard/stats'),
-                API.request('/api/dashboard/recent-activities?limit=14'),
-                API.request('/api/dashboard/top-users?limit=5'),
-                API.system.getStatus(),
-                API.wechat.getStatus(),
-                API.wechat.getMyInfo(),
-                API.plugins.getStats(),
-                API.request('/api/dashboard/codex-status'),
-                API.system.getHealthDetails()
-        ];
-        const labels = ['统计', '动态', '聊天', '资源', '微信', '微信资料', '插件', 'Codex', '运行状态'];
-        const settled = await Promise.allSettled(requests);
-        const value = (index, fallback) => settled[index].status === 'fulfilled' ? settled[index].value : fallback;
-        const failed = settled
-            .map((item, index) => item.status === 'rejected' ? labels[index] : null)
-            .filter(Boolean);
-
-        const dashStats = value(0, null);
-        const recentActivities = value(1, null);
-        const topUsers = value(2, null);
-        const systemStatus = value(3, null);
-        const wxStatus = value(4, null);
-        const wxInfo = value(5, {});
-        const llmStats = value(6, null);
-        const codexStatus = value(7, {
-            status: 'error',
-            quota_message: settled[7].reason?.message || 'Codex 状态暂不可用'
-        });
-        const runtimeHealth = value(8, null);
-
-        try {
-            if (dashStats) this.renderDashboardStats(dashStats);
-            else this.markDashboardPanelStale(['statTodayMessages', 'statAiReplies', 'statTokenUsage']);
-            if (recentActivities) this.renderRecentActivities(recentActivities.activities);
-            else this.markDashboardPanelStale(['recentActivities']);
-            if (topUsers) this.renderTopUsers(topUsers.users);
-            else this.markDashboardPanelStale(['topUsers']);
-            if (systemStatus) this.renderSystemResources(systemStatus);
-            else this.markDashboardPanelStale(['systemResources']);
-            if (wxStatus) this.renderWeChatStatus(wxStatus, wxInfo);
-            else this.markDashboardPanelStale(['dashboardWechatStatus']);
-            if (llmStats) this.renderLLMStats(llmStats.stats || llmStats);
-            else this.markDashboardPanelStale(['dashboardPluginHealth', 'dashboardModelCalls', 'dashboardErrors']);
-            this.renderCodexStatus(codexStatus);
-            if (systemStatus && llmStats) this.renderDashboardSummary(systemStatus, llmStats.stats || llmStats);
-            if (runtimeHealth) this.renderRuntimeHealth(runtimeHealth);
-            else this.markDashboardPanelStale(['dashboardSystemHealth', 'dashboardActiveOperations']);
-
-            const now = new Date();
-            const updated = document.getElementById('lastUpdateTime');
-            if (updated) {
-                updated.textContent = failed.length
-                    ? `更新 ${now.toLocaleTimeString('zh-CN')} · ${failed.length} 项暂不可用`
-                    : `更新 ${now.toLocaleTimeString('zh-CN')}`;
-                updated.title = failed.length ? `暂不可用：${failed.join('、')}` : '全部数据已刷新';
-            }
-        } catch (e) {
-            console.error('Failed to render dashboard:', e);
-        }
-    },
-
-    markDashboardPanelStale(elementIds) {
-        elementIds.forEach(id => {
-            const element = document.getElementById(id);
-            if (!element) return;
-            element.dataset.stale = 'true';
-            element.title = '本区域本次刷新失败，当前内容可能不是最新状态';
-            if (!element.textContent.trim() || element.textContent.trim() === '-') {
-                element.textContent = '暂不可用';
-            }
-        });
-    },
-
-    openDashboardErrors() {
-        const path = '/usage/calls';
-        if (UI.normalizePath(window.location.pathname) !== path) {
-            window.history.pushState({ tab: 'usage', section: 'llm-history' }, '', path);
-        }
-        UI.switchTab('usage', { history: false });
-    },
-
-    async refreshCodexUsage() {
-        const button = document.getElementById('refreshCodexUsageBtn');
-        const container = document.getElementById('codexStatusOutput');
-        try {
-            if (button) {
-                button.disabled = true;
-                button.innerHTML = '<span class="spinner-border spinner-border-sm" aria-hidden="true"></span>';
-            }
-            if (container) {
-                container.innerHTML = `
-                    <div class="text-center text-muted py-3">
-                        <div class="spinner-border spinner-border-sm me-2" aria-hidden="true"></div>
-                        正在刷新 Codex 用量…
-                    </div>
-                `;
-            }
-
-            const data = await API.request('/api/dashboard/codex-status/refresh', { method: 'POST' });
-            this.renderCodexStatus(data);
-        } catch (e) {
-            console.error('Failed to refresh Codex usage:', e);
-            this.renderCodexStatus({
-                status: 'error',
-                logged_in: false,
-                quota_available: false,
-                quota_message: e.message || '刷新 Codex 用量失败',
-                updated_at: new Date().toISOString(),
-            });
-        } finally {
-            if (button) {
-                button.disabled = false;
-                button.innerHTML = '<i class="bi bi-arrow-clockwise"></i>';
-            }
-        }
-    },
-
-    renderDashboardStats(stats) {
-        document.getElementById('statTodayMessages').textContent = Number(stats?.today_messages || 0).toLocaleString();
-        document.getElementById('statAiReplies').textContent = Number(stats?.today_ai_replies || 0).toLocaleString();
-        document.getElementById('statActiveUsers').textContent = Number(stats?.active_users || 0).toLocaleString();
-
-        // Format token usage
-        const tokens = Number(stats?.token_usage || 0);
-        let tokenDisplay;
-        if (tokens >= 1000000) {
-            tokenDisplay = (tokens / 1000000).toFixed(1) + 'M';
-        } else if (tokens >= 1000) {
-            tokenDisplay = (tokens / 1000).toFixed(1) + 'K';
-        } else {
-            tokenDisplay = tokens.toString();
-        }
-        document.getElementById('statTokenUsage').textContent = tokenDisplay;
-    },
-
-    renderRecentActivities(activities) {
-        const container = document.getElementById('recentActivities');
-        if (!activities || activities.length === 0) {
-            container.innerHTML = '<div class="p-4 text-center text-muted">暂无活动记录</div>';
-            return;
-        }
-
-        const html = activities.map(activity => {
-            const icon = activity.is_bot ?
-                '<i class="bi bi-robot text-success"></i>' :
-                '<i class="bi bi-person text-primary"></i>';
-            const time = String(activity.time || '').split(' ')[1] || '';
-
-            return `
-                <div class="dashboard-activity-row">
-                    <div class="dashboard-activity-icon ${activity.is_bot ? 'bot' : 'person'}">${icon}</div>
-                    <div class="flex-grow-1 min-w-0">
-                        <div class="dashboard-activity-title">
-                            <strong class="text-truncate">${this.escapeHtml(activity.chat_name || '未知聊天')}</strong>
-                            <small>${this.escapeHtml(time)}</small>
-                        </div>
-                        <div class="dashboard-activity-preview text-truncate">${this.escapeHtml(activity.sender || '未知')}: ${this.escapeHtml(activity.preview || '')}</div>
-                    </div>
-                </div>
-            `;
-        }).join('');
-
-        container.innerHTML = html;
-    },
-
-    renderTopUsers(users) {
-        const container = document.getElementById('topUsers');
-        if (!users || users.length === 0) {
-            container.innerHTML = '<div class="text-center text-muted small">暂无数据</div>';
-            return;
-        }
-
-        const html = users.map((user, index) => `
-            <div class="dashboard-chat-rank">
-                <span class="dashboard-rank-index">${index + 1}</span>
-                <div class="min-w-0">
-                    <strong class="text-truncate">${this.escapeHtml(user.chat_name || '未知聊天')}</strong>
-                </div>
-                <span class="dashboard-rank-count">${Number(user.message_count || 0).toLocaleString()}</span>
-            </div>
-        `).join('');
-
-        container.innerHTML = html;
-    },
-
-    renderSystemResources(status) {
-        const container = document.getElementById('systemResources');
-        if (!container) return;
-
-        const cpu = Number(status?.cpu_percent || 0);
-        const memory = Number(status?.memory_percent || 0);
-        const disk = Number(status?.disk_percent || 0);
-        const systemUptime = status?.system_uptime || '未知';
-        const appUptime = status?.uptime || '未知';
-        const temperature = status?.temperature;
-        const temperatureSensors = Array.isArray(temperature?.sensors)
-            ? temperature.sensors.filter(sensor => Number.isFinite(Number(sensor?.celsius)))
-            : [];
-
-        const resourceRow = (label, value) => {
-            const tone = value >= 85 ? 'danger' : value >= 65 ? 'warning' : 'success';
-            const safeValue = Math.max(0, Math.min(100, value));
-            return `
-                <div class="dashboard-resource-item ${tone}">
-                    <div><span>${label}</span><strong>${value.toFixed(1)}%</strong></div>
-                    <span class="dashboard-resource-track"><i style="width: ${safeValue}%"></i></span>
-                </div>
-            `;
-        };
-
-        const temperatureHtml = temperatureSensors.length > 0
-            ? `<div class="dashboard-temperature-row">
-                    <span>温度</span>
-                    <div>${temperatureSensors.slice(0, 2).map(sensor => {
-                        const value = Number(sensor.celsius);
-                        const tone = value >= 90 ? 'danger' : value >= 75 ? 'warning' : 'success';
-                        const details = [sensor.sensor_name, sensor.source].filter(Boolean).join(' · ');
-                        return `<span class="dashboard-temperature ${tone}" title="${this.escapeHtml(details)}">${this.escapeHtml(sensor.label || '温度')} ${value.toFixed(1)}°C</span>`;
-                    }).join('')}</div>
-                </div>`
-            : '';
-
-        this.systemResourceSnapshot = { cpu, memory, disk, systemUptime, appUptime };
-        container.innerHTML = `
-            <div class="dashboard-resource-grid">
-                ${resourceRow('CPU', cpu)}
-                ${resourceRow('内存', memory)}
-                ${resourceRow('磁盘', disk)}
-            </div>
-            ${temperatureHtml}
-        `;
-    },
-
-    renderWeChatStatus(wxStatus, wxInfo) {
-        const container = document.getElementById('dashboardWechatStatus');
-        if (!container) return;
-        const isOnline = wxStatus?.status === 'connected' || wxStatus?.running === true;
-        const botName = wxInfo?.display_name || wxStatus?.stats?.bot_name || '未知';
-        container.innerHTML = `
-            <span class="dashboard-inline-state ${isOnline ? 'online' : 'offline'}" title="${this.escapeHtml(botName)}">
-                <i class="bi bi-wechat"></i>${isOnline ? '在线' : '离线'}
-            </span>
-        `;
-    },
-
-    renderLLMStats(stats) {
-        const totalCalls = Number(stats?.total_calls || 0);
-        const errorCount = Number(stats?.error_count || 0);
-        const avgResponseTime = Number(stats?.avg_response_time || 0);
-
-        // Format response time
-        let responseTimeDisplay;
-        if (avgResponseTime >= 1) {
-            responseTimeDisplay = avgResponseTime.toFixed(1) + ' 秒';
-        } else if (avgResponseTime > 0) {
-            responseTimeDisplay = (avgResponseTime * 1000).toFixed(0) + ' 毫秒';
-        } else {
-            responseTimeDisplay = '-';
-        }
-
-        const callsElement = document.getElementById('dashboardModelCalls');
-        const errorsElement = document.getElementById('dashboardErrors');
-        const callsMetaElement = document.getElementById('dashboardCallsMeta');
-        if (callsElement) callsElement.textContent = totalCalls.toLocaleString();
-        if (errorsElement) {
-            errorsElement.textContent = errorCount.toLocaleString();
-            const errorLink = errorsElement.closest('.dashboard-kpi');
-            errorLink?.classList.toggle('has-errors', errorCount > 0);
-            if (errorLink) {
-                errorLink.title = errorCount > 0
-                    ? `查看 ${errorCount.toLocaleString()} 次调用错误`
-                    : '查看调用诊断';
-            }
-        }
-        if (callsMetaElement) callsMetaElement.textContent = `平均 ${responseTimeDisplay}`;
-    },
-
-    renderDashboardSummary(systemStatus, stats) {
-        const enabledPlugins = Number(stats?.enabled_plugins || 0);
-        const loadedPlugins = Number(stats?.loaded_plugins || 0);
-        const pluginHealth = document.getElementById('dashboardPluginHealth');
-        const appUptime = document.getElementById('dashboardUptime');
-        const systemUptime = document.getElementById('dashboardSystemUptime');
-        if (pluginHealth) pluginHealth.textContent = enabledPlugins ? `${loadedPlugins}/${enabledPlugins} 运行` : `${loadedPlugins} 运行`;
-        if (appUptime) appUptime.textContent = this.systemResourceSnapshot?.appUptime || systemStatus?.uptime || '未知';
-        if (systemUptime) systemUptime.textContent = this.systemResourceSnapshot?.systemUptime || systemStatus?.system_uptime || '未知';
-    },
-
-    renderRuntimeHealth(health) {
-        const healthElement = document.getElementById('dashboardSystemHealth');
-        const operationsElement = document.getElementById('dashboardActiveOperations');
-        const checks = health?.checks || {};
-        const names = { database: '数据库', event_bus: '事件总线', plugin_manager: '插件', wechat: '微信' };
-        const failedChecks = Object.entries(checks)
-            .filter(([, ready]) => !ready)
-            .map(([name]) => names[name] || name);
-        const status = health?.status || (health?.ready ? 'ready' : 'not_ready');
-        const statusText = status === 'ready' ? '正常' : status === 'degraded' ? '可用' : '异常';
-        const tone = status === 'ready' ? 'online' : status === 'degraded' ? 'warning' : 'offline';
-        if (healthElement) {
-            healthElement.innerHTML = `<span class="dashboard-inline-state ${tone}"><i class="bi bi-circle-fill"></i>${statusText}</span>`;
-            healthElement.title = failedChecks.length ? `未就绪：${failedChecks.join('、')}` : '核心组件运行正常';
-            healthElement.removeAttribute('data-stale');
-        }
-        if (operationsElement) {
-            const activeCount = Number(health?.operations?.active_count || 0);
-            operationsElement.textContent = activeCount ? `${activeCount} 项` : '空闲';
-            operationsElement.classList.toggle('text-primary', activeCount > 0);
-            operationsElement.title = activeCount ? `${activeCount} 个平台托管任务正在执行` : '当前没有平台托管任务';
-            operationsElement.removeAttribute('data-stale');
-        }
-    },
-
-    localizeCodexQuotaMessage(message) {
-        const text = String(message || '');
-        const exactLabels = {
-            'Codex runtime did not return account rate limits': 'Codex 运行时未返回账户限额',
-            'Latest rollout file does not contain rate_limits yet': '最新 rollout 文件尚未包含 rate_limits',
-            'Read from latest Codex rollout rate_limits': '已从最新 Codex rollout 文件读取 rate_limits',
-            'Live refresh failed; showing last successful live usage': '实时刷新失败，正在显示最近一次成功获取的实时用量',
-            'Live refresh failed; showing cached rollout data': '实时刷新失败，正在显示缓存的 rollout 数据',
-            'Failed to fetch': '网络请求失败'
-        };
-        if (exactLabels[text]) return exactLabels[text];
-        if (text.startsWith('No rollout files found under ')) {
-            return `未在以下目录找到 rollout 文件：${text.slice('No rollout files found under '.length)}`;
-        }
-        if (text.startsWith('Failed to read rollout file: ')) {
-            return `读取 rollout 文件失败：${text.slice('Failed to read rollout file: '.length)}`;
-        }
-        return text;
-    },
-
-    renderCodexStatus(data) {
-        const container = document.getElementById('codexStatusOutput');
-        if (!container) return;
-
-        // Discard out-of-order responses, including an old account refresh that
-        // completes after the default configuration has changed.
-        const incomingTime = Date.parse(data?.updated_at || '') || 0;
-        const savedTime = Date.parse(this.lastCodexStatus?.updated_at || '') || 0;
-        const newerUsageForSameContext = data?.context_key
-            && data.context_key === this.lastCodexStatus?.context_key
-            && data?.quota_supported && data?.quota_available
-            && (Date.parse(data.rate_limit_updated_at || '') || 0)
-                > (Date.parse(this.lastCodexStatus?.rate_limit_updated_at || '') || 0);
-        if (incomingTime && savedTime > incomingTime) {
-            if (!newerUsageForSameContext) return;
-            data = { ...data, updated_at: this.lastCodexStatus.updated_at };
-        }
-        this.lastCodexStatus = data;
-
-        const configured = !!data?.profile_available;
-        const quotaSupported = !!data?.quota_supported;
-        const quotaAvailable = quotaSupported && !!data?.quota_available;
-        const statusClass = configured ? 'online' : 'offline';
-        const statusText = data?.status === 'error' ? '状态暂不可用'
-            : !configured ? (data?.profile_id ? '配置待检查' : '未配置')
-            : !quotaSupported ? (data?.status === 'warning' ? '配置待检查' : '已配置 · 额度未接入')
-            : data?.status === 'warning' ? '额度暂不可用'
-            : quotaAvailable ? (data?.served_from_snapshot ? '最近账户额度' : '账户额度') : '额度待刷新';
-        const model = data?.model || '未配置模型';
-        const version = data?.version || '-';
-        const authMode = data?.auth_mode === 'chatgpt' ? 'ChatGPT 登录'
-            : data?.auth_mode === 'api_key' ? 'API Key' : '认证待配置';
-        const provider = data?.model_provider || '提供方未配置';
-        const planType = data?.plan_type ? ` / ${data.plan_type}` : '';
-        const updatedAt = data?.rate_limit_updated_at ? this.formatDashboardTime(data.rate_limit_updated_at) : '';
-        const quotaMessage = this.localizeCodexQuotaMessage(data?.quota_message || '配置状态暂不可用。');
-        const primaryLimit = quotaAvailable ? this.renderCodexLimit(data?.rate_limits?.primary, '主要限额') : '';
-        const secondaryLimit = quotaAvailable ? this.renderCodexLimit(data?.rate_limits?.secondary, '次要限额') : '';
-
-        container.innerHTML = `
-            <div class="dashboard-codex-meta">
-                <span class="dashboard-inline-state ${statusClass}" title="${this.escapeHtml(quotaMessage)}"><i class="bi bi-circle-fill"></i>${statusText}</span>
-                ${updatedAt ? `<small>${this.escapeHtml(updatedAt)}</small>` : ''}
-            </div>
-            <div class="dashboard-codex-identity" title="${this.escapeHtml([data?.profile_id, authMode + planType, `Codex ${version}`].filter(Boolean).join(' · '))}">
-                <strong>${this.escapeHtml(model)}</strong>
-                <span>${this.escapeHtml(provider + planType)}</span>
-            </div>
-            ${primaryLimit || secondaryLimit ? `
-                <div class="dashboard-codex-limits">
-                    ${primaryLimit}
-                    ${secondaryLimit}
-                </div>
-            ` : ''}
-        `;
-    },
-
-    renderCodexLimit(limit, label) {
-        if (!limit || typeof limit.used_percent !== 'number') return '';
-
-        const used = Math.max(0, Math.min(100, limit.used_percent));
-        const rawRemaining = typeof limit.remaining_percent === 'number'
-            ? limit.remaining_percent
-            : 100 - used;
-        const remaining = Math.max(0, Math.min(100, rawRemaining));
-        const tone = remaining <= 10 ? 'danger' : remaining <= 30 ? 'warning' : 'success';
-        const resetTime = limit.resets_at ? new Date(limit.resets_at * 1000) : null;
-        const resetText = resetTime && !Number.isNaN(resetTime.getTime())
-            ? resetTime.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
-            : '-';
-        const windowText = limit.window_minutes ? this.formatMinutes(limit.window_minutes) : '-';
-
-        return `
-            <article class="dashboard-codex-limit ${tone}">
-                <div>
-                    <span>${this.escapeHtml(label)}</span>
-                    <strong>${remaining.toFixed(remaining % 1 === 0 ? 0 : 1)}%</strong>
-                </div>
-                <span class="dashboard-resource-track"><i style="width: ${remaining}%"></i></span>
-                <small>${this.escapeHtml(windowText)} 窗口 · ${this.escapeHtml(resetText)} 重置 · 已用 ${used.toFixed(used % 1 === 0 ? 0 : 1)}%</small>
-            </article>
-        `;
-    },
-
     renderJudgeOutput(data) {
         const container = document.getElementById('judgeOutput');
 
@@ -855,9 +437,7 @@ const App = {
 
 
     escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text == null ? '' : String(text);
-        return div.innerHTML;
+        return UI.escapeHtml(text);
     },
 
     formatDashboardTime(timestamp) {
@@ -866,18 +446,7 @@ const App = {
             return timestamp.split(' ')[1] || '';
         }
         const date = new Date(timestamp);
-        return Number.isNaN(date.getTime()) ? String(timestamp) : date.toLocaleTimeString('zh-CN');
-    },
-
-    formatMinutes(minutes) {
-        if (!minutes) return '-';
-        if (minutes % 1440 === 0) {
-            return `${minutes / 1440}天`;
-        } else if (minutes % 60 === 0) {
-            return `${minutes / 60}小时`;
-        } else {
-            return `${minutes}分钟`;
-        }
+        return Number.isNaN(date.getTime()) ? String(timestamp) : UI.formatTimeOfDay(date);
     },
 
     async loadPlugins(showSpinner = true) {
@@ -1098,6 +667,266 @@ const App = {
         return this.showCapabilitySettings(name, options);
     },
 
+    collectConfigValues(form) {
+        const values = {};
+        form.querySelectorAll('[data-config-key]').forEach(input => {
+            if (input.matches(':disabled')) return;
+            const {configKey: key, configType: type} = input.dataset;
+            if (input.dataset.sensitive === 'true' && input.value === '') return;
+            if (input.dataset.configControl === 'languages') {
+                values[key] = JSON.parse(input.value).map(value => UI.normalizeTranslationLanguage(value));
+                if (![2, 3].includes(values[key].length) || values[key].some(value => !value.trim())) throw Error('请选择 2 或 3 种互译语言');
+                if (new Set(values[key].map(value => value.trim().toLowerCase())).size !== values[key].length) throw Error('互译语言不能重复');
+            } else if (type === 'boolean') values[key] = input.checked;
+            else if (type === 'integer') values[key] = Number.parseInt(input.value, 10);
+            else if (type === 'number') values[key] = Number.parseFloat(input.value);
+            else if (type === 'array') values[key] = input.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+            else values[key] = input.value;
+        });
+        return values;
+    },
+
+    async showChatPluginSettings(name, parentForm) {
+        const requestId = this._capabilitySettingsRequest = (this._capabilitySettingsRequest || 0) + 1;
+        try {
+            const userId = Number(parentForm.dataset.userId);
+            const settings = await API.capabilities.getSettings(name, userId);
+            if (!parentForm.isConnected || requestId !== this._capabilitySettingsRequest) return;
+            const modal = document.getElementById('configModal');
+            const chatName = this._selectedChatPolicy?.chat?.chat_name || `聊天 ${userId}`;
+            if (settings.capability_id === 'builtin_translation' && settings.chat_config) {
+                return this.showTranslationChatSettings(name, settings, parentForm, modal, chatName, userId);
+            }
+            const draft = JSON.parse(parentForm.elements.plugin_config_draft.value)[name] || {};
+            document.getElementById('configModalTitle').textContent = `${chatName} · 本聊天设置`;
+            document.getElementById('configModalBody').innerHTML = UI.renderChatPluginSettingsForm(settings, draft);
+            const form = modal.querySelector('#chatPluginSettingsForm');
+            const fields = Object.fromEntries(settings.groups.flatMap(group => group.fields).map(field => [field.key, field]));
+            form.querySelectorAll('[data-chat-config-field]').forEach(section => {
+                const key = section.dataset.chatConfigField;
+                const selector = section.querySelector('[data-chat-config-source]');
+                const editor = section.querySelector('[data-chat-config-editor]');
+                let customValue = (draft.set || {})[key] ?? settings.chat_config.overrides[key] ?? settings.chat_config.effective[key];
+                selector.addEventListener('change', () => {
+                    if (!editor.disabled) {
+                        customValue = this.collectConfigValues(editor)[key];
+                    }
+                    editor.disabled = selector.value === 'global';
+                    editor.innerHTML = UI.renderCapabilitySettingsField({...fields[key], value: editor.disabled ? settings.chat_config.defaults[key] : customValue}, {compact: true});
+                });
+            });
+            const getValues = () => ({...settings.chat_config.defaults, ...this.collectConfigValues(form)});
+            const applyValues = values => {
+                form.querySelectorAll('[data-chat-config-field]').forEach(section => {
+                    const key = section.dataset.chatConfigField;
+                    if (!Object.hasOwn(values, key)) return;
+                    const selector = section.querySelector('[data-chat-config-source]');
+                    selector.value = 'chat';
+                    selector.dispatchEvent(new Event('change'));
+                    const editor = section.querySelector('[data-chat-config-editor]');
+                    editor.innerHTML = UI.renderCapabilitySettingsField({...fields[key], value: values[key]}, {compact: true});
+                });
+            };
+            this.bindConfigTemplates(modal, name, getValues, applyValues);
+            const saveBtn = document.getElementById('configModalSaveBtn');
+            saveBtn.classList.remove('d-none');
+            saveBtn.disabled = false;
+            saveBtn.textContent = '应用到聊天';
+            saveBtn.onclick = () => {
+                if (!parentForm.isConnected || !form.isConnected) return;
+                if (!form.reportValidity()) return;
+                try {
+                    const values = this.collectConfigValues(form);
+                    const reset = [...form.querySelectorAll('[data-chat-config-field]')]
+                        .filter(section => section.querySelector('[data-chat-config-source]').value === 'global')
+                        .map(section => section.dataset.chatConfigField);
+                    const draftInput = parentForm.elements.plugin_config_draft;
+                    const patches = JSON.parse(draftInput.value);
+                    patches[name] = {set: values, reset_fields: reset};
+                    draftInput.value = JSON.stringify(patches);
+                    draftInput.dispatchEvent(new Event('change', {bubbles: true}));
+                    bootstrap.Modal.getInstance(modal)?.hide();
+                    UI.showInfo('已应用到草稿，请点击聊天页面“保存更改”');
+                } catch (error) { UI.showError(error.message); }
+            };
+            new bootstrap.Modal(modal).show();
+        } catch (error) { UI.showError(`加载本聊天设置失败：${error.message}`); }
+    },
+
+    async showTranslationChatSettings(name, settings, parentForm, modal, chatName, userId) {
+        const displayName = (this._managedChatReferenceData?.capabilities || [])
+            .find(item => item.id === name)?.display_name || '翻译助手';
+        document.getElementById('configModalTitle').textContent = `${displayName} · ${chatName}`;
+        document.getElementById('configModalBody').innerHTML = UI.renderChatPluginSettingsForm(settings, {}, {chatName});
+        const form = modal.querySelector('#chatPluginSettingsForm');
+        const editor = form.querySelector('[data-translation-settings]');
+        const scopeToggle = form.querySelector('[data-scope-toggle]');
+        const saveBtn = document.getElementById('configModalSaveBtn');
+        const refreshSave = () => {
+            let patch = null;
+            try { patch = UI.collectTranslationChatPatch(form, settings.chat_config); } catch (_) { patch = null; }
+            saveBtn.disabled = !UI.translationState(form).valid || !patch;
+        };
+        UI.bindTranslationSettings(form, {scope: 'chat', onChange: refreshSave});
+        scopeToggle.addEventListener('change', async () => {
+            const enabled = scopeToggle.checked;
+            const hasOverrides = Object.keys(settings.chat_config.overrides || {}).length > 0;
+            if (!enabled && hasOverrides && !await UI.confirm('保存后会移除本聊天的独立设置，恢复跟随默认。确定继续吗？', {
+                title: '恢复跟随默认', confirmText: '恢复跟随默认'
+            })) {
+                scopeToggle.checked = true;
+                editor._applyScope?.();
+                editor._sync?.();
+                return;
+            }
+            editor._applyScope?.();
+            editor._sync?.();
+        });
+        this.bindConfigTemplates(modal, name,
+            () => UI.readTranslationValues(form, settings.chat_config.effective),
+            values => UI.applyTranslationValues(form, values));
+        this.bindTranslationPreview(modal, () => UI.readTranslationValues(form, settings.chat_config.effective), userId);
+        saveBtn.classList.remove('d-none');
+        saveBtn.disabled = false;
+        saveBtn.textContent = '保存并生效';
+        refreshSave();
+        saveBtn.onclick = async () => {
+            if (!parentForm.isConnected || !form.isConnected) return;
+            let patch;
+            try {
+                patch = UI.collectTranslationChatPatch(form, settings.chat_config);
+            } catch (error) {
+                UI.showError(error.message);
+                return;
+            }
+            if (!patch) {
+                bootstrap.Modal.getInstance(modal)?.hide();
+                return;
+            }
+            saveBtn.disabled = true;
+            saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>正在保存';
+            try {
+                const updated = await API.chatPolicies.update(userId, {
+                    expected_version: Number(parentForm.dataset.version),
+                    plugin_configs: {[name]: patch}
+                });
+                if (parentForm.isConnected) {
+                    parentForm.dataset.version = String(updated.version);
+                    this._selectedChatPolicy = updated;
+                    UI.setPluginScopeBadge(parentForm, name, Object.keys(updated.plugin_configs?.[name]?.overrides || {}).length > 0);
+                }
+                bootstrap.Modal.getInstance(modal)?.hide();
+                UI.showSuccess('翻译设置已保存并生效');
+            } catch (error) {
+                UI.showError(`保存失败：${error.message}`);
+            } finally {
+                if (form.isConnected) {
+                    saveBtn.textContent = '保存并生效';
+                    refreshSave();
+                }
+            }
+        };
+        new bootstrap.Modal(modal).show();
+    },
+
+    bindConfigTemplates(modal, pluginName, getValues, applyValues) {
+        const box = modal.querySelector('[data-template-manage]')?.closest('.translation-prompt-editor');
+        const select = modal.querySelector('[data-config-template-select]');
+        if (!box || !select) return;
+        const nameInput = box.querySelector('[data-template-name]');
+        const status = box.querySelector('[data-template-status]');
+        const manager = box.querySelector('[data-template-manage]');
+        const controls = [...box.querySelectorAll('[data-config-template-select], [data-template-load], [data-template-name], [data-template-create], [data-template-update], [data-template-rename], [data-template-delete]')];
+        let templates = [];
+        const selected = () => templates.find(item => String(item.id) === select.value);
+        const refresh = async id => {
+            templates = (await API.capabilities.getConfigTemplates(pluginName)).templates;
+            if (!box.isConnected) return;
+            select.innerHTML = '<option value="">选择模板</option>' + templates.map(item => `<option value="${Number(item.id)}">${UI.escapeHtml(item.name)}</option>`).join('');
+            select.value = String(id || '');
+        };
+        const act = async fn => {
+            controls.forEach(control => control.disabled = true);
+            status.textContent = '';
+            try { await fn(); }
+            catch (error) { if (box.isConnected) status.textContent = error.message; }
+            finally { controls.forEach(control => control.disabled = false); }
+        };
+        select.addEventListener('change', () => { nameInput.value = selected()?.name || ''; });
+        box.querySelector('[data-template-load]').onclick = () => {
+            const template = selected();
+            if (!template) { status.textContent = '请先选择模板'; return; }
+            applyValues(structuredClone(template.values));
+            if (manager) manager.open = false;
+            status.textContent = `已导入「${template.name}」，可继续修改。`;
+        };
+        for (const [attribute, update] of [['data-template-create', false], ['data-template-update', true]]) {
+            box.querySelector(`[${attribute}]`).onclick = () => act(async () => {
+                const template = selected();
+                if (update && !template) throw Error('请先选择要覆盖的模板');
+                const name = nameInput.value.trim();
+                if (!name) throw Error('请输入模板名称');
+                if (update && !await UI.confirm(`用当前语言与提示词覆盖模板「${template.name}」？`, {
+                    title: '覆盖模板', confirmText: '覆盖'
+                })) return;
+                const result = await API.capabilities.saveConfigTemplate(pluginName, {name, values: getValues(),
+                    ...(update ? {template_id: template.id, expected_version: template.version} : {})});
+                await refresh(result.id);
+                if (manager) manager.open = false;
+                status.textContent = update ? '模板已覆盖。' : '模板已保存，可在其他聊天导入。';
+            });
+        }
+        box.querySelector('[data-template-rename]').onclick = () => act(async () => {
+            const template = selected();
+            if (!template) throw Error('请先选择要重命名的模板');
+            const name = nameInput.value.trim();
+            if (!name) throw Error('请输入新的模板名称');
+            if (!await UI.confirm(`将模板「${template.name}」重命名为「${name}」？`, {
+                title: '重命名模板', confirmText: '重命名'
+            })) return;
+            await API.capabilities.saveConfigTemplate(pluginName, {name, values: structuredClone(template.values),
+                template_id: template.id, expected_version: template.version});
+            await refresh(template.id);
+            if (manager) manager.open = false;
+            status.textContent = `模板已重命名为「${name}」。`;
+        });
+        box.querySelector('[data-template-delete]').onclick = () => act(async () => {
+            const template = selected();
+            if (!template) throw Error('请先选择要删除的模板');
+            if (!await UI.confirm(`删除模板「${template.name}」？已导入的聊天不受影响。`, {
+                title: '删除模板', confirmText: '删除', variant: 'danger'
+            })) return;
+            await API.capabilities.deleteConfigTemplate(pluginName, {template_id: template.id, expected_version: template.version});
+            await refresh(); nameInput.value = '';
+            if (manager) manager.open = false;
+            status.textContent = '模板已删除，已配置的聊天保持原有配置。';
+        });
+        act(() => refresh());
+    },
+
+    bindTranslationPreview(modal, getValues, userId) {
+        const container = modal.querySelector('[data-translation-preview]');
+        if (!container) return;
+        const run = async runModel => {
+            const buttons = [...container.querySelectorAll('button')];
+            buttons.forEach(button => button.disabled = true);
+            const output = container.querySelector('[data-translation-result]');
+            try {
+                const response = await API.capabilities.previewTranslation({values: getValues(), user_id: userId || null,
+                    text: container.querySelector('[data-translation-sample]').value, run_model: runModel});
+                if (!container.isConnected) return;
+                const reasons = {emoji_only: '纯表情，已跳过', no_translatable_text: '没有需要翻译的文字', unsupported_source: '源语言不属于所选语言', ambiguous: '无法确定主要语言'};
+                output.textContent = runModel ? response.result.text || reasons[response.result.status] || response.result.status : response.prompt;
+                output.hidden = false;
+            } catch (error) {
+                if (!container.isConnected) return;
+                output.textContent = error.message; output.hidden = false;
+            } finally { buttons.forEach(button => button.disabled = false); }
+        };
+        container.querySelector('[data-preview-prompt]').onclick = () => run(false);
+        container.querySelector('[data-preview-translation]').onclick = () => run(true);
+    },
+
     async showCapabilitySettings(name, options = {}) {
         const requestId = this._capabilitySettingsRequest = (this._capabilitySettingsRequest || 0) + 1;
         try {
@@ -1110,16 +939,30 @@ const App = {
             this.currentCapabilitySettings = settings;
             this.currentCapabilityId = name;
 
-            document.getElementById('configModalTitle').textContent = `配置 · ${capability.display_name || name}`;
+            const displayName = capability.display_name || name;
+            document.getElementById('configModalTitle').textContent = settings.layout === 'simple'
+                ? `${displayName} · 默认设置`
+                : `全局默认 · ${displayName}`;
             document.getElementById('configModalBody').innerHTML = UI.renderCapabilitySettingsForm(settings, capability);
 
             const saveBtn = document.getElementById('configModalSaveBtn');
             saveBtn.classList.remove('d-none');
+            saveBtn.textContent = settings.layout === 'simple' ? '保存默认设置' : '保存设置';
             saveBtn.onclick = () => this.saveCapabilitySettings(name);
 
             const modalElement = document.getElementById('configModal');
             new bootstrap.Modal(modalElement).show();
             UI.bindCapabilitySettingsControls(modalElement);
+            if (name === 'builtin_translation') {
+                saveBtn.disabled = !UI.translationState(modalElement).valid;
+                modalElement.addEventListener('input', () => {
+                    saveBtn.disabled = !UI.translationState(modalElement).valid;
+                });
+                this.bindConfigTemplates(modalElement, name,
+                    () => UI.readTranslationValues(modalElement),
+                    values => UI.applyTranslationValues(modalElement, values));
+                this.bindTranslationPreview(modalElement, () => UI.readTranslationValues(modalElement));
+            }
             if ((capability.features || []).includes('push')) {
                 const shell = modalElement.querySelector('.cap-settings-shell');
                 shell.pushReady = this.loadCapabilityPushRecipients(name, shell);
@@ -1216,26 +1059,13 @@ const App = {
             return;
         }
 
-        const values = {};
-        form.querySelectorAll('[data-config-key]').forEach(input => {
-            if (input.disabled) return;
-            const key = input.dataset.configKey;
-            const type = input.dataset.configType;
-            const sensitive = input.dataset.sensitive === 'true';
-            if (sensitive && input.value === '') return;
-
-            if (type === 'boolean') {
-                values[key] = input.checked;
-            } else if (type === 'integer') {
-                values[key] = Number.parseInt(input.value, 10);
-            } else if (type === 'number') {
-                values[key] = Number.parseFloat(input.value);
-            } else if (type === 'array') {
-                values[key] = input.value.split(/\r?\n/).map(item => item.trim()).filter(Boolean);
-            } else {
-                values[key] = input.value;
-            }
-        });
+        let values;
+        try {
+            values = this.collectConfigValues(form);
+        } catch (error) {
+            UI.showError(error.message);
+            return;
+        }
 
         const saveBtn = document.getElementById('configModalSaveBtn');
         const originalHtml = saveBtn.innerHTML;
@@ -1595,7 +1425,8 @@ const App = {
                 } : { proactive_enabled: false, judge_id: null })
             },
             codex: { mode: codexMode },
-            plugin_grants: pluginGrants
+            plugin_grants: pluginGrants,
+            plugin_configs: JSON.parse(form.elements.plugin_config_draft?.value || '{}')
         };
         const controls = [...form.querySelectorAll('input, select, textarea, button')]
             .map(control => [control, control.disabled]);
@@ -1944,18 +1775,18 @@ const App = {
                 <div class="premium-card-modern premium-role-card fade-in">
                     <div class="card-body p-3 flex-grow-1">
                         <div class="d-flex justify-content-between align-items-start gap-2 mb-1">
-                            <h6 class="card-title fw-bold text-truncate mb-0" style="font-size: 0.95rem;" title="${displayName}">${displayName}</h6>
+                            <h6 class="card-title fw-bold text-truncate mb-0 u-text-15" title="${displayName}">${displayName}</h6>
                             ${countBadge}
                         </div>
-                        <small class="text-muted text-truncate d-block mb-3" style="font-size: 0.8rem;">${description}</small>
+                        <small class="text-muted text-truncate d-block mb-3 u-text-13">${description}</small>
 
                         <div class="prompt-snippet" title="系统提示词预览">${promptPreview || '<span class="text-muted">提示词为空。</span>'}</div>
 
                         <div class="d-flex flex-wrap gap-1 mt-2">
                             ${r.output_split_enabled
-                                ? `<span class="badge bg-success-subtle text-success border border-success-subtle rounded-pill" style="font-size: 0.72rem;"><i class="bi bi-scissors me-1"></i>拆分 ${Number(r.output_max_chars || 0)}×${Number(r.output_max_count || 0)}</span>`
-                                : `<span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle rounded-pill" style="font-size: 0.72rem;"><i class="bi bi-chat-left-dots me-1"></i>单条消息</span>`}
-                            ${r.output_strip_trailing_period ? `<span class="badge bg-info-subtle text-info border border-info-subtle rounded-pill" style="font-size: 0.72rem;"><i class="bi bi-eraser me-1"></i>移除句号</span>` : ''}
+                                ? `<span class="badge bg-success-subtle text-success border border-success-subtle rounded-pill u-text-12"><i class="bi bi-scissors me-1"></i>拆分 ${Number(r.output_max_chars || 0)}×${Number(r.output_max_count || 0)}</span>`
+                                : `<span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle rounded-pill u-text-12"><i class="bi bi-chat-left-dots me-1"></i>单条消息</span>`}
+                            ${r.output_strip_trailing_period ? `<span class="badge bg-info-subtle text-info border border-info-subtle rounded-pill u-text-12"><i class="bi bi-eraser me-1"></i>移除句号</span>` : ''}
                         </div>
                     </div>
                     <div class="premium-card-footer">
@@ -1992,17 +1823,17 @@ const App = {
                 ? `无法删除：有 ${userCount} 个用户正在使用此 Judge`
                 : '删除';
             const modeBadge = j.prompt_mode === 'template'
-                ? '<span class="badge bg-primary-subtle text-primary border border-primary-subtle rounded-pill" style="font-size: 0.72rem;">模板模式</span>'
-                : '<span class="badge bg-success-subtle text-success border border-success-subtle rounded-pill" style="font-size: 0.72rem;">简洁</span>';
+                ? '<span class="badge bg-primary-subtle text-primary border border-primary-subtle rounded-pill u-text-12">模板模式</span>'
+                : '<span class="badge bg-success-subtle text-success border border-success-subtle rounded-pill u-text-12">简洁</span>';
 
             return `
                 <div class="premium-card-modern premium-judge-card fade-in">
                     <div class="card-body p-3 flex-grow-1">
                         <div class="d-flex justify-content-between align-items-start gap-2 mb-1">
-                            <h6 class="card-title fw-bold text-truncate mb-0" style="font-size: 0.95rem;" title="${displayName}">${displayName}</h6>
+                            <h6 class="card-title fw-bold text-truncate mb-0 u-text-15" title="${displayName}">${displayName}</h6>
                             ${modeBadge}
                         </div>
-                        <small class="text-muted text-truncate d-block mb-3" style="font-size: 0.8rem;">${description}</small>
+                        <small class="text-muted text-truncate d-block mb-3 u-text-13">${description}</small>
 
                         <div class="prompt-snippet" title="判断规则预览">${promptPreview || '<span class="text-muted">规则为空。</span>'}</div>
 
@@ -2085,7 +1916,7 @@ const App = {
                             <div class="col-md-6">
                                 <label class="form-label fw-semibold">内部 ID（唯一）<span class="text-danger">*</span></label>
                                 <input type="text" class="form-control ${!isCreate ? 'bg-light' : ''}" name="name" value="${internalName}" placeholder="例如：support_role" ${!isCreate ? 'disabled readonly' : 'required'}>
-                                ${isCreate ? '<div class="form-text" style="font-size:0.75rem;">仅支持字母、数字和下划线，创建后无法修改。</div>' : ''}
+                                ${isCreate ? '<div class="form-text u-text-12">仅支持字母、数字和下划线，创建后无法修改。</div>' : ''}
                             </div>
                         </div>
                         <div class="mb-3">
@@ -2095,10 +1926,10 @@ const App = {
                         <div class="mb-3">
                             <label class="form-label fw-semibold d-flex justify-content-between align-items-center">
                                 <span>系统提示词 <span class="text-danger">*</span></span>
-                                <span class="badge bg-secondary-subtle text-secondary rounded-pill fw-normal" style="font-size:0.75rem;">LLM 指令</span>
+                                <span class="badge bg-secondary-subtle text-secondary rounded-pill fw-normal u-text-12">LLM 指令</span>
                             </label>
-                            <textarea class="form-control font-monospace border-secondary border-opacity-25" name="prompt" rows="10" placeholder="你是一名专业的聊天助手……" style="font-size: 0.85rem; line-height: 1.5;" required>${prompt}</textarea>
-                            <div class="form-text mt-2" style="font-size: 0.78rem; line-height: 1.45;">
+                            <textarea class="form-control font-monospace border-secondary border-opacity-25 u-text-13" name="prompt" rows="10" placeholder="你是一名专业的聊天助手……" style="line-height: 1.5" required>${prompt}</textarea>
+                            <div class="form-text mt-2 u-text-13" style="line-height: 1.45">
                                 <strong class="text-primary"><i class="bi bi-info-circle"></i> 动态变量：</strong><br>
                                 <code>{chat_text}</code> - 最近消息 &nbsp;|&nbsp;
                                 <code>{search_results}</code> - Web 搜索上下文 &nbsp;|&nbsp;
@@ -2113,7 +1944,7 @@ const App = {
                         <div class="bg-light p-3 rounded mb-4 border d-flex justify-content-between align-items-center">
                             <div>
                                 <h6 class="fw-bold mb-1 text-dark">模拟真人输入</h6>
-                                <p class="text-muted mb-0" style="font-size: 0.78rem;">按角色拆分消息，让 Bot 回复显得更自然。</p>
+                                <p class="text-muted mb-0 u-text-13">按角色拆分消息，让 Bot 回复显得更自然。</p>
                             </div>
                             <div class="form-check form-switch modern-toggle">
                                 <input class="form-check-input" type="checkbox" role="switch" name="output_split_enabled" ${splitEnabled ? 'checked' : ''}>
@@ -2127,7 +1958,7 @@ const App = {
                                     <input type="number" class="form-control" name="output_max_chars" min="10" max="2000" value="${maxChars}">
                                     <span class="input-group-text">字符</span>
                                 </div>
-                                <div class="form-text" style="font-size:0.75rem;">单段消息的最大长度。</div>
+                                <div class="form-text u-text-12">单段消息的最大长度。</div>
                             </div>
                             <div class="col-md-4">
                                 <label class="form-label fw-semibold">最多消息段数</label>
@@ -2135,7 +1966,7 @@ const App = {
                                     <input type="number" class="form-control" name="output_max_count" min="1" max="10" value="${maxCount}">
                                     <span class="input-group-text">条</span>
                                 </div>
-                                <div class="form-text" style="font-size:0.75rem;">一条回复最多拆分成多少段。</div>
+                                <div class="form-text u-text-12">一条回复最多拆分成多少段。</div>
                             </div>
                             <div class="col-md-4">
                                 <label class="form-label fw-semibold">发送间隔</label>
@@ -2143,14 +1974,14 @@ const App = {
                                     <input type="number" class="form-control" name="output_interval_seconds" min="0" max="10" step="0.1" value="${interval}">
                                     <span class="input-group-text">秒</span>
                                 </div>
-                                <div class="form-text" style="font-size:0.75rem;">各消息段之间的发送间隔。</div>
+                                <div class="form-text u-text-12">各消息段之间的发送间隔。</div>
                             </div>
                         </div>
 
                         <div class="form-check mt-4 border-top pt-3">
                             <input class="form-check-input" type="checkbox" name="output_strip_trailing_period" id="stripTrailingPeriod" ${stripPeriod ? 'checked' : ''}>
-                            <label class="form-check-label fw-semibold" for="stripTrailingPeriod" style="font-size:0.88rem;">移除末尾句号</label>
-                            <div class="form-text" style="font-size:0.75rem;">自动移除回复末尾的句号（。或 .），使表达更自然。</div>
+                            <label class="form-check-label fw-semibold u-text-15" for="stripTrailingPeriod">移除末尾句号</label>
+                            <div class="form-text u-text-12">自动移除回复末尾的句号（。或 .），使表达更自然。</div>
                         </div>
                     </div>
                 </div>
@@ -2199,7 +2030,7 @@ const App = {
                             <div class="col-md-6">
                                 <label class="form-label fw-semibold">内部 ID（唯一）<span class="text-danger">*</span></label>
                                 <input type="text" class="form-control ${!isCreate ? 'bg-light' : ''}" name="name" value="${internalName}" placeholder="例如：strict_judge" ${!isCreate ? 'disabled readonly' : 'required'}>
-                                ${isCreate ? '<div class="form-text" style="font-size:0.75rem;">仅支持字母、数字和下划线，创建后无法修改。</div>' : ''}
+                                ${isCreate ? '<div class="form-text u-text-12">仅支持字母、数字和下划线，创建后无法修改。</div>' : ''}
                             </div>
                         </div>
                         <div class="mb-3">
@@ -2215,7 +2046,7 @@ const App = {
                                 </select>
                             </div>
                             <div class="col-md-6 d-flex align-items-end">
-                                <div id="judgePromptModeHint" class="form-text mt-0 bg-light p-2 rounded border" style="font-size: 0.75rem; line-height: 1.4;">
+                                <div id="judgePromptModeHint" class="form-text mt-0 bg-light p-2 rounded border u-text-12" style="line-height: 1.4">
                                     简洁模式会自动注入上下文，系统会强制要求 JSON 输出格式。
                                 </div>
                             </div>
@@ -2223,9 +2054,9 @@ const App = {
                         <div class="mb-3">
                             <label class="form-label fw-semibold d-flex justify-content-between align-items-center">
                                 <span>Judge 判断规则 <span class="text-danger">*</span></span>
-                                <span class="badge bg-secondary-subtle text-secondary rounded-pill fw-normal" style="font-size:0.75rem;">判断提示词</span>
+                                <span class="badge bg-secondary-subtle text-secondary rounded-pill fw-normal u-text-12">判断提示词</span>
                             </label>
-                            <textarea class="form-control font-monospace border-secondary border-opacity-25" name="prompt" rows="9" placeholder="指定触发 Bot 的用户意图条件……" style="font-size: 0.85rem; line-height: 1.5;" required>${prompt}</textarea>
+                            <textarea class="form-control font-monospace border-secondary border-opacity-25 u-text-13" name="prompt" rows="9" placeholder="指定触发 Bot 的用户意图条件……" style="line-height: 1.5" required>${prompt}</textarea>
 
                             <div id="judgeTemplateTools" class="mt-2 d-none">
                                 <button type="button" class="btn btn-sm btn-outline-secondary" onclick="App.insertJudgeTemplateVar('{{chat_text}}')">
@@ -2253,7 +2084,7 @@ const App = {
                                     <input type="number" class="form-control" name="trigger_msg_threshold" min="0" max="1000" value="${triggerMsgs}">
                                     <span class="input-group-text">条</span>
                                 </div>
-                                <div class="form-text" style="font-size:0.75rem;">未回复消息达到此数量时主动检查。</div>
+                                <div class="form-text u-text-12">未回复消息达到此数量时主动检查。</div>
                             </div>
                             <div class="col-md-6">
                                 <label class="form-label fw-semibold">触发间隔上限</label>
@@ -2261,7 +2092,7 @@ const App = {
                                     <input type="number" class="form-control" name="trigger_interval_minutes" min="0" max="1440" value="${triggerMinutes}">
                                     <span class="input-group-text">分钟</span>
                                 </div>
-                                <div class="form-text" style="font-size:0.75rem;">距上一条 AI 消息达到此时长时主动检查。</div>
+                                <div class="form-text u-text-12">距上一条 AI 消息达到此时长时主动检查。</div>
                             </div>
                         </div>
 
@@ -2273,7 +2104,7 @@ const App = {
                                     <input type="number" class="form-control" name="cooldown_msg_threshold" min="0" max="1000" value="${cooldownMsgs}">
                                     <span class="input-group-text">条</span>
                                 </div>
-                                <div class="form-text" style="font-size:0.75rem;">Judge 拒绝后，在收到这些消息前跳过主动检查。</div>
+                                <div class="form-text u-text-12">Judge 拒绝后，在收到这些消息前跳过主动检查。</div>
                             </div>
                             <div class="col-md-6">
                                 <label class="form-label fw-semibold">冷却时长</label>
@@ -2281,7 +2112,7 @@ const App = {
                                     <input type="number" class="form-control" name="cooldown_minutes" min="0" max="1440" value="${cooldownMinutes}">
                                     <span class="input-group-text">分钟</span>
                                 </div>
-                                <div class="form-text" style="font-size:0.75rem;">Judge 拒绝后，在此时长内跳过主动检查。</div>
+                                <div class="form-text u-text-12">Judge 拒绝后，在此时长内跳过主动检查。</div>
                             </div>
                         </div>
                     </div>

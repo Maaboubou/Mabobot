@@ -8,7 +8,25 @@ configuration layers are replaced.
 
 The console is organized around operator tasks, not backend modules:
 
-1. **Overview** — health, WeChat connection, issues and recent activity.
+1. **Overview** — the duty desk: a single status band (WeChat connection,
+   listener count, last activity, background tasks, disk plus hardware
+   temperature and host uptime), a five-second liveness pulse (a dot plus
+   "messages in the last five minutes" beside the event timeline, and a
+   seconds-level relative time on the status band's last-message fact), an
+   attention queue that only appears when something needs a human, today's
+   KPIs with seven-day sparklines, 24-hour activity, Codex quota/usage and a
+   system-level event timeline. Raw chat traffic and configuration cards do
+   not belong here; every number links to the page that owns it.
+
+   The page refreshes as a whole every 30 seconds; only the pulse runs on its
+   own five-second timer (`GET /api/dashboard/pulse`, an in-memory read of the
+   chat-log index that may rescan sooner than the trend window). It stops when
+   the tab is switched away or the document is hidden, keeps the previous
+   reading and marks it stale when a request fails, and drops every animation
+   under `prefers-reduced-motion`. Below 1199.98px the two columns stack and
+   each panel returns to block layout — keeping the subgrid there let the
+   chart's `min-width` widen the implicit column and clip the right half of
+   both activity panels.
 2. **Chats** — group/private-chat configuration and effective capabilities.
 3. **AI Assistant** — first-class Chatbot configuration, roles, Judge, models,
    chat archives and diagnostics.
@@ -50,6 +68,27 @@ secrets and hide storage layout from the browser. Migrated manifests may add:
 The old `enabled_chats` field is compatibility-only. Chat assignment is owned
 by the Chats domain.
 
+### Implemented plugin chat configuration
+
+Plugin fields opt in with `config_schema.<key>.scope: "global_and_chat"`;
+sensitive fields are excluded. Overrides are keyed by database chat ID and
+plugin ID in `chat_plugin_configs`, independently of grants. A partial chat
+policy PATCH saves overrides atomically with any other submitted policy fields
+using the existing chat version. Runtime API v2 exposes
+`context.config.resolve(chat_id=...)` for a fresh effective configuration.
+Listener declarations and execution order remain global.
+
+Named templates in `plugin_config_templates` store complete snapshots of the
+overridable fields and have their own optimistic version. Importing copies
+values into the editor; template changes never propagate to chats.
+
+The translation editor saves directly through the chat policy endpoint and
+updates the parent form's version without discarding other unsaved fields.
+The generic plugin editor still stages a draft for the chat page to save.
+These UI paths share the same backend contract. See the
+[plugin chat configuration guide](PLUGIN_CHAT_CONFIGURATION.md) for field
+declarations, runtime examples, endpoints and validation boundaries.
+
 ## Routing contract
 
 Every main view has a stable URL and supports refresh, deep links and browser
@@ -84,11 +123,15 @@ forms or duplicate field definitions.
 
 ## Visual and theme contract
 
-The console uses a warm editorial system based on `tmp/DESIGN.md`: a cream
-canvas, coral primary actions, warm ink text, hairline borders and dark product
-surfaces. Product headings use a serif display stack while controls and body
-copy use the sans-serif UI stack. Color must be referenced through semantic CSS
-variables; page-level features must not introduce a separate palette.
+The console uses a warm editorial system: a cream canvas, coral primary
+actions, warm ink text, hairline borders and dark product surfaces. Product
+headings use a serif display stack while controls and body copy use the
+sans-serif UI stack. Color must be referenced through semantic CSS variables;
+page-level features must not introduce a separate palette.
+
+`docs/UI_DESIGN_STANDARD.md` is the authoritative UI standard for tokens,
+component shapes, interaction feedback and copy. This document stays
+authoritative for information architecture, routing and configuration layers.
 
 Light and dark themes are first-class. The browser restores `mabobot.colorTheme`
 before loading styles to avoid a theme flash. If no choice is stored, the

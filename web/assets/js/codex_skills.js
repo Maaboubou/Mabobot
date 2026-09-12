@@ -8,9 +8,7 @@ const CodexSkills = {
     bound: false,
 
     escape(value) {
-        return String(value ?? '')
-            .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
-            .replaceAll('"', '&quot;').replaceAll("'", '&#039;');
+        return UI.escapeHtml(value);
     },
 
     bind() {
@@ -190,7 +188,7 @@ const CodexSkills = {
         const archive = document.getElementById('codexSkillArchiveButton');
         if (title) title.textContent = skill.name;
         if (meta) {
-            const date = skill.modified_at ? new Date(skill.modified_at).toLocaleString() : '';
+            const date = skill.modified_at ? UI.formatDateTime(skill.modified_at) : '';
             const source = skill.origin?.provider === 'github'
                 ? ` · GitHub ${skill.origin.repository || ''}@${skill.origin.ref || ''}`
                 : '';
@@ -463,7 +461,7 @@ const CodexSkills = {
             return;
         }
         container.innerHTML = items.map(item => {
-            const date = item.deleted_at ? new Date(item.deleted_at).toLocaleString() : '';
+            const date = item.deleted_at ? UI.formatDateTime(item.deleted_at) : '';
             return `<div class="codex-skill-trash-item"><span><strong>${this.escape(item.name)}</strong><small>${this.escape(date || '删除时间未知')}</small></span><button type="button" class="btn btn-outline-primary btn-sm" data-restore-skill="${this.escape(item.trash_id)}"><i class="bi bi-arrow-counterclockwise me-1"></i>恢复</button></div>`;
         }).join('');
         container.querySelectorAll('[data-restore-skill]').forEach(button => {

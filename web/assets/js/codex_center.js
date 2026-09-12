@@ -29,9 +29,7 @@ const CodexCenter = {
     },
 
     escape(value) {
-        return String(value ?? '')
-            .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
-            .replaceAll('"', '&quot;').replaceAll("'", '&#039;');
+        return UI.escapeHtml(value);
     },
 
     async load({ quiet = false } = {}) {
@@ -330,7 +328,7 @@ const CodexCenter = {
             if (select) {
                 const selected = select.value;
                 select.innerHTML = this.catalogProviders.map(provider => `
-                    <option value="${this.escape(provider.id)}">${this.escape(provider.label)}${provider.model_count ? ` · ${Number(provider.model_count).toLocaleString()} 个模型` : ''}</option>`).join('');
+                    <option value="${this.escape(provider.id)}">${this.escape(provider.label)}${provider.model_count ? ` · ${UI.formatNumber(provider.model_count)} 个模型` : ''}</option>`).join('');
                 const next = this.catalogProviders.some(provider => provider.id === selected)
                     ? selected
                     : (this.catalogProviders.some(provider => provider.id === 'openai') ? 'openai' : this.catalogProviders[0]?.id || '');
@@ -405,7 +403,7 @@ const CodexCenter = {
         if (!count) return '';
         if (count >= 1000000) return `${(count / 1000000).toFixed(count % 1000000 ? 1 : 0)}M`;
         if (count >= 1000) return `${Math.round(count / 1000)}K`;
-        return count.toLocaleString();
+        return UI.formatNumber(count);
     },
 
     renderProfileCatalog(query = '') {
@@ -941,7 +939,7 @@ const CodexCenter = {
         const contextWindow = Number(model.context_window || 0);
         const context = document.getElementById('codexOAuthContextWindow');
         if (context) context.value = contextWindow >= 4096
-            ? `${contextWindow.toLocaleString()} tokens`
+            ? `${UI.formatNumber(contextWindow)} tokens`
             : '由 Codex 账号配置决定';
         const capabilities = [];
         if ((model.input_modalities || []).includes('image')) capabilities.push('图片输入');

@@ -122,7 +122,7 @@ const SystemTools = {
                     </div>
                     <div class="system-tool-facts">
                         <div><span>当前版本</span><strong>${this.versionText(current)}</strong>${tool.runtime_version && tool.runtime_version !== current ? `<small>运行中 ${this.esc(tool.runtime_version)}</small>` : ''}</div>
-                        <div><span>最新稳定版</span><strong class="${tool.update_available ? 'text-primary' : ''}">${this.versionText(available)}</strong><small>${tool.checked_at ? `检查于 ${this.esc(new Date(tool.checked_at).toLocaleString('zh-CN', { hour12: false }))}` : '尚未检查'}</small></div>
+                        <div><span>最新稳定版</span><strong class="${tool.update_available ? 'text-primary' : ''}">${this.versionText(available)}</strong><small>${tool.checked_at ? `检查于 ${this.esc(UI.formatDateTime(tool.checked_at))}` : '尚未检查'}</small></div>
                         <div><span>来源</span><strong>${this.esc(tool.source_label || '未识别')}</strong><small>${tool.managed ? '可由 Mabobot 管理' : '外部安装仅检测'}</small></div>
                     </div>
                 </div>

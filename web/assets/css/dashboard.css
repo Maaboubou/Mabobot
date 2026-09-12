@@ -1,11 +1,5 @@
-/* Dashboard layout: one compact overview, one activity stream and one runtime panel. */
-.min-w-0 {
-    min-width: 0;
-}
-
-.min-h-0 {
-    min-height: 0 !important;
-}
+/* Overview duty desk: one continuous surface split into bands —
+   status, attention, today's KPIs, 24-hour activity, quota/usage, timeline. */
 
 .custom-scrollbar::-webkit-scrollbar {
     width: 5px;
@@ -27,216 +21,89 @@
     box-shadow: var(--shadow-sm);
 }
 
+/* ===== 骨架 ===== */
+
 .dashboard-shell {
     display: grid;
-    gap: 1rem;
+    width: 100%;
+    min-width: 0;
+    max-width: 1500px;
+    grid-template-columns: minmax(0, 1fr);
+    margin: 0 auto;
 }
 
-.dashboard-overview {
-    overflow: hidden;
-}
-
-.dashboard-status-row {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    align-items: center;
-    min-height: 52px;
-    padding: 0.65rem 1rem;
-}
-
-.dashboard-health-metrics {
-    display: flex;
-    align-items: center;
-}
-
-.dashboard-health-metrics > div,
-.dashboard-health-metrics > a {
-    display: flex;
-    align-items: center;
-    gap: 0.42rem;
-    min-width: 86px;
-    padding: 0 0.85rem;
-    border-left: 1px solid var(--border-color);
-}
-
-.dashboard-health-metrics > :first-child {
-    padding-left: 0;
-    border-left: 0;
-}
-
-.dashboard-health-metrics > a {
-    color: inherit;
-    text-decoration: none;
-}
-
-.dashboard-health-metrics > a:hover strong {
-    color: var(--primary);
-}
-
-.dashboard-health-metrics span,
-.dashboard-updated-at {
-    color: var(--text-soft);
-    font-size: 0.65rem;
-}
-
-.dashboard-health-metrics strong {
-    color: var(--text-main);
-    font-size: 0.72rem;
-    font-weight: 600;
-    white-space: nowrap;
-}
-
-.dashboard-updated-at {
-    padding-left: 0.25rem;
-    white-space: nowrap;
-}
-
-.dashboard-inline-state {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    font-size: inherit;
-    font-weight: 600;
-}
-
-.dashboard-inline-state.online {
-    color: var(--success);
-}
-
-.dashboard-inline-state.offline {
-    color: var(--text-soft);
-}
-
-.dashboard-inline-state.warning {
-    color: var(--warning);
-}
-
-.dashboard-inline-state .bi-circle-fill {
-    font-size: 0.4rem;
-}
-
-.dashboard-kpi-grid {
-    display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-    background: color-mix(in srgb, var(--bg-soft) 50%, var(--bg-card));
+.dashboard-shell > * + * {
     border-top: 1px solid var(--border-color);
 }
 
-.dashboard-kpi {
-    position: relative;
-    display: grid;
-    align-content: center;
-    gap: 0.08rem;
-    min-width: 0;
-    min-height: 72px;
-    padding: 0.65rem 1rem;
-    border-left: 1px solid var(--border-color);
-}
-
-.dashboard-kpi:first-child {
-    border-left: 0;
-}
-
-.dashboard-kpi.has-errors {
-    background: var(--danger-soft);
-}
-
-.dashboard-kpi-action {
-    color: inherit;
-    text-align: left;
-    text-decoration: none;
-    transition: background-color var(--transition-base), box-shadow var(--transition-base);
-}
-
-.dashboard-kpi-action:hover {
-    background: var(--bg-soft);
-}
-
-.dashboard-kpi-action.has-errors:hover {
-    background: color-mix(in srgb, var(--danger) 14%, var(--bg-card));
-}
-
-.dashboard-kpi-action:focus-visible {
-    z-index: 1;
-    outline: 2px solid var(--primary);
-    outline-offset: -2px;
-}
-
-.dashboard-kpi-label {
+.dashboard-band-head {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
-    color: var(--text-secondary);
-    font-size: 0.67rem;
-    white-space: nowrap;
+    justify-content: space-between;
+    gap: 12px;
 }
 
-.dashboard-kpi-label i {
-    color: var(--primary);
-    font-size: 0.72rem;
+.dashboard-band-title {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    min-width: 0;
 }
 
-.dashboard-kpi.has-errors .dashboard-kpi-label,
-.dashboard-kpi.has-errors .dashboard-kpi-label i,
-.dashboard-kpi.has-errors strong {
-    color: var(--danger);
-}
-
-.dashboard-kpi-arrow {
-    position: absolute;
-    right: 1rem;
-    bottom: 1rem;
-    color: var(--text-soft);
-    font-size: 0.65rem;
-    opacity: 0.7;
-}
-.dashboard-kpi strong {
+.dashboard-band-head h6,
+.dashboard-section-heading h6 {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
     color: var(--text-main);
-    font-size: 1.25rem;
-    font-weight: 650;
-    line-height: 1.2;
 }
 
-.dashboard-kpi em {
-    position: absolute;
-    right: 1rem;
-    bottom: 0.86rem;
-    max-width: 48%;
-    overflow: hidden;
+.dashboard-band-head small,
+.dashboard-section-heading small {
+    font-size: 11px;
     color: var(--text-soft);
-    font-size: 0.6rem;
-    font-style: normal;
-    text-overflow: ellipsis;
-    white-space: nowrap;
 }
 
-.dashboard-content-grid {
-    display: grid;
-    grid-template-columns: minmax(0, 1.7fr) minmax(330px, 0.85fr);
-    align-items: start;
-    gap: 1rem;
-}
-
-.card-header-clean,
 .dashboard-section-heading {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.75rem;
+    gap: 12px;
+    margin-bottom: 12px;
 }
 
-.card-header-clean {
-    min-height: 52px;
-    padding: 0.7rem 1rem;
-    border-bottom: 1px solid var(--border-color);
-}
-
-.card-header-clean h6,
-.dashboard-section-heading h6 {
-    margin: 0;
-    color: var(--text-main);
-    font-size: 0.82rem;
+.dashboard-count-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: var(--bg-soft);
+    color: var(--text-secondary);
+    font-size: 11px;
     font-weight: 600;
+}
+
+.dashboard-count-pill.is-critical {
+    background: var(--danger-soft);
+    color: var(--danger);
+}
+
+.dashboard-count-pill.is-warning {
+    background: var(--warning-soft);
+    color: var(--warning);
+}
+
+.dashboard-empty {
+    padding: 12px 0;
+    color: var(--text-secondary);
+    font-size: 12px;
 }
 
 .dashboard-text-action,
@@ -251,9 +118,10 @@
 .dashboard-text-action {
     display: inline-flex;
     align-items: center;
-    gap: 0.35rem;
-    padding: 0.3rem 0;
-    font-size: 0.69rem;
+    gap: 4px;
+    padding: 4px 6px;
+    font-size: 11px;
+    white-space: nowrap;
 }
 
 .dashboard-text-action:hover,
@@ -262,461 +130,1090 @@
     background: var(--accent-soft);
 }
 
+.dashboard-text-action:focus-visible,
+.dashboard-icon-button:focus-visible,
+.dashboard-filter:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 1px;
+}
+
 .dashboard-icon-button {
     display: grid;
-    width: 1.75rem;
-    height: 1.75rem;
+    width: 28px;
+    height: 28px;
     padding: 0;
     place-items: center;
-    font-size: 0.72rem;
+    font-size: 14px;
 }
 
-.dashboard-activity-card {
-    display: flex;
-    height: clamp(500px, calc(100vh - 242px), 800px);
-    min-height: 430px;
-    flex-direction: column;
-    overflow: hidden;
+.dashboard-panel-foot {
+    margin-top: 12px;
 }
 
-.dashboard-activity-list {
-    min-height: 0;
-    flex: 1 1 auto;
-    overflow-y: auto;
-    scrollbar-color: color-mix(in srgb, var(--text-soft) 30%, transparent) transparent;
-    scrollbar-width: thin;
+.dashboard-panel-foot a {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--text-secondary);
+    font-size: 11px;
+    text-decoration: none;
 }
 
-#recentActivities::-webkit-scrollbar {
-    width: 10px;
+.dashboard-panel-foot a:hover {
+    color: var(--primary);
 }
 
-#recentActivities::-webkit-scrollbar-track {
-    background: transparent;
+[data-stale='true'] {
+    opacity: 0.72;
 }
 
-#recentActivities::-webkit-scrollbar-thumb {
-    min-height: 44px;
-    border: 4px solid transparent;
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--text-soft) 30%, transparent);
-    background-clip: padding-box;
+/* 折叠靠 hidden 属性：组件自身的 display 会盖掉浏览器默认的 [hidden]，
+   这里统一压回来，否则收起的列表只剩一个空壳还占着地方。 */
+.dashboard-shell [hidden] {
+    display: none;
 }
 
-#recentActivities:hover::-webkit-scrollbar-thumb {
-    border-width: 3px;
-    background: color-mix(in srgb, var(--text-secondary) 42%, transparent);
-    background-clip: padding-box;
+/* ===== 状态带 ===== */
+
+.dashboard-status-band {
+    display: grid;
+    grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px 16px;
+    padding: 12px 16px;
 }
 
-#recentActivities::-webkit-scrollbar-thumb:hover {
-    border-width: 2px;
-    background: color-mix(in srgb, var(--primary) 64%, transparent);
-    background-clip: padding-box;
-}
-
-.dashboard-activity-row {
+.dashboard-verdict {
     display: flex;
     align-items: center;
-    gap: 0.65rem;
-    min-height: 52px;
-    padding: 0.5rem 1rem;
-    border-bottom: 1px solid var(--border-soft);
+    gap: 12px;
+    min-width: 0;
+}
+
+.dashboard-verdict > i {
+    font-size: 16px;
+    color: var(--text-soft);
+}
+
+.dashboard-verdict strong {
+    display: block;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-main);
+}
+
+.dashboard-verdict small {
+    display: block;
+    margin-top: 2px;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.dashboard-verdict[data-tone='ok'] > i {
+    color: var(--success);
+}
+
+.dashboard-verdict[data-tone='warning'] > i {
+    color: var(--warning);
+}
+
+.dashboard-verdict[data-tone='danger'] > i {
+    color: var(--danger);
+}
+
+.dashboard-status-facts {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.dashboard-status-facts li {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 0 12px;
+    border-left: 1px solid var(--border-color);
+}
+
+.dashboard-status-facts li:first-child {
+    padding-left: 0;
+    border-left: 0;
+}
+
+.dashboard-status-facts span {
+    font-size: 11px;
+    color: var(--text-soft);
+}
+
+.dashboard-status-facts strong {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-main);
+    white-space: nowrap;
+}
+
+.dashboard-status-facts li.is-ok strong {
+    color: var(--success);
+}
+
+.dashboard-status-facts li.is-busy strong {
+    color: var(--primary);
+}
+
+.dashboard-status-facts li.is-warning strong {
+    color: var(--warning);
+}
+
+.dashboard-status-facts li.is-danger strong {
+    color: var(--danger);
+}
+
+/* 新消息到达：读数轻闪一下，只改不透明度，不做位移，页面不跳。 */
+.dashboard-status-facts li.is-flash strong {
+    animation: dashboard-value-flash 0.9s ease-out;
+}
+
+@keyframes dashboard-value-flash {
+    0% {
+        opacity: 0.3;
+    }
+
+    100% {
+        opacity: 1;
+    }
+}
+
+.dashboard-status-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.dashboard-updated-at {
+    font-size: 11px;
+    color: var(--text-soft);
+    white-space: nowrap;
+}
+
+/* ===== 待处理 ===== */
+
+.dashboard-attention-band {
+    padding: 16px;
+    background: color-mix(in srgb, var(--warning) 5%, var(--bg-card));
+}
+
+.dashboard-attention-heading {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+.dashboard-attention-summary {
+    font-size: 11px;
+    color: var(--text-soft);
+    white-space: nowrap;
+}
+
+.dashboard-attention-list {
+    display: grid;
+    gap: 8px;
+    margin: 12px 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+.dashboard-attention-item {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 8px 12px;
+}
+
+.dashboard-attention-item > i {
+    font-size: 14px;
+}
+
+.dashboard-attention-item.is-critical > i {
+    color: var(--danger);
+}
+
+.dashboard-attention-item.is-warning > i {
+    color: var(--warning);
+}
+
+.dashboard-attention-item.is-info > i {
+    color: var(--accent-teal);
+}
+
+.dashboard-attention-copy strong {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-main);
+}
+
+.dashboard-attention-copy p {
+    margin: 2px 0 0;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.dashboard-attention-time {
+    font-size: 11px;
+    color: var(--text-soft);
+    white-space: nowrap;
+}
+
+.dashboard-attention-empty {
+    padding: 8px 0;
+    color: var(--text-secondary);
+    font-size: 12px;
+    list-style: none;
+}
+
+/* ===== 今日 KPI ===== */
+
+.dashboard-kpi-band {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 1px;
+    background: var(--border-color);
+}
+
+.dashboard-kpi {
+    display: grid;
+    align-content: start;
+    gap: 6px;
+    min-width: 0;
+    padding: 12px 16px;
+    background: color-mix(in srgb, var(--bg-soft) 45%, var(--bg-card));
+    color: inherit;
+    text-decoration: none;
+}
+
+.dashboard-kpi-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.dashboard-kpi-label i {
+    font-size: 14px;
+    color: var(--primary);
+}
+
+.dashboard-kpi-value {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+}
+
+.dashboard-kpi-value strong {
+    font-size: 24px;
+    font-weight: 650;
+    line-height: 1.15;
+    color: var(--text-main);
+}
+
+.dashboard-kpi-value em {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-soft);
+    font-size: 11px;
+    font-style: normal;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dashboard-kpi-action {
+    position: relative;
     transition: var(--transition-base);
 }
 
-.dashboard-activity-row:last-child {
-    border-bottom: 0;
-}
-
-.dashboard-activity-row:hover {
+.dashboard-kpi-action:hover {
     background: var(--bg-soft);
 }
 
-.dashboard-activity-icon {
-    display: grid;
-    width: 1.7rem;
-    height: 1.7rem;
-    flex: 0 0 auto;
-    place-items: center;
-    color: var(--primary);
-    background: var(--accent-soft);
-    border-radius: var(--radius-sm);
-    font-size: 0.72rem;
+.dashboard-kpi-action.has-errors .dashboard-kpi-arrow {
+    color: var(--danger);
+    opacity: 1;
 }
 
-.dashboard-activity-icon.bot {
-    color: var(--success);
-    background: var(--success-soft);
-}
-
-.dashboard-activity-title {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
-    min-width: 0;
-}
-
-.dashboard-activity-title strong {
-    color: var(--text-main);
-    font-size: 0.76rem;
+/* 只给失败次数上色：整卡背景和总次数保持中性，避免一眼看上去像整块坏了。 */
+.dashboard-kpi-failure {
+    color: var(--danger);
     font-weight: 600;
 }
 
-.dashboard-activity-title small,
-.dashboard-activity-preview {
+.dashboard-kpi-arrow {
+    position: absolute;
+    right: 16px;
+    bottom: 12px;
     color: var(--text-soft);
-    font-size: 0.66rem;
+    font-size: 14px;
+    opacity: 0.7;
 }
 
-.dashboard-activity-title small {
-    flex: 0 0 auto;
+.dashboard-spark {
+    display: block;
+    width: 100%;
+    height: 28px;
 }
 
-.dashboard-side-panel {
-    display: flex;
+.dashboard-spark.is-empty {
+    visibility: hidden;
+}
+
+.dashboard-spark-area {
+    fill: var(--accent-soft);
+    stroke: none;
+}
+
+.dashboard-spark-line {
+    fill: none;
+    stroke: var(--primary);
+    stroke-width: 1.5;
+    vector-effect: non-scaling-stroke;
+}
+
+.dashboard-spark-dot {
+    fill: var(--primary);
+}
+
+/* ===== 主体双栏 ===== */
+
+.dashboard-split {
+    display: grid;
+    /* 左=额度与用量，右=聊天活动。2:3 不是随手取的：上方 5 个 KPI 格子的
+       分隔线落在 20/40/60/80%，左栏取 40% 正好让这条竖线接上第二条线。 */
+    grid-template-columns: minmax(280px, 2fr) minmax(0, 3fr);
+    /* 两列共用同一组行高（子网格），上下分栏的隔断线才能落在同一条线上。 */
+    grid-template-rows: auto auto;
+    align-items: stretch;
+}
+
+.dashboard-split > .dashboard-panel {
+    display: grid;
+    grid-row: span 2;
+    grid-template-rows: subgrid;
+}
+
+.dashboard-activity-panel {
     min-width: 0;
+}
+
+.dashboard-hourly {
+    position: relative;
+    min-height: 148px;
+}
+
+.dashboard-hourly:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+    border-radius: var(--radius-xs);
+}
+
+.dashboard-hourly-bars {
+    display: grid;
+    grid-template-columns: repeat(24, minmax(0, 1fr));
+    gap: 4px;
+    min-height: 120px;
+}
+
+/* 柱图随分栏行高一起伸缩：共享行高对齐隔断线后，图自己把这一格填满，
+   不会在分隔线上方留一条空白。 */
+.dashboard-chart-section {
+    display: flex;
     flex-direction: column;
-    overflow: hidden;
+    min-height: 0;
+}
+
+.dashboard-chart-section .dashboard-hourly {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+}
+
+.dashboard-chart-section .dashboard-hourly-bars {
+    flex: 1;
+}
+
+.dashboard-hour {
+    display: grid;
+    /* 刻度可以比柱子宽，但不能把柱子的隐式列撑到刻度的内容宽度。 */
+    grid-template-columns: minmax(0, 1fr);
+    /* 刻度行固定高度：没有刻度的整点也要占位，24 根柱子才共用同一基线。 */
+    grid-template-rows: minmax(0, 1fr) 14px;
+    gap: 4px;
+    height: 100%;
+}
+
+.dashboard-hour-track {
+    position: relative;
+    display: flex;
+    align-items: flex-end;
+    height: 100%;
+    border-radius: var(--radius-xs);
+    background: color-mix(in srgb, var(--bg-soft) 70%, transparent);
+}
+
+.dashboard-hour-bar {
+    /* 回复段是柱身的一部分：绝对定位的 <i> 需要以柱子为参照，
+       否则高度百分比会相对整条轨道，小流量的柱子会画成满高。 */
+    position: relative;
+    display: block;
+    width: 100%;
+    height: 0;
+    border-radius: var(--radius-xs);
+    background: color-mix(in srgb, var(--primary) 45%, var(--bg-card));
+}
+
+.dashboard-hour-bar i {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    height: 0;
+    border-radius: var(--radius-xs);
+    background: var(--primary);
+}
+
+.dashboard-hour small {
+    font-size: 10px;
+    line-height: 14px;
+    color: var(--text-soft);
+    text-align: center;
+    white-space: nowrap;
+}
+
+.dashboard-hour.is-active .dashboard-hour-track {
+    background: color-mix(in srgb, var(--primary) 14%, transparent);
+}
+
+/* 柱图读数浮层：桌面悬浮、手机点按、键盘左右键都会出现。 */
+.dashboard-hour-tip {
+    position: absolute;
+    top: 0;
+    z-index: 2;
+    display: grid;
+    gap: 2px;
+    padding: 6px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-card);
+    box-shadow: var(--shadow-md);
+    color: var(--text-secondary);
+    font-size: 11px;
+    line-height: 1.35;
+    white-space: nowrap;
+    transform: translateX(-50%);
+    pointer-events: none;
+}
+
+.dashboard-hour-tip strong {
+    color: var(--text-main);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+@media (max-width: 575.98px) {
+    /* 保留每小时柱子，六小时一个刻度；文字溢出不影响柱宽。 */
+    .dashboard-hour:nth-child(6n + 4) small {
+        visibility: hidden;
+    }
+
+    .dashboard-hour:first-child small {
+        text-align: left;
+    }
+}
+
+.dashboard-runtime-panel {
+    border-right: 1px solid var(--border-color);
 }
 
 .dashboard-panel-section {
-    min-width: 0;
-    flex: 0 0 auto;
+    padding: 16px;
 }
 
 .dashboard-panel-section + .dashboard-panel-section {
     border-top: 1px solid var(--border-color);
 }
 
-.dashboard-chat-section {
-    display: flex;
-    min-height: 0;
-    flex: 0 0 auto;
-    flex-direction: column;
-}
-
-.dashboard-chat-section .dashboard-side-body {
-    min-height: 0;
-}
-
-.dashboard-section-heading {
-    min-height: 44px;
-    padding: 0.65rem 1rem 0.45rem;
-}
-
 .dashboard-side-body {
-    padding: 0.35rem 1rem 0.85rem;
+    min-width: 0;
 }
 
-.dashboard-count-pill {
-    color: var(--primary);
-    font-size: 0.7rem;
-    font-weight: 650;
+/* 用量 */
+
+.dashboard-usage-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 12px;
 }
+
+.dashboard-usage-grid > div {
+    display: grid;
+    gap: 2px;
+}
+
+.dashboard-usage-grid span {
+    font-size: 11px;
+    color: var(--text-soft);
+}
+
+.dashboard-usage-grid strong {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-main);
+}
+
+.dashboard-usage-grid strong.is-error {
+    color: var(--danger);
+}
+
+.dashboard-model-mix {
+    display: grid;
+    gap: 6px;
+    margin-top: 12px;
+}
+
+.dashboard-model-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 64px auto;
+    align-items: center;
+    gap: 8px;
+}
+
+.dashboard-model-name {
+    overflow: hidden;
+    font-size: 11px;
+    color: var(--text-secondary);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dashboard-model-track,
+.dashboard-chat-track,
+.dashboard-resource-track {
+    display: block;
+    height: 4px;
+    border-radius: 999px;
+    background: var(--bg-soft);
+}
+
+.dashboard-model-track i,
+.dashboard-chat-track i,
+.dashboard-resource-track i {
+    display: block;
+    height: 100%;
+    border-radius: 999px;
+    background: var(--primary);
+}
+
+.dashboard-model-row em {
+    font-size: 11px;
+    font-style: normal;
+    color: var(--text-soft);
+}
+
+/* 活跃聊天 */
+
+.dashboard-chat-list {
+    display: grid;
+    gap: 10px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.dashboard-chat-list li {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 4px 8px;
+}
+
+.dashboard-rank-index {
+    display: grid;
+    width: 16px;
+    height: 16px;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--bg-soft);
+    color: var(--text-soft);
+    font-size: 10px;
+}
+
+.dashboard-chat-copy {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+}
+
+.dashboard-chat-copy strong {
+    overflow: hidden;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-main);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dashboard-rank-count {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-main);
+}
+
+.dashboard-chat-list em {
+    grid-column: 2 / 4;
+    font-size: 10px;
+    font-style: normal;
+    color: var(--text-soft);
+}
+
+.dashboard-chat-list em.is-warning {
+    color: var(--warning);
+}
+
+/* Codex 额度 */
 
 .dashboard-codex-meta {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.5rem;
-    margin-bottom: 0.5rem;
-}
-
-.dashboard-codex-meta .dashboard-inline-state {
-    font-size: 0.68rem;
+    gap: 8px;
+    font-size: 11px;
 }
 
 .dashboard-codex-meta small {
     color: var(--text-soft);
-    font-size: 0.62rem;
+}
+
+.dashboard-inline-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.dashboard-inline-state i {
+    font-size: 10px;
+}
+
+.dashboard-inline-state.is-ok {
+    color: var(--success);
+}
+
+.dashboard-inline-state.is-danger {
+    color: var(--danger);
+}
+
+.dashboard-inline-state.is-warning {
+    color: var(--warning);
 }
 
 .dashboard-codex-identity {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    padding: 0.42rem 0.55rem;
-    color: var(--text-secondary);
-    background: var(--bg-soft);
-    border-radius: var(--radius-sm);
-    font-size: 0.67rem;
+    display: grid;
+    gap: 2px;
+    margin-top: 8px;
 }
 
 .dashboard-codex-identity strong {
-    color: var(--text-main);
-}
-
-.dashboard-codex-identity span {
-    margin-left: auto;
-}
-
-.dashboard-codex-limits {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.75rem;
-    margin-top: 0.65rem;
-}
-
-.dashboard-codex-limit,
-.dashboard-resource-item {
-    min-width: 0;
-}
-
-.dashboard-codex-limit > div,
-.dashboard-resource-item > div {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
-    margin-bottom: 0.24rem;
-    color: var(--text-secondary);
-    font-size: 0.65rem;
-}
-
-.dashboard-codex-limit strong,
-.dashboard-resource-item strong {
-    color: var(--text-main);
-    font-size: 0.69rem;
-}
-
-.dashboard-codex-limit small {
-    display: block;
-    margin-top: 0.25rem;
     overflow: hidden;
-    color: var(--text-soft);
-    font-size: 0.57rem;
+    font-family: var(--font-code);
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-main);
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-.dashboard-resource-track {
+.dashboard-codex-identity span {
+    font-size: 11px;
+    color: var(--text-soft);
+}
+
+.dashboard-codex-limits {
+    display: grid;
+    gap: 12px;
+    margin-top: 12px;
+}
+
+.dashboard-codex-limit > div {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.dashboard-codex-limit > div strong {
+    font-size: 13px;
+    color: var(--text-main);
+}
+
+.dashboard-codex-limit small {
     display: block;
-    height: 3px;
-    overflow: hidden;
-    background: var(--bg-strong);
-    border-radius: var(--radius-lg);
+    margin-top: 4px;
+    font-size: 10px;
+    color: var(--text-soft);
 }
 
-.dashboard-resource-track i {
-    display: block;
-    height: 100%;
-    background: var(--success);
-    border-radius: inherit;
-}
-
-.dashboard-codex-limit.warning .dashboard-resource-track i,
-.dashboard-resource-item.warning .dashboard-resource-track i {
-    background: var(--warning);
-}
-
-.dashboard-codex-limit.danger .dashboard-resource-track i,
-.dashboard-resource-item.danger .dashboard-resource-track i {
+.dashboard-codex-limit.is-danger .dashboard-resource-track i {
     background: var(--danger);
 }
 
-.dashboard-codex-empty {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.45rem;
-    margin-top: 0.65rem;
-    padding: 0.5rem;
-    color: var(--text-secondary);
-    background: var(--bg-soft);
-    border-radius: var(--radius-sm);
-    font-size: 0.65rem;
+.dashboard-codex-limit.is-warning .dashboard-resource-track i {
+    background: var(--warning);
 }
 
-.dashboard-resource-grid {
+/* ===== 事件时间线 ===== */
+
+.dashboard-timeline-panel {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 0.8rem;
+    align-content: start;
+    gap: 12px;
+    padding: 16px;
 }
 
-.dashboard-temperature-row {
+/* 常驻脉搏：默认显示，不占额外分带。绿点表示最近有消息进来，
+   灰点表示真的静默；配合「最后消息」的秒级相对时间一起表达"还在跑"。 */
+.dashboard-pulse {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--text-soft) 10%, transparent);
+    color: var(--text-secondary);
+    font-size: 11px;
+    white-space: nowrap;
+}
+
+.dashboard-pulse-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--text-soft);
+    opacity: 0.5;
+}
+
+.dashboard-pulse[data-state='recent'] .dashboard-pulse-dot {
+    background: var(--success);
+    opacity: 1;
+}
+
+.dashboard-pulse[data-state='live'] .dashboard-pulse-dot {
+    background: var(--success);
+    opacity: 1;
+    animation: dashboard-pulse-beat 2s ease-in-out infinite;
+}
+
+.dashboard-pulse.is-flash {
+    animation: dashboard-pulse-flash 0.9s ease-out;
+}
+
+@keyframes dashboard-pulse-beat {
+    50% {
+        opacity: 0.3;
+        transform: scale(0.72);
+    }
+}
+
+@keyframes dashboard-pulse-flash {
+    0% {
+        background: color-mix(in srgb, var(--primary) 20%, transparent);
+    }
+
+    100% {
+        background: color-mix(in srgb, var(--text-soft) 10%, transparent);
+    }
+}
+
+.dashboard-timeline-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+@media (max-width: 575.98px) {
+    .dashboard-timeline-panel .dashboard-band-head {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+    }
+
+    .dashboard-timeline-panel .dashboard-band-title {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 6px;
+    }
+
+    .dashboard-pulse {
+        max-width: 100%;
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+
+    .dashboard-pulse-dot {
+        flex-shrink: 0;
+    }
+}
+
+/* 固定高度 + 内部滚动：切换筛选（全部 ↔ 异常）时面板高度不变，
+   否则条目一变少整页就会跟着跳一下。336px 约 6 行，第 7 行露一点边提示可滚动。 */
+.dashboard-timeline {
+    height: 336px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-color: color-mix(in srgb, var(--text-soft) 30%, transparent) transparent;
+    scrollbar-width: thin;
+}
+
+.dashboard-timeline > .dashboard-empty {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
-    margin-top: 0.6rem;
-    padding-top: 0.55rem;
+    justify-content: center;
+    height: 100%;
+    padding: 0;
+}
+
+.dashboard-filter {
+    padding: 4px 10px;
+    border: 1px solid var(--border-color);
+    border-radius: 999px;
+    background: transparent;
     color: var(--text-secondary);
+    font-size: 11px;
+    transition: var(--transition-base);
+}
+
+.dashboard-filter:hover {
+    border-color: var(--border-strong);
+    color: var(--text-main);
+}
+
+.dashboard-filter.is-active {
+    border-color: var(--primary);
+    background: var(--accent-soft);
+    color: var(--primary-active);
+}
+
+.dashboard-timeline-list {
+    display: grid;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.dashboard-timeline-item {
+    display: grid;
+    grid-template-columns: 44px 16px minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 12px;
+    padding: 8px 0;
+}
+
+.dashboard-timeline-item + .dashboard-timeline-item {
     border-top: 1px solid var(--border-soft);
-    font-size: 0.64rem;
 }
 
-.dashboard-temperature-row > div {
-    display: flex;
-    gap: 0.35rem;
-}
-
-.dashboard-temperature {
-    padding: 0.13rem 0.35rem;
-    color: var(--success);
-    background: var(--success-soft);
-    border-radius: var(--radius-lg);
-}
-
-.dashboard-temperature.warning {
-    color: var(--warning);
-    background: var(--warning-soft);
-}
-
-.dashboard-temperature.danger {
-    color: var(--danger);
-    background: var(--danger-soft);
-}
-
-.dashboard-chat-rank {
-    display: grid;
-    grid-template-columns: 1rem minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 0.55rem;
-    min-height: 36px;
-    border-bottom: 1px solid var(--border-soft);
-}
-
-.dashboard-chat-rank:last-child {
-    border-bottom: 0;
-}
-
-.dashboard-rank-index {
+.dashboard-timeline-time {
+    padding-top: 2px;
     color: var(--text-soft);
-    font-size: 0.62rem;
-    font-variant-numeric: tabular-nums;
-    text-align: center;
+    font-family: var(--font-code);
+    font-size: 10px;
 }
 
-.dashboard-chat-rank > div {
-    display: grid;
+.dashboard-timeline-item > i {
+    padding-top: 2px;
+    font-size: 14px;
+    color: var(--text-soft);
+}
+
+.dashboard-timeline-item.is-error > i {
+    color: var(--danger);
+}
+
+.dashboard-timeline-item.is-warning > i {
+    color: var(--warning);
+}
+
+.dashboard-timeline-item.is-success > i {
+    color: var(--success);
+}
+
+.dashboard-timeline-copy {
     min-width: 0;
 }
 
-.dashboard-chat-rank strong {
-    color: var(--text-main);
-    font-size: 0.71rem;
+.dashboard-timeline-copy strong {
+    display: block;
+    font-size: 13px;
     font-weight: 600;
-}
-
-.dashboard-rank-count {
     color: var(--text-main);
-    font-size: 0.71rem;
-    font-weight: 650;
-    font-variant-numeric: tabular-nums;
 }
 
-@keyframes dashboardFadeIn {
-    from {
-        opacity: 0;
-        transform: translateY(5px);
-    }
-
-    to {
-        opacity: 1;
-        transform: translateY(0);
-    }
+.dashboard-timeline-chat {
+    margin-left: 8px;
+    padding: 1px 6px;
+    border-radius: var(--radius-xs);
+    background: var(--bg-soft);
+    color: var(--text-secondary);
+    font-size: 10px;
+    font-weight: 500;
 }
 
-.fade-in {
-    animation: dashboardFadeIn 0.24s ease-out both;
+.dashboard-timeline-copy p {
+    margin: 2px 0 0;
+    overflow: hidden;
+    color: var(--text-secondary);
+    font-size: 11px;
+    text-overflow: ellipsis;
 }
 
-@media (max-width: 1199px) {
-    .dashboard-updated-at {
-        display: none;
+/* ===== 响应式 ===== */
+
+@media (max-width: 1199.98px) {
+    .dashboard-split {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: none;
     }
 
-    .dashboard-content-grid {
-        grid-template-columns: minmax(0, 1.4fr) minmax(300px, 0.8fr);
-    }
-}
-
-@media (max-width: 991px) {
-    .dashboard-content-grid {
-        grid-template-columns: 1fr;
+    /* 窄屏两栏堆叠后，面板不再是子网格容器：否则面板里的 min-width 子元素
+       会把隐式列撑到内容宽度（24 小时柱图 520px），右侧半截被外壳裁掉。 */
+    .dashboard-split > .dashboard-panel {
+        display: block;
+        grid-row: auto;
+        grid-template-rows: none;
     }
 
-    .dashboard-activity-card {
-        height: 500px;
-        min-height: 380px;
-    }
-
-}
-
-@media (max-width: 767px) {
-    .dashboard-shell {
-        gap: 0.65rem;
-    }
-
-    .dashboard-status-row {
-        grid-template-columns: 1fr;
-        padding: 0.7rem 0.8rem;
-    }
-
-    .dashboard-health-metrics {
+    .dashboard-split > .dashboard-runtime-panel {
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 0.6rem;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
     }
 
-    .dashboard-health-metrics > div,
-    .dashboard-health-metrics > a {
-        min-width: 0;
-        padding: 0;
-        border-left: 0;
+    .dashboard-runtime-panel {
+        border-right: 0;
     }
 
-    .dashboard-kpi-grid {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
-    .dashboard-kpi {
-        min-height: 66px;
-        padding: 0.6rem 0.8rem;
-    }
-
-    .dashboard-kpi:nth-child(odd) {
-        border-left: 0;
-    }
-
-    .dashboard-kpi:nth-child(n + 3) {
+    .dashboard-activity-panel {
         border-top: 1px solid var(--border-color);
     }
 
-    .dashboard-kpi:last-child {
-        grid-column: 1 / -1;
+    .dashboard-runtime-panel .dashboard-panel-section + .dashboard-panel-section {
+        border-top: 0;
+        border-left: 1px solid var(--border-color);
+    }
+}
+
+@media (max-width: 991.98px) {
+    .dashboard-status-band {
+        grid-template-columns: minmax(0, 1fr);
     }
 
-    .dashboard-kpi em {
-        right: 0.8rem;
-        bottom: 0.78rem;
+    .dashboard-kpi-band {
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
     }
 
-    .dashboard-content-grid {
-        gap: 0.65rem;
+    .dashboard-split > .dashboard-runtime-panel {
+        grid-template-columns: minmax(0, 1fr);
     }
 
-    .dashboard-activity-card {
-        height: 430px;
+    .dashboard-runtime-panel .dashboard-panel-section + .dashboard-panel-section {
+        border-top: 1px solid var(--border-color);
+        border-left: 0;
+    }
+}
+
+@media (max-width: 767.98px) {
+    /* 手机上不再横向滚动：24 根柱子挤进一屏，缩间隙保证刻度不重叠。 */
+    .dashboard-hourly {
+        overflow-x: visible;
     }
 
-    .dashboard-activity-row {
-        padding-inline: 0.8rem;
+    .dashboard-hourly-bars {
+        min-width: 0;
+        gap: 3px;
     }
 
-    .dashboard-codex-limits,
-    .dashboard-resource-grid {
+    .dashboard-attention-item {
+        grid-template-columns: 16px minmax(0, 1fr) auto;
+    }
+
+    .dashboard-attention-time {
+        display: none;
+    }
+
+    .dashboard-timeline-item {
+        grid-template-columns: 36px 16px minmax(0, 1fr);
+    }
+
+    .dashboard-timeline-item .dashboard-text-action {
+        grid-column: 3;
+        justify-self: start;
+        padding-left: 0;
+    }
+}
+
+@media (max-width: 575.98px) {
+    .dashboard-kpi-band {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
-    .dashboard-resource-item:last-child {
-        grid-column: 1 / -1;
+    /* 5 格两列排布的最后一格独占整行，右侧不留空单元格。 */
+    .dashboard-kpi-band > :last-child {
+        grid-column: span 2;
+    }
+
+    /* 手机上一行放不下"数值 + 说明"，让说明换到第二行，避免被省略号吃掉。 */
+    .dashboard-kpi-value {
+        flex-wrap: wrap;
+        row-gap: 2px;
+    }
+
+    .dashboard-kpi-value em {
+        flex: 1 1 100%;
+    }
+
+    .dashboard-kpi-value strong {
+        font-size: 20px;
+    }
+
+    .dashboard-attention-item {
+        grid-template-columns: 16px minmax(0, 1fr);
+    }
+
+    .dashboard-attention-item .dashboard-text-action {
+        grid-column: 2;
+        justify-self: start;
+        padding-left: 0;
+    }
+
+    .dashboard-status-facts li {
+        border-left: 0;
+        padding-left: 0;
+        padding-right: 16px;
     }
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .fade-in {
+    .dashboard-shell *,
+    .dashboard-shell *::before,
+    .dashboard-shell *::after {
+        transition: none;
         animation: none;
     }
 }

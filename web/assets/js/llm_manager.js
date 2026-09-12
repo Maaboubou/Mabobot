@@ -74,12 +74,7 @@ const LLMManager = {
 
 
     escapeHtml(value) {
-        return String(value ?? '')
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#39;');
+        return UI.escapeHtml(value);
     },
 
     normalizePastedText(value) {
@@ -199,7 +194,7 @@ const LLMManager = {
             const val = Number(num);
             if (val >= 1000000) return (val / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
             if (val >= 1000) return (val / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
-            return val.toLocaleString();
+            return UI.formatNumber(val);
         };
 
         const usage = entry.token_usage || {};
@@ -483,7 +478,7 @@ const LLMManager = {
             if (select) {
                 const selected = select.value;
                 select.innerHTML = '<option value="">选择供应商…</option>' + this.catalogProviders
-                    .map(provider => `<option value="${this.escapeHtml(provider.id)}">${this.escapeHtml(provider.label)} · ${Number(provider.model_count || 0).toLocaleString()} 个模型</option>`)
+                    .map(provider => `<option value="${this.escapeHtml(provider.id)}">${this.escapeHtml(provider.label)} · ${UI.formatNumber(provider.model_count || 0)} 个模型</option>`)
                     .join('');
                 if (selected && this.catalogProviders.some(provider => provider.id === selected)) {
                     select.value = selected;
@@ -969,7 +964,7 @@ const LLMManager = {
                 ? new Date(this.catalogDiscovery.fetched_at)
                 : null;
             const fetchedAt = fetchedDate && !Number.isNaN(fetchedDate.getTime())
-                ? ` · 同步于 ${fetchedDate.toLocaleString('zh-CN', { hour12: false })}`
+                ? ` · 同步于 ${UI.formatDateTime(fetchedDate)}`
                 : '';
             let statusText = '';
             if (status === 'live') statusText = `服务端可用 ${available} 个模型${fetchedAt}`;
@@ -1093,7 +1088,7 @@ const LLMManager = {
         if (!Number.isFinite(number)) return '-';
         if (number >= 1000000) return `${(number / 1000000).toFixed(number % 1000000 ? 1 : 0)}M`;
         if (number >= 1000) return `${(number / 1000).toFixed(number % 1000 ? 1 : 0)}K`;
-        return number.toLocaleString();
+        return UI.formatNumber(number);
     },
 
     renderSharedCredentialStatus() {
@@ -1857,17 +1852,17 @@ const LLMManager = {
     },
 
     usageNumber(value) {
-        return Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 0 });
+        return UI.formatNumber(value || 0, { maximumFractionDigits: 0, fallback: '0' });
     },
 
     usageDate(value) {
-        return value ? this.escapeHtml(String(value).replace('T', ' ').slice(0, 19)) : '—';
+        return value ? this.escapeHtml(UI.formatDateTime(value)) : '—';
     },
 
     usageCosts(metrics) {
         const costs = Object.entries(metrics.costs || {}).map(([currency, amount]) => {
             const label = currency === 'UNSPECIFIED' ? '未声明币种' : currency;
-            const formatted = Number(amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            const formatted = UI.formatMoney(amount);
             return `<span>${this.escapeHtml(label)} ${formatted}</span>`;
         });
         return costs.length ? costs.join('') : '—';
@@ -1992,7 +1987,7 @@ const LLMManager = {
                 const meta = this.usageView === 'task' ? this.getUsageTaskMeta(row.key) : null;
                 const expanded = this.usageExpanded === row.key;
                 const label = meta?.label || row.name;
-                return `<tr class=""><td><button type="button" class="usage-name" data-usage-open="${index}" ${this.usageView === 'task' ? `aria-expanded="${expanded}" ${row.children ? '' : `aria-controls="usageDetail${index}"`}` : ''}><span>${this.escapeHtml(label)}</span><small>${this.escapeHtml(meta ? row.key : kindLabels[row.kind] || '聊天对象')}</small></button></td>
+                return `<tr data-usage-row="${index}"><td><button type="button" class="usage-name" data-usage-open="${index}" ${this.usageView === 'task' ? `aria-expanded="${expanded}" ${row.children ? '' : `aria-controls="usageDetail${index}"`}` : ''}><span>${this.escapeHtml(label)}</span><small>${this.escapeHtml(meta ? row.key : kindLabels[row.kind] || '聊天对象')}</small></button></td>
                     <td>${this.usageNumber(row.metrics.successes)}</td><td>${this.usageTokens(row.metrics)}</td><td class="usage-money">${this.usageCosts(row.metrics)}</td><td>${this.usageNumber(row.metrics.failures)}</td>
                     <td><button type="button" class="usage-row-action" data-usage-open="${index}" aria-label="${this.escapeHtml((expanded ? '收起' : '查看') + label)}" ${meta ? `aria-expanded="${expanded}" ${row.children ? '' : `aria-controls="usageDetail${index}"`}` : ''}>${meta ? expanded ? '收起' : row.children ? '展开' : '详情' : '查看'}</button></td></tr>
                     ${meta && !row.children ? `<tr id="usageDetail${index}" class="usage-detail-row" ${expanded ? '' : 'hidden'}><td colspan="6">${expanded ? this.renderUsageDetail(row) : ''}</td></tr>` : ''}`;
@@ -2005,15 +2000,26 @@ const LLMManager = {
             this.renderUsageTable();
             target.querySelector(`[data-usage-sort="${field}"]`)?.focus();
         }));
-        target.querySelectorAll('[data-usage-open]').forEach(button => button.addEventListener('click', () => {
-            const row = pageRows[Number(button.dataset.usageOpen)];
-            if (this.usageView === 'chat') this.openUsageSubject(row.key);
-            else {
-                this.usageExpanded = this.usageExpanded === row.key ? null : row.key;
-                this.renderUsageTable();
-                target.querySelector(`[data-usage-open="${button.dataset.usageOpen}"]`)?.focus();
+        target.querySelector('.usage-table')?.addEventListener('click', event => {
+            const control = event.target.closest('[data-usage-open]');
+            const rowElement = event.target.closest('tr[data-usage-row]');
+            if (!control && !rowElement) return;
+            // 整行统一：行内控件之外的地方和按钮行为一致，只在选中文本时不误触。
+            if (!control && event.target.closest('a, button, input, select, textarea, label, summary')) return;
+            if (String(window.getSelection()?.toString() || '').trim()) return;
+            const index = Number(control ? control.dataset.usageOpen : rowElement.dataset.usageRow);
+            const row = pageRows[index];
+            if (!row) return;
+            const isActionButton = Boolean(control?.classList.contains('usage-row-action'));
+            if (this.usageView === 'chat') { this.openUsageSubject(row.key); return; }
+            this.usageExpanded = this.usageExpanded === row.key ? null : row.key;
+            this.renderUsageTable();
+            // 鼠标点击不抢焦点（否则第一列会留下焦点态，看起来和点别处不同）；
+            // 键盘触发（Enter/Space 的 click 事件 detail 为 0）要把焦点还给同一行的同一个按钮。
+            if (control && event.detail === 0) {
+                target.querySelector(`tr[data-usage-row="${index}"] ${isActionButton ? '.usage-row-action' : '.usage-name'}`)?.focus();
             }
-        }));
+        });
         target.querySelector('#usagePrev')?.addEventListener('click', () => { this.usagePage--; this.renderUsageTable(); });
         target.querySelector('#usageNext')?.addEventListener('click', () => { this.usagePage++; this.renderUsageTable(); });
         if (this.usageExpanded && target.querySelector('#usageRequestDetails')) this.loadUsageRequests(this.usageExpanded);
@@ -2051,7 +2057,7 @@ const LLMManager = {
             const buckets = {uncached_input_tokens: '普通输入', completion_tokens: '输出', cached_tokens: '缓存读取', cache_write_tokens: '缓存写入'};
             target.innerHTML = result.data.rows.map(row => {
                 const p = row.pricing || {}, snapshot = p.snapshot || {};
-                const amount = p.amount === null || p.amount === undefined ? '—' : `${p.currency || ''} ${Number(p.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                const amount = UI.formatMoney(p.amount, p.currency);
                 const rates = Object.entries(snapshot.rates || {}).map(([key, rate]) => `${buckets[key] || key} ${Number(rate) * 1000000}`).join(' / ');
                 const sourceUrl = /^https:\/\//.test(snapshot.source_url || '') ? snapshot.source_url : '';
                 return `<details><summary>${this.escapeHtml(this.usageDate(row.recorded_at))} · ${this.escapeHtml(row.model)} · ${this.escapeHtml(amount)}</summary><div class="usage-secondary">
@@ -2311,7 +2317,7 @@ const LLMManager = {
         if (!alert) return;
         alert.textContent = message || '';
         alert.classList.toggle('d-none', !message);
-        if (message) alert.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        if (message) UI.scrollIntoView(alert, { block: 'nearest' });
     },
 
     setModelSaveBusy(busy) {
@@ -2809,7 +2815,7 @@ const LLMManager = {
                             <i class="bi bi-link-45deg me-1"></i>
                             测试目标：<code>${this.escapeHtml(tested_url)}</code>
                         </div>
-                        <table class="table table-sm mb-0">
+                        <table class="table table-sm proxy-test-table mb-0">
                             <thead><tr>
                                 <th>通道</th><th>延迟</th><th>详情</th>
                             </tr></thead>
@@ -2862,7 +2868,7 @@ const LLMManager = {
             let html = '';
             for (const [plugin, items] of Object.entries(grouped)) {
                 html += `<div class="list-group-item bg-light border-0 py-1 px-3">
-                    <small class="text-muted fw-semibold" style="font-size:0.7rem;">${this.escapeHtml(this.currentRouteOwners[plugin]?.display_name || plugin)}</small>
+                    <small class="text-muted fw-semibold u-text-11">${this.escapeHtml(this.currentRouteOwners[plugin]?.display_name || plugin)}</small>
                 </div>`;
                 items.forEach(item => {
                     const taskMeta = this.getUsageTaskMeta(item.key);
@@ -2877,9 +2883,9 @@ const LLMManager = {
                             <div>
                                 <span class="me-1">${statusIcon}</span>
                                 <span class="small fw-medium">${this.escapeHtml(taskMeta.label)}</span>
-                                <span class="badge bg-secondary-subtle text-secondary ms-1" style="font-size:0.6rem;">${Number(item.count || 0)}条</span>
+                                <span class="badge bg-secondary-subtle text-secondary ms-1 u-text-10">${Number(item.count || 0)}条</span>
                             </div>
-                            <small class="text-muted" style="font-size:0.65rem;">${timeDisplay}</small>
+                            <small class="text-muted u-text-10">${timeDisplay}</small>
                         </div>
                         <small class="call-source-key">${this.escapeHtml(item.key)}</small>
                     </a>`;
@@ -2950,7 +2956,7 @@ const LLMManager = {
 
             let html = '';
             entries.forEach((entry, idx) => {
-                const time = entry.timestamp ? this.escapeHtml(String(entry.timestamp).replace('T', ' ').substring(0, 19)) : '';
+                const time = entry.timestamp ? this.escapeHtml(UI.formatDateTime(entry.timestamp)) : '';
                 const statusBadge = entry.success
                     ? '<span class="badge bg-success-subtle text-success">成功</span>'
                     : '<span class="badge bg-danger-subtle text-danger">失败</span>';
@@ -2985,15 +2991,15 @@ const LLMManager = {
                                 <span class="text-muted small"><i class="bi bi-calendar2-event me-1"></i>${time}</span>
                             </div>
                             <div class="d-flex flex-wrap justify-content-end gap-2">
-                                <button class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size:0.75rem;"
+                                <button class="btn btn-sm btn-outline-secondary py-0 px-2 u-text-12"
                                     onclick="LLMManager.toggleCallHistoryBody(${idx}, 'req')">
                                     <i class="bi bi-box-arrow-in-down me-1"></i>请求
                                 </button>
-                                ${hasReasoning ? `<button class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size:0.75rem;"
+                                ${hasReasoning ? `<button class="btn btn-sm btn-outline-secondary py-0 px-2 u-text-12"
                                     onclick="LLMManager.toggleCallHistoryBody(${idx}, 'reasoning')">
                                     <i class="bi bi-lightbulb me-1"></i>思维
                                 </button>` : ''}
-                                <button class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size:0.75rem;"
+                                <button class="btn btn-sm btn-outline-secondary py-0 px-2 u-text-12"
                                     onclick="LLMManager.toggleCallHistoryBody(${idx}, 'resp')">
                                     <i class="bi bi-box-arrow-up me-1"></i>响应${attachmentCount ? ` · ${attachmentCount} 附件` : ''}
                                 </button>
@@ -3010,26 +3016,26 @@ const LLMManager = {
                         <div class="px-3 pt-2">
                             <small class="text-muted fw-semibold">📥 请求（${messageCount} 条消息）</small>
                         </div>
-                        <pre class="m-2 p-2 bg-light rounded small" style="max-height:250px; font-size:0.75rem; overflow:auto;"></pre>
+                        <pre class="m-2 p-2 bg-light rounded small u-text-12" style="max-height:250px; overflow:auto"></pre>
                     </div>
                     ${hasReasoning ? `<div class="history-reasoning-body d-none" data-history-index="${idx}" data-history-kind="reasoning">
                         <div class="px-3 pt-2">
                             <small class="text-muted fw-semibold"><i class="bi bi-lightbulb me-1"></i>思维链（${reasoningSize} 个字符）</small>
                         </div>
-                        <div class="m-2 p-2 bg-warning-subtle rounded small" style="max-height:250px; font-size:0.8rem; overflow:auto; white-space:pre-wrap;"></div>
+                        <div class="m-2 p-2 bg-warning-subtle rounded small u-text-13" style="max-height:250px; overflow:auto; white-space:pre-wrap"></div>
                     </div>` : ''}
                     <div class="history-resp-body d-none" data-history-index="${idx}" data-history-kind="resp">
                         <div class="px-3 pt-2">
                             <small class="text-muted fw-semibold">📤 响应（${responseSummary}）</small>
                         </div>
-                        <div class="history-response-text m-2 p-2 bg-light rounded small" style="max-height:250px; font-size:0.8rem; overflow:auto; white-space:pre-wrap;"></div>
+                        <div class="history-response-text m-2 p-2 bg-light rounded small u-text-13" style="max-height:250px; overflow:auto; white-space:pre-wrap"></div>
                         <div class="history-response-attachments d-none px-2 pb-2" aria-label="响应附件">
                         </div>
                     </div>
 
                     ${!entry.success ? `<div class="history-error-body" data-history-index="${idx}" data-history-kind="error">
                         <div class="px-3 pt-2"><small class="text-muted fw-semibold text-danger">❌ 错误</small></div>
-                        <div class="m-2 p-2 bg-danger-subtle rounded small text-danger" style="font-size:0.8rem; white-space:pre-wrap;"></div>
+                        <div class="m-2 p-2 bg-danger-subtle rounded small text-danger u-text-13" style="white-space:pre-wrap"></div>
                     </div>` : ''}
                 </div>`;
             });
@@ -3218,7 +3224,7 @@ const LLMManager = {
         if (!value) return '-';
         const date = typeof value === 'number' ? new Date(value * 1000) : new Date(value);
         if (Number.isNaN(date.getTime())) return String(value);
-        return date.toLocaleString('zh-CN');
+        return UI.formatDateTime(date);
     },
 
     formatJobDuration(job) {
@@ -3332,7 +3338,7 @@ const LLMManager = {
             const number = Number(value || 0);
             if (number >= 1000000) return `${(number / 1000000).toFixed(1).replace(/\.0$/, '')}M`;
             if (number >= 1000) return `${(number / 1000).toFixed(1).replace(/\.0$/, '')}k`;
-            return number.toLocaleString();
+            return UI.formatNumber(number);
         };
         const statusMeta = status => {
             const key = String(status || 'idle');
@@ -3497,7 +3503,7 @@ const LLMManager = {
                             <div><small>最近一轮</small><span>输入 ${formatK(input)} · 输出 ${formatK(completion)} · 缓存 ${formatK(cached)}</span></div>
                             <div><small>当前线程累计</small><span>${usageText(sessionTotal, sessionUsage)}</span></div>
                             <div><small>逻辑会话累计</small><span>${usageText(lifetimeTotal, lifetimeUsage)}</span></div>
-                            <div><small>线程生命周期</small><span>第 ${Number(session.thread_generation || 0).toLocaleString()} 代 · 当前 ${Number(session.turn_count || 0).toLocaleString()} 轮 · 总计 ${Number(session.lifetime_turn_count || 0).toLocaleString()} 轮</span></div>
+                            <div><small>线程生命周期</small><span>第 ${UI.formatNumber(session.thread_generation || 0)} 代 · 当前 ${UI.formatNumber(session.turn_count || 0)} 轮 · 总计 ${UI.formatNumber(session.lifetime_turn_count || 0)} 轮</span></div>
                             <div><small>上下文压缩</small><span>当前 ${Number(session.compaction_count || 0)} 次 · 累计 ${Number(session.lifetime_compaction_count || 0)} 次</span></div>
                             <div><small>推理 / 搜索</small><span>${this.escapeHtml(this.reasoningEffortLabel(session.reasoning_effort))} · ${session.web_search_mode ? this.escapeHtml(session.web_search_mode) : '关闭'}</span></div>
                             <div><small>运行后端</small><span>${this.escapeHtml(session.backend || '-')} · ${this.escapeHtml(session.runtime_profile || '未标记 Profile')} · ${this.escapeHtml(session.access_mode || '-')}</span></div>
@@ -3523,7 +3529,7 @@ const LLMManager = {
                         </td>
                         <td>
                             <div class="codex-cell-main">${this.escapeHtml(session.model || '-')}</div>
-                            <div class="codex-cell-sub">${this.escapeHtml(session.runtime_profile || '未标记 Profile')} · ${Number(session.lifetime_turn_count || session.turn_count || 0).toLocaleString()} 轮</div>
+                            <div class="codex-cell-sub">${this.escapeHtml(session.runtime_profile || '未标记 Profile')} · ${UI.formatNumber(session.lifetime_turn_count || session.turn_count || 0)} 轮</div>
                         </td>
                         <td>${contextHtml}</td>
                         <td>
@@ -3543,7 +3549,7 @@ const LLMManager = {
             }).join('');
             return `
                 <div class="table-responsive">
-                    <table class="codex-compact-table" style="min-width:860px">
+                    <table class="codex-compact-table codex-sessions-table">
                         <thead><tr><th>会话</th><th>状态</th><th>模型</th><th>上下文</th><th>最近 Token</th><th>活动时间</th><th></th></tr></thead>
                         <tbody>${rows}</tbody>
                     </table>
@@ -3570,7 +3576,7 @@ const LLMManager = {
                     </tr>`;
             }).join('');
             return `
-                <div class="table-responsive"><table class="codex-compact-table" style="min-width:760px">
+                <div class="table-responsive"><table class="codex-compact-table codex-jobs-table">
                     <thead><tr><th>来源</th><th>进度</th><th>模型 / Worker</th><th>Token</th><th>耗时</th><th>开始时间</th><th></th></tr></thead>
                     <tbody>${rows}</tbody>
                 </table></div>`;
@@ -3619,7 +3625,7 @@ const LLMManager = {
                 </details>
                 ${active.length ? `<section class="codex-section"><div class="codex-section-head"><h6>正在执行</h6><small>${active.length} 个任务</small></div>${renderJobs(active, true)}</section>` : ''}
                 <section class="codex-section">
-                    <div class="codex-section-head"><h6>会话</h6><small>${sessionCount} 个持久上下文 · 累计 ${Number(sessionStats.lifetime_turn_count || sessionStats.total_turn_count || 0).toLocaleString()} 轮 · 已记录 ${formatK(sessionStats.logical_lifetime_total_tokens || 0)} Token${Number(sessionStats.unknown_usage_session_count || 0) ? ` · ${Number(sessionStats.unknown_usage_session_count)} 个会话统计不完整` : Number(sessionStats.estimated_usage_session_count || 0) ? ` · ${Number(sessionStats.estimated_usage_session_count)} 个会话含估算` : ''}</small></div>
+                    <div class="codex-section-head"><h6>会话</h6><small>${sessionCount} 个持久上下文 · 累计 ${UI.formatNumber(sessionStats.lifetime_turn_count || sessionStats.total_turn_count || 0)} 轮 · 已记录 ${formatK(sessionStats.logical_lifetime_total_tokens || 0)} Token${Number(sessionStats.unknown_usage_session_count || 0) ? ` · ${Number(sessionStats.unknown_usage_session_count)} 个会话统计不完整` : Number(sessionStats.estimated_usage_session_count || 0) ? ` · ${Number(sessionStats.estimated_usage_session_count)} 个会话含估算` : ''}</small></div>
                     ${renderSessions()}
                 </section>
                 <details class="codex-section codex-history" ${this.codexHistoryOpen ? 'open' : ''}>
@@ -3803,13 +3809,13 @@ const LLMManager = {
                     if (event.result_count !== undefined) meta.push(`${event.result_count} 条结果`);
                 } else if (event.item_type === 'agentMessage') {
                     detail = event.phase === 'final_answer' ? '正在整理最终答复' : '正在生成阶段性消息';
-                    if (event.text_chars) meta.push(`${Number(event.text_chars).toLocaleString()} 字符`);
+                    if (event.text_chars) meta.push(`${UI.formatNumber(event.text_chars)} 字符`);
                 } else if (event.item_type === 'reasoning') {
                     detail = '模型正在分析（内部推理内容不展示）';
                 } else if (event.item_type === 'userMessage') {
                     detail = `已提交 ${Number(event.content_items || 0)} 项输入`;
                 } else if (event.type === 'token_usage') {
-                    detail = `输入 ${Number(event.prompt_tokens || 0).toLocaleString()} · 输出 ${Number(event.completion_tokens || 0).toLocaleString()} · 合计 ${Number(event.total_tokens || 0).toLocaleString()} Token`;
+                    detail = `输入 ${UI.formatNumber(event.prompt_tokens || 0)} · 输出 ${UI.formatNumber(event.completion_tokens || 0)} · 合计 ${UI.formatNumber(event.total_tokens || 0)} Token`;
                 } else if (event.type === 'queued') {
                     detail = [event.profile, event.backend].filter(Boolean).join(' · ');
                 } else if (event.type === 'process_started' && event.pid) {
@@ -3817,7 +3823,7 @@ const LLMManager = {
                 } else if (event.type === 'process_completed') {
                     detail = `进程退出码 ${event.returncode ?? '-'}`;
                 } else if (event.type === 'response_ready') {
-                    detail = `回复 ${Number(event.text_chars || 0).toLocaleString()} 字符 · ${Number(event.attachment_count || 0)} 个附件`;
+                    detail = `回复 ${UI.formatNumber(event.text_chars || 0)} 字符 · ${Number(event.attachment_count || 0)} 个附件`;
                 } else if (event.type === 'job_finished' || event.type === 'turn_completed') {
                     detail = statusLabels[event.status] || event.status || detail;
                 }
@@ -3857,11 +3863,11 @@ const LLMManager = {
                     ${job.fallback_reason ? `<span>Exec 原因 <strong class="text-body">${this.escapeHtml(fallbackLabel(job.fallback_reason))}</strong></span>` : ''}
                     ${job.continuity_status === 'pending_replay' ? '<span>连续性 <strong class="text-warning">待下轮自动回放</strong></span>' : ''}
                     <span>耗时 <strong class="text-body">${this.formatJobDuration(job)}</strong></span>
-                    <span>Token <strong class="text-body">${Number(job.total_tokens || 0).toLocaleString()}</strong></span>
+                    <span>Token <strong class="text-body">${UI.formatNumber(job.total_tokens || 0)}</strong></span>
                 </div>
                 <div class="codex-job-input-summary">
-                    <span>消息 <strong>${Number(job.message_count || 0).toLocaleString()}</strong></span>
-                    <span>提示字符 <strong>${Number(job.prompt_chars || 0).toLocaleString()}</strong></span>
+                    <span>消息 <strong>${UI.formatNumber(job.message_count || 0)}</strong></span>
+                    <span>提示字符 <strong>${UI.formatNumber(job.prompt_chars || 0)}</strong></span>
                     <span>输入文件 <strong>${Number(job.input_file_count || 0)}</strong></span>
                     <span>输入图片 <strong>${Number(job.image_count || 0)}</strong></span>
                     <span>输出附件 <strong>${Number(job.attachment_count || 0)}</strong></span>
@@ -3926,7 +3932,7 @@ const LLMManager = {
         if (!chatId) return;
         if (!await UI.confirm(`确定让“${chatId}”在下一条消息时开启新上下文吗？`, {
             title: '开启新上下文',
-            confirmText: '确认',
+            confirmText: '开启新上下文',
             variant: 'warning',
         })) return;
         try {

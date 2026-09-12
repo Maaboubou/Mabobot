@@ -181,10 +181,81 @@ const UI = {
         });
     },
 
+    // 移动端阈值必须和 style.css 的 767.98px 断点保持一致，不要在别处再写死宽度。
+    isMobileViewport() {
+        return window.matchMedia('(max-width: 767.98px)').matches;
+    },
+
+    scrollIntoView(element, options = {}) {
+        element?.scrollIntoView({
+            block: 'start',
+            ...options,
+            behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
+        });
+    },
+
     escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text == null ? '' : String(text);
-        return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        // 全站唯一的转义实现：其他模块一律委托到这里，不要各写一份。
+        // 正则链而不是 DOM 版：无节点分配，且在属性（双引号/单引号）上下文同样安全。
+        return String(text ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    },
+
+    /* ===== 时间与数字格式化（全站唯一实现，各模块不要另写） ===== */
+
+    // 绝对时间：zh-CN、24 小时制、固定 Asia/Shanghai —— 换部署机器显示保持一致。
+    formatDateTime(value, options = {}) {
+        if (value === null || value === undefined || value === '') return '';
+        const date = value instanceof Date ? value : new Date(value);
+        if (Number.isNaN(date.getTime())) return String(value);
+        return date.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false, ...options });
+    },
+
+    // 只显示时刻（用于"更新于 14:03"这类地方）。
+    formatTimeOfDay(value, options = {}) {
+        if (value === null || value === undefined || value === '') return '';
+        const date = value instanceof Date ? value : new Date(value);
+        if (Number.isNaN(date.getTime())) return String(value);
+        return date.toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false, ...options });
+    },
+
+    // 紧凑时间：MM-DD HH:mm（列表、额度重置等空间有限的位置）。
+    formatShortDateTime(value) {
+        return this.formatDateTime(value, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    },
+
+    // 相对时间：刚刚 / 12 分钟前 / 3 小时前 / 2 天前（超过 7 天回落为日期）。
+    formatRelativeTime(value, { fallback = '—' } = {}) {
+        if (value === null || value === undefined || value === '') return fallback;
+        const date = value instanceof Date ? value : new Date(value);
+        if (Number.isNaN(date.getTime())) return fallback;
+        const seconds = Math.round((Date.now() - date.getTime()) / 1000);
+        if (seconds < 0) return this.formatShortDateTime(date);
+        if (seconds < 60) return '刚刚';
+        if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`;
+        if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前`;
+        if (seconds < 7 * 86400) return `${Math.floor(seconds / 86400)} 天前`;
+        return this.formatShortDateTime(date);
+    },
+
+    // 计数/用量：千分位；非数字回落到 fallback（默认 '—'），不再渲染出 NaN。
+    formatNumber(value, { fallback = '—', ...options } = {}) {
+        const number = Number(value);
+        if (!Number.isFinite(number)) return fallback;
+        return number.toLocaleString('zh-CN', options);
+    },
+
+    // 金额：固定两位小数，可带币种；空值回落到 fallback。
+    formatMoney(value, currency = '', fallback = '—') {
+        if (value === null || value === undefined || value === '') return fallback;
+        const number = Number(value);
+        if (!Number.isFinite(number)) return fallback;
+        const text = number.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        return currency ? `${currency} ${text}` : text;
     },
 
     debounce(fn, delay = 300) {
@@ -200,7 +271,7 @@ const UI = {
         const overlay = document.querySelector('.mobile-overlay');
         const toggleBtn = document.querySelector('.mobile-toggle');
         if (!sidebar || !overlay) return;
-        const isMobile = window.innerWidth <= 768;
+        const isMobile = this.isMobileViewport();
         const wasOpen = sidebar.classList.contains('show');
         const shouldShow = Boolean(show) && isMobile;
         if (shouldShow && !wasOpen) {
@@ -247,7 +318,7 @@ const UI = {
             toggleBtn.title = actionLabel;
             toggleBtn.querySelector('[data-mobile-nav-label]')?.replaceChildren(document.createTextNode(actionLabel));
         };
-        const isMobile = window.innerWidth <= 768;
+        const isMobile = this.isMobileViewport();
         if (!isMobile) {
             sidebar.classList.remove('show');
             overlay.classList.remove('show');
@@ -267,7 +338,7 @@ const UI = {
 
     handleMobileSidebarKeydown(event) {
         const sidebar = document.getElementById('sidebarNavigation');
-        if (!sidebar?.classList.contains('show') || window.innerWidth > 768) return;
+        if (!sidebar?.classList.contains('show') || !this.isMobileViewport()) return;
         if (event.key === 'Escape') {
             event.preventDefault();
             this.toggleSidebar(false);
@@ -340,7 +411,7 @@ const UI = {
         if (!this.routes[tabId]) tabId = 'dashboard';
         const logsPageActive = tabId === 'logs';
         document.body.classList.toggle('logs-page-active', logsPageActive);
-        if (logsPageActive && window.innerWidth <= 768) {
+        if (logsPageActive && this.isMobileViewport()) {
             window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
             const mainContent = document.querySelector('.main-content');
             if (mainContent) mainContent.scrollTop = 0;
@@ -375,7 +446,7 @@ const UI = {
 
 
         // Close sidebar on mobile
-        if (window.innerWidth <= 768) UI.toggleSidebar(false);
+        if (this.isMobileViewport()) UI.toggleSidebar(false);
 
         // Update Title
         const titleMap = {
@@ -478,9 +549,9 @@ const UI = {
             </style>
             <div class="rx-ring"></div>
             <h4 style="font-weight:300;letter-spacing:.05em;margin-bottom:8px;">${this.escapeHtml(title)}</h4>
-            <div class="rx-status" style="color:var(--text-muted-on-dark);font-size:.9rem;margin-bottom:24px;" id="rx-status-text">${this.escapeHtml(statusMessage)}</div>
+            <div class="rx-status u-text-15" style="color:var(--text-muted-on-dark); margin-bottom:24px" id="rx-status-text">${this.escapeHtml(statusMessage)}</div>
             <div class="rx-dots"><span></span><span></span><span></span></div>
-            <div style="margin-top:28px;color:var(--text-muted-on-dark);font-size:.8rem;">
+            <div class="u-text-13">
                 已等待 <span id="rx-elapsed">0</span> 秒 &nbsp;·&nbsp; 连接恢复后将自动刷新
             </div>
         `;
@@ -591,14 +662,19 @@ const UI = {
     },
 
     confirm(message, options = {}) {
+        // 顺序展示，避免第二次请求移除现有模态框、遗留未完成的 Promise。
+        const pending = (this.confirmQueue || Promise.resolve()).then(() => this.showConfirm(message, options));
+        this.confirmQueue = pending.catch(() => false);
+        return pending;
+    },
+
+    showConfirm(message, options = {}) {
         if (typeof bootstrap === 'undefined' || !bootstrap.Modal) {
             return Promise.resolve(window.confirm(message));
         }
 
-        const old = document.getElementById('uiConfirmModal');
-        if (old) old.remove();
-
-        const confirmText = options.confirmText || '确认';
+        const trigger = document.activeElement;
+        const confirmText = options.confirmText || '继续';
         const cancelText = options.cancelText || '取消';
         const title = options.title || '请确认';
         const requestedVariant = options.variant || 'primary';
@@ -610,15 +686,17 @@ const UI = {
         modalEl.className = 'modal fade';
         modalEl.id = 'uiConfirmModal';
         modalEl.tabIndex = -1;
+        modalEl.setAttribute('aria-labelledby', 'uiConfirmTitle');
+        modalEl.setAttribute('aria-describedby', 'uiConfirmMessage');
         modalEl.innerHTML = `
             <div class="modal-dialog modal-dialog-centered">
                 <div class="modal-content">
                     <div class="modal-header">
-                        <h5 class="modal-title">${this.escapeHtml(title)}</h5>
+                        <h5 class="modal-title" id="uiConfirmTitle">${this.escapeHtml(title)}</h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
                     </div>
                     <div class="modal-body">
-                        <div style="white-space:pre-wrap;">${this.escapeHtml(message)}</div>
+                        <div id="uiConfirmMessage" style="white-space:pre-wrap;">${this.escapeHtml(message)}</div>
                     </div>
                     <div class="modal-footer">
                         <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">${this.escapeHtml(cancelText)}</button>
@@ -632,12 +710,17 @@ const UI = {
         return new Promise(resolve => {
             let accepted = false;
             const modal = new bootstrap.Modal(modalEl);
+            modalEl.addEventListener('shown.bs.modal', () => {
+                modalEl.querySelector('.modal-footer [data-bs-dismiss="modal"]').focus();
+            }, { once: true });
             modalEl.querySelector('#uiConfirmAccept').addEventListener('click', () => {
                 accepted = true;
                 modal.hide();
             });
             modalEl.addEventListener('hidden.bs.modal', () => {
+                modal.dispose();
                 modalEl.remove();
+                if (trigger?.isConnected) trigger.focus({ preventScroll: true });
                 resolve(accepted);
             }, { once: true });
             modal.show();
@@ -659,8 +742,8 @@ const UI = {
             const safeAvatar = this.escapeHtml(avatar);
 
             const statusBadge = isConnected ?
-                '<span class="badge bg-success-subtle text-success rounded-pill"><i class="bi bi-circle-fill me-1" style="font-size: 6px; vertical-align: middle;"></i>在线</span>' :
-                '<span class="badge bg-danger-subtle text-danger rounded-pill"><i class="bi bi-circle-fill me-1" style="font-size: 6px; vertical-align: middle;"></i>离线</span>';
+                '<span class="badge bg-success-subtle text-success rounded-pill"><i class="bi bi-circle-fill me-1 status-dot"></i>在线</span>' :
+                '<span class="badge bg-danger-subtle text-danger rounded-pill"><i class="bi bi-circle-fill me-1 status-dot"></i>离线</span>';
 
             botStatusEl.innerHTML = `
                 <div class="mb-3">
@@ -736,7 +819,7 @@ const UI = {
             if (Object.keys(groups).length === 0) {
                 listenersContainer.innerHTML = `
                     <div class="text-center py-5 text-muted">
-                        <i class="bi bi-broadcast opacity-25" style="font-size: 3rem;"></i>
+                        <i class="bi bi-broadcast opacity-25 u-icon-32"></i>
                         <p class="mt-3">未找到活跃的消息监听。</p>
                     </div>
                  `;
@@ -773,7 +856,7 @@ const UI = {
                                         aria-expanded="false"
                                         style="border-style: dashed;">
                                     <i class="bi bi-person me-1"></i> ${this.escapeHtml(user)}
-                                    <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-secondary" style="font-size: 0.6em;">
+                                    <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-secondary u-text-10">
                                         ${plugins.length}
                                     </span>
                                 </button>
@@ -1250,7 +1333,7 @@ const UI = {
                     </div>
                     <div class="capability-actions">
                         <button class="btn btn-quiet-accent btn-sm capability-configure" ${info.configurable ? '' : 'disabled'}>
-                            <i class="bi bi-sliders me-1"></i>配置
+                            <i class="bi bi-sliders me-1"></i>${info.chat_configurable ? '默认设置' : '配置'}
                         </button>
                         <button class="btn btn-light border btn-sm capability-assign">
                             <i class="bi bi-chat-square-text me-1"></i>分配聊天
@@ -1694,12 +1777,9 @@ const UI = {
         if (groupId === 'operations') window.SystemOperations?.loadRuntime();
         if (groupId === 'tools') window.SystemTools?.load();
         if (groupId === 'backups') window.SystemOperations?.loadBackups();
-        if (options.mobile && window.innerWidth <= 767.98) {
+        if (options.mobile && this.isMobileViewport()) {
             const main = container.querySelector('.system-settings-main');
-            window.requestAnimationFrame(() => main?.scrollIntoView({
-                behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
-                block: 'start'
-            }));
+            window.requestAnimationFrame(() => this.scrollIntoView(main));
         }
     },
 
@@ -1745,16 +1825,19 @@ const UI = {
                 const available = Boolean(capability.enabled && capability.loaded);
                 const supportsPush = (capability.features || []).includes('push');
                 const configurable = Boolean(capability.configurable);
+                const pluginOverrides = policy.plugin_configs?.[capability.id]?.overrides || {};
+                const customized = Object.keys(pluginOverrides).length > 0;
                 const searchValue = `${capability.display_name || ''} ${capability.id} ${capability.description || ''}`.toLowerCase();
                 return `
                     <article class="chat-policy-plugin ${checked || pushGrant ? 'selected' : ''} ${supportsPush ? 'supports-push' : ''} ${available ? '' : 'unavailable'}"
                         data-plugin-card="${this.escapeHtml(capability.id)}" data-plugin-search="${this.escapeHtml(searchValue)}">
                         <div class="chat-policy-plugin-main">
                             <span><i class="bi ${this.escapeHtml(capability.icon || 'bi-puzzle')}"></i></span>
-                            <div><strong>${this.escapeHtml(capability.display_name || capability.id)}</strong><small>${this.escapeHtml(capability.description || capability.category_label || '')}</small></div>
+                            <div><span class="chat-policy-plugin-title"><strong>${this.escapeHtml(capability.display_name || capability.id)}</strong>${capability.chat_configurable ? `<span class="chat-policy-plugin-scope ${customized ? 'is-custom' : ''}" data-plugin-scope>${customized ? '本聊天已自定义' : '跟随默认'}</span>` : ''}</span><small>${this.escapeHtml(capability.description || capability.category_label || '')}</small></div>
                             <button type="button" class="chat-policy-plugin-config" data-plugin-config="${this.escapeHtml(capability.id)}"
+                                data-chat-configurable="${capability.chat_configurable ? 'true' : 'false'}"
                                 ${configurable ? '' : 'disabled'} title="${configurable ? '配置此功能插件' : '此功能插件没有可配置项'}" aria-label="配置 ${this.escapeHtml(capability.display_name || capability.id)}">
-                                <i class="bi bi-sliders"></i><span>配置</span>
+                                <i class="bi bi-sliders"></i><span>${capability.chat_configurable ? '本聊天设置' : '默认设置'}</span>
                             </button>
                             <input class="form-check-input chat-policy-plugin-toggle" type="checkbox" value="${this.escapeHtml(capability.id)}" ${checked ? 'checked' : ''} ${available ? '' : 'disabled'} aria-label="启用 ${this.escapeHtml(capability.display_name || capability.id)}">
                         </div>
@@ -1859,6 +1942,12 @@ const UI = {
             </form>`;
 
         const form = document.getElementById('chatPolicyForm');
+        form._pluginConfigs = policy.plugin_configs || {};
+        const pluginDraft = document.createElement('input');
+        pluginDraft.type = 'hidden';
+        pluginDraft.name = 'plugin_config_draft';
+        pluginDraft.value = '{}';
+        form.appendChild(pluginDraft);
         this.setManagedChatContext({ ...chat, user_id: policy.user_id });
         this.bindChatPolicyForm(form);
     },
@@ -1933,7 +2022,12 @@ const UI = {
             button.addEventListener('click', event => {
                 event.preventDefault();
                 event.stopPropagation();
-                App.showPluginSettings(button.dataset.pluginConfig);
+                const pluginName = button.dataset.pluginConfig;
+                if (button.dataset.chatConfigurable === 'true' || form._pluginConfigs?.[pluginName]) {
+                    App.showChatPluginSettings(pluginName, form);
+                } else {
+                    App.showPluginSettings(pluginName);
+                }
             });
         });
         const chatLogPluginToggle = form.querySelector('[data-chat-log-plugin-toggle]');
@@ -2199,6 +2293,13 @@ const UI = {
     },
 
     renderCapabilitySettingsForm(settings, capability = {}) {
+        if (settings.layout === 'simple') {
+            return `<div class="cap-settings-shell cap-settings-shell-simple" data-capability-id="${this.escapeHtml(settings.capability_id || '')}">
+                <main class="cap-settings-main">
+                    <form id="capabilitySettingsForm">${this.renderTranslationSettingsView(settings, {scope: 'global', notice: settings.notice || ''})}</form>
+                </main>
+            </div>`;
+        }
         const groups = settings.groups || [];
         const editableFields = groups.flatMap(group => group.fields || []).filter(field => !field.deprecated);
         const hasBasicFields = editableFields.some(field => field.level === 'basic');
@@ -2256,7 +2357,492 @@ const UI = {
             </div>`;
     },
 
-    renderCapabilitySettingsField(field) {
+    translationLanguageAliases: {
+        'zh': '中文', 'zh-cn': '中文', '中文简体': '中文', '简体中文': '中文', '汉语': '中文',
+        'en': '英文', '英语': '英文', 'english': '英文',
+        'bg': '保加利亚语', 'български': '保加利亚语', 'bulgarian': '保加利亚语',
+        'ja': '日文', '日语': '日文', '日本語': '日文', 'japanese': '日文',
+        'ko': '韩文', '韩语': '韩文', 'korean': '韩文',
+        'ru': '俄文', '俄语': '俄文', 'russian': '俄文',
+        'de': '德文', '德语': '德文', 'german': '德文',
+        'fr': '法文', '法语': '法文', 'french': '法文',
+        'es': '西班牙文', '西班牙语': '西班牙文', 'spanish': '西班牙文',
+        'pt': '葡萄牙文', '葡萄牙语': '葡萄牙文',
+        'it': '意大利文', '意大利语': '意大利文',
+        'ar': '阿拉伯文', '阿拉伯语': '阿拉伯文',
+        'th': '泰文', '泰语': '泰文', 'vi': '越南文', '越南语': '越南文',
+        'zh-tw': '繁体中文', 'zh-hant': '繁体中文', '中文繁体': '繁体中文'
+    },
+    translationNativeNames: {
+        '中文': '中文', '英文': 'English', '保加利亚语': 'Български', '日文': '日本語',
+        '韩文': '한국어', '俄文': 'Русский', '德文': 'Deutsch', '法文': 'Français',
+        '西班牙文': 'Español', '葡萄牙文': 'Português', '意大利文': 'Italiano',
+        '阿拉伯文': 'العربية', '泰文': 'ไทย', '越南文': 'Tiếng Việt', '繁体中文': '繁體中文'
+    },
+
+    normalizeTranslationLanguage(value) {
+        const text = String(value ?? '').trim();
+        return this.translationLanguageAliases[text.toLowerCase()] || text;
+    },
+
+    translationNativeName(value) {
+        return this.translationNativeNames[value] || value;
+    },
+
+    translationLanguageList(value) {
+        if (Array.isArray(value)) return value.map(item => this.normalizeTranslationLanguage(item || ''));
+        if (typeof value === 'string' && value.trim()) {
+            try {
+                const parsed = JSON.parse(value);
+                if (Array.isArray(parsed)) return parsed.map(item => this.normalizeTranslationLanguage(item || ''));
+            } catch (_) { /* treated as a separated list below */ }
+            return value.split(/[、,，\n]/).map(item => this.normalizeTranslationLanguage(item)).filter(Boolean);
+        }
+        return ['', ''];
+    },
+
+    renderTranslationGlobalNote(notice = '') {
+        return `<section class="translation-scope is-global">
+            <div class="translation-scope-copy"><strong><i class="bi bi-globe2" aria-hidden="true"></i>默认设置</strong>
+            <span>${this.escapeHtml(notice || '对所有未单独设置的聊天生效；单个聊天可在聊天页的「本聊天设置」中覆盖。')}</span></div>
+        </section>`;
+    },
+
+    renderTranslationScope(chatName, customized, overrides) {
+        const hasOverrides = Object.keys(overrides || {}).length > 0;
+        return `<section class="translation-scope" data-translation-scope>
+            <div class="translation-scope-copy"><strong>作用范围</strong>
+            <span data-scope-hint>仅「${this.escapeHtml(chatName)}」使用这份设置，保存后立即生效。</span></div>
+            <label class="translation-scope-toggle form-check form-switch modern-toggle mb-0"><input class="form-check-input" type="checkbox" role="switch" data-scope-toggle ${customized ? 'checked' : ''}><span class="form-check-label">本聊天单独设置</span></label>
+        </section>
+        <div class="translation-scope-summary" data-scope-summary ${customized ? 'hidden' : ''}>
+            <p class="translation-scope-summary-title">当前跟随默认设置</p>
+            <dl>
+                <div><dt>互译语言</dt><dd data-summary-languages></dd></div>
+                <div><dt>翻译要求</dt><dd data-summary-prompt></dd></div>
+            </dl>
+            <p class="translation-inline-note" data-scope-override-note ${hasOverrides ? '' : 'hidden'}>保存后会移除本聊天的独立设置。</p>
+        </div>`;
+    },
+
+    renderTranslationSettingsView(settings, {scope = 'global', chatName = '', notice = ''} = {}) {
+        const fields = Object.fromEntries((settings.groups || []).flatMap(group => group.fields || []).map(field => [field.key, field]));
+        const chatConfig = settings.chat_config || null;
+        const overrides = chatConfig?.overrides || {};
+        const defaults = chatConfig?.defaults || {};
+        const effective = chatConfig?.effective || {};
+        const languagesField = fields.languages || {};
+        const promptField = fields.prompt_template || {};
+        const languages = this.translationLanguageList(scope === 'chat' ? (effective.languages || languagesField.value) : languagesField.value);
+        const prompt = String(scope === 'chat' ? (effective.prompt_template ?? promptField.value ?? '') : (promptField.value ?? ''));
+        const standardPrompt = String(promptField.default || '');
+        const suggestions = languagesField.suggestions || [];
+        const customized = scope === 'chat' && Object.keys(overrides).length > 0;
+        const id = 'cap-cfg-languages';
+        const promptId = 'cap-cfg-prompt_template';
+        return `<div class="translation-settings" data-translation-settings data-scope="${scope}"
+            data-chat-name="${this.escapeHtml(chatName)}" data-standard-prompt="${this.escapeHtml(standardPrompt)}"
+            data-defaults="${this.escapeHtml(JSON.stringify(scope === 'chat' ? defaults : null))}">
+            ${scope === 'chat' ? this.renderTranslationScope(chatName, customized, overrides) : this.renderTranslationGlobalNote(notice)}
+            <div class="translation-body" data-translation-body ${scope === 'chat' && !customized ? 'hidden' : ''}>
+                <section class="translation-section">
+                    <header class="translation-section-head">
+                        <div><h4>互译方式</h4><p>自动识别原文语言，只输出其余语言；顺序就是输出顺序。</p></div>
+                        <div class="translation-section-actions">
+                            <span class="translation-field-reset" data-field-reset-wrap="languages" hidden><button type="button" class="translation-text-button" data-field-reset="languages">恢复跟随默认</button></span>
+                            <div class="translation-mode" role="radiogroup" aria-label="互译模式">
+                                <button type="button" role="radio" aria-checked="false" data-language-mode="2">双语互译</button>
+                                <button type="button" role="radio" aria-checked="false" data-language-mode="3">三语互译</button>
+                            </div>
+                        </div>
+                    </header>
+                    <input type="hidden" id="${id}" data-config-key="languages" data-config-type="array" data-config-control="languages" value="${this.escapeHtml(JSON.stringify(languages))}">
+                    <datalist id="${id}-options">${suggestions.map(item => `<option value="${this.escapeHtml(item)}"></option>`).join('')}</datalist>
+                    <div class="translation-language-list" data-language-rows></div>
+                    <p class="translation-example" data-language-example></p>
+                    <div class="translation-chips" data-language-chips></div>
+                    <p class="translation-inline-error" data-language-error hidden></p>
+                </section>
+                <section class="translation-section">
+                    <header class="translation-section-head">
+                        <div><h4>翻译要求</h4><p>语言名单自动填入提示词；可补充语气、行业和术语要求。</p></div>
+                        <div class="translation-section-actions">
+                            <span class="translation-status-chip" data-prompt-status></span>
+                            <span class="translation-field-reset" data-field-reset-wrap="prompt_template" hidden><button type="button" class="translation-text-button" data-field-reset="prompt_template">恢复跟随默认</button></span>
+                            <button type="button" class="translation-text-button" data-prompt-toggle>展开编辑</button>
+                        </div>
+                    </header>
+                    <div class="translation-prompt-editor" data-prompt-editor hidden>
+                        <textarea class="form-control" id="${promptId}" rows="10" data-config-key="prompt_template" data-config-type="string">${this.escapeHtml(prompt)}</textarea>
+                        <p class="translation-inline-error" data-prompt-error hidden></p>
+                        <div class="translation-prompt-tools">
+                            <span class="translation-variable-label">插入变量</span>
+                            <button type="button" class="translation-var-chip" data-insert-variable="language_names">${'${language_names}'}</button>
+                            <button type="button" class="translation-var-chip" data-insert-variable="language_count">${'${language_count}'}</button>
+                            <button type="button" class="translation-text-button" data-standard-template="${this.escapeHtml(standardPrompt)}">恢复内置模板</button>
+                        </div>
+                        <div class="translation-template-bar">
+                            <label class="translation-template-label" for="${promptId}-template">我的模板</label>
+                            <select class="form-select" id="${promptId}-template" data-config-template-select aria-label="我的模板"><option value="">正在加载…</option></select>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" data-template-load>导入</button>
+                            <details class="chat-template-manager" data-template-manage>
+                                <summary>管理 <span aria-hidden="true">⌄</span></summary>
+                                <div class="chat-template-panel">
+                                    <label>模板名称<input class="form-control" maxlength="80" data-template-name placeholder="为这组语言和提示词命名" aria-label="模板名称"></label>
+                                    <div class="chat-template-actions">
+                                        <button type="button" class="btn btn-sm btn-outline-primary" data-template-create>另存为</button>
+                                        <button type="button" class="btn btn-sm btn-outline-secondary" data-template-update>覆盖所选</button>
+                                        <button type="button" class="btn btn-sm btn-outline-secondary" data-template-rename>重命名</button>
+                                        <button type="button" class="btn btn-sm btn-outline-danger" data-template-delete>删除</button>
+                                    </div>
+                                    <p>模板保存这组语言与提示词，导入后仍可单独修改。</p>
+                                </div>
+                            </details>
+                        </div>
+                        <div class="chat-template-status" data-template-status role="status"></div>
+                    </div>
+                </section>
+                <section class="translation-section translation-preview-section" data-translation-preview>
+                    <details class="translation-preview">
+                        <summary><span>试译检查</span><span class="translation-preview-summary">只调用模型，不发送微信 <span aria-hidden="true">⌄</span></span></summary>
+                        <div class="translation-preview-content">
+                            <textarea class="form-control" rows="2" maxlength="12000" data-translation-sample placeholder="输入一段原文，检查翻译效果…" aria-label="试译原文"></textarea>
+                            <div class="translation-preview-actions">
+                                <button type="button" class="btn btn-sm btn-outline-primary" data-preview-translation>试译 · 调用模型</button>
+                                <button type="button" class="translation-text-button" data-preview-prompt>查看最终提示词</button>
+                            </div>
+                            <pre data-translation-result hidden></pre>
+                        </div>
+                    </details>
+                </section>
+            </div>
+        </div>`;
+    },
+
+    bindTranslationSettings(root, options = {}) {
+        root.querySelectorAll('[data-translation-settings]').forEach(editor => {
+            if (editor._bound) return;
+            editor._bound = true;
+            const scope = editor.dataset.scope || 'global';
+            const hidden = editor.querySelector('[data-config-key="languages"]');
+            const rows = editor.querySelector('[data-language-rows]');
+            const textarea = editor.querySelector('[data-config-key="prompt_template"]');
+            const languageError = editor.querySelector('[data-language-error]');
+            const promptError = editor.querySelector('[data-prompt-error]');
+            const defaults = JSON.parse(editor.dataset.defaults || 'null') || {};
+            const standardPrompt = editor.dataset.standardPrompt || '';
+            const suggestions = [...editor.querySelectorAll(`#${hidden.id}-options option`)].map(option => option.value);
+            const chipsBox = editor.querySelector('[data-language-chips]');
+            const modeButtons = [...editor.querySelectorAll('[data-language-mode]')];
+            const promptEditor = editor.querySelector('[data-prompt-editor]');
+            const promptToggle = editor.querySelector('[data-prompt-toggle]');
+            const promptStatus = editor.querySelector('[data-prompt-status]');
+            const promptReset = editor.querySelector('[data-field-reset-wrap="prompt_template"]');
+            const languageReset = editor.querySelector('[data-field-reset-wrap="languages"]');
+            const summaryLanguages = editor.querySelector('[data-summary-languages]');
+            const summaryPrompt = editor.querySelector('[data-summary-prompt]');
+            const scopeToggle = editor.querySelector('[data-scope-toggle]');
+            const listId = hidden.id;
+
+            const readRaw = () => [...rows.querySelectorAll('input')].map(input => input.value.trim());
+            const readValues = () => readRaw().map(value => this.normalizeTranslationLanguage(value));
+
+            const validate = () => {
+                const languages = readValues();
+                let message = '';
+                if (languages.some(value => !value)) message = '请填写全部语言名称';
+                else if (languages.length !== 2 && languages.length !== 3) message = '请选择 2 或 3 种互译语言';
+                else if (new Set(languages.map(value => value.toLowerCase())).size !== languages.length) message = '同一种语言只能出现一次';
+                else if (languages.some(value => !/^[\p{L}\p{N}][\p{L}\p{N}_ ()（）.\-]{0,39}$/u.test(value))) message = '语言名称须为 1–40 个字母、文字、数字、空格或括号';
+                const prompt = textarea.value;
+                const promptMessage = prompt.trim() ? '' : '提示词不能为空';
+                languageError.hidden = !message;
+                languageError.textContent = message;
+                promptError.hidden = !promptMessage;
+                promptError.textContent = promptMessage;
+                return {valid: !message && !promptMessage, message: message || promptMessage, values: {languages, prompt_template: prompt}};
+            };
+
+            const state = () => {
+                const validity = validate();
+                const enabled = scope === 'global' || !scopeToggle || scopeToggle.checked;
+                return {scopeEnabled: enabled, valid: validity.valid, message: validity.message, values: validity.values};
+            };
+
+            const syncStatus = () => {
+                if (scope === 'chat') {
+                    const languages = readValues();
+                    const languageCustom = JSON.stringify(languages) !== JSON.stringify(this.translationLanguageList(defaults.languages));
+                    const promptCustom = textarea.value !== (defaults.prompt_template ?? '');
+                    if (languageReset) languageReset.hidden = !languageCustom;
+                    if (promptReset) promptReset.hidden = !promptCustom;
+                    promptStatus.textContent = promptCustom ? '本聊天自定义' : '跟随默认';
+                    promptStatus.classList.toggle('is-custom', promptCustom);
+                } else {
+                    const customized = textarea.value !== standardPrompt;
+                    promptStatus.textContent = customized ? '已自定义' : '标准提示词';
+                    promptStatus.classList.toggle('is-custom', customized);
+                }
+            };
+
+            const renderExample = () => {
+                const example = editor.querySelector('[data-language-example]');
+                const languages = readValues().filter(Boolean);
+                if (languages.length < 2) { example.textContent = ''; return; }
+                const targets = languages.slice(1).map(value => this.translationNativeName(value));
+                example.innerHTML = `<i class="bi bi-arrow-return-right" aria-hidden="true"></i>原文为<strong>${this.escapeHtml(languages[0])}</strong>时，输出 <strong>${this.escapeHtml(targets.join('、'))}</strong>`;
+            };
+
+            const addLanguage = name => {
+                const next = readRaw();
+                const existing = next.findIndex(value => this.normalizeTranslationLanguage(value).toLowerCase() === name.toLowerCase());
+                if (existing >= 0) {
+                    if (next.length <= 2) return;
+                    next.splice(existing, 1);
+                    renderRows(next);
+                    sync();
+                    return;
+                }
+                const empty = next.findIndex(value => !value);
+                if (empty >= 0) next[empty] = name;
+                else if (next.length < 3) next.push(name);
+                else {
+                    languageError.hidden = false;
+                    languageError.textContent = '最多支持 3 种语言，请先移除一种。';
+                    return;
+                }
+                renderRows(next);
+                sync();
+            };
+
+            const renderChips = () => {
+                const selected = new Set(readValues().filter(Boolean).map(value => value.toLowerCase()));
+                const available = suggestions.filter(item => !selected.has(item.toLowerCase())).slice(0, 8);
+                chipsBox.innerHTML = available.length
+                    ? `<span class="translation-chips-label">常用</span>${available.map(item => `<button type="button" class="translation-chip" data-language-chip="${this.escapeHtml(item)}">＋ ${this.escapeHtml(item)}</button>`).join('')}<span class="translation-chips-hint">也可直接输入其他语言</span>`
+                    : '<span class="translation-chips-hint">可直接输入其他语言，或从上方移除后重新选择。</span>';
+                chipsBox.querySelectorAll('[data-language-chip]').forEach(button => {
+                    button.addEventListener('click', () => addLanguage(button.dataset.languageChip));
+                });
+            };
+
+            const renderSummary = () => {
+                if (scope !== 'chat') return;
+                if (summaryLanguages) summaryLanguages.textContent = this.translationLanguageList(defaults.languages).filter(Boolean).join('、') || '—';
+                if (summaryPrompt) summaryPrompt.textContent = defaults.prompt_template ? '使用默认提示词' : '—';
+            };
+
+            const applyModeState = () => {
+                const count = readRaw().length;
+                modeButtons.forEach(button => {
+                    const active = Number(button.dataset.languageMode) === count;
+                    button.classList.toggle('active', active);
+                    button.setAttribute('aria-checked', String(active));
+                });
+            };
+
+            const notify = () => options.onChange?.(state());
+
+            const sync = () => {
+                hidden.value = JSON.stringify(readRaw());
+                applyModeState();
+                renderExample();
+                renderChips();
+                syncStatus();
+                renderSummary();
+                notify();
+            };
+
+            const renderRows = (values, focusIndex = -1) => {
+                rows.innerHTML = values.map((value, index) => `<div class="translation-language-row" data-language-row>
+                    <span class="translation-language-order">${index + 1}</span>
+                    <input class="form-control" maxlength="40" list="${listId}-options" autocomplete="off" aria-label="语言 ${index + 1}" value="${this.escapeHtml(value)}">
+                    <div class="translation-row-actions">
+                        <button type="button" class="translation-icon-button" data-language-up title="上移" aria-label="上移语言 ${index + 1}" ${index === 0 ? 'disabled' : ''}>↑</button>
+                        <button type="button" class="translation-icon-button" data-language-down title="下移" aria-label="下移语言 ${index + 1}" ${index === values.length - 1 ? 'disabled' : ''}>↓</button>
+                        <button type="button" class="translation-icon-button" data-language-remove title="移除这种语言" aria-label="移除语言 ${index + 1}" ${values.length <= 2 ? 'disabled' : ''}>×</button>
+                    </div>
+                </div>`).join('');
+                rows.querySelectorAll('[data-language-row]').forEach((row, index) => {
+                    const input = row.querySelector('input');
+                    input.addEventListener('input', sync);
+                    input.addEventListener('blur', () => {
+                        const normalized = this.normalizeTranslationLanguage(input.value);
+                        if (normalized !== input.value) {
+                            input.value = normalized;
+                            sync();
+                        }
+                    });
+                    row.querySelector('[data-language-up]').addEventListener('click', () => {
+                        const next = readRaw();
+                        [next[index - 1], next[index]] = [next[index], next[index - 1]];
+                        renderRows(next, index - 1);
+                        sync();
+                    });
+                    row.querySelector('[data-language-down]').addEventListener('click', () => {
+                        const next = readRaw();
+                        [next[index + 1], next[index]] = [next[index], next[index + 1]];
+                        renderRows(next, index + 1);
+                        sync();
+                    });
+                    row.querySelector('[data-language-remove]').addEventListener('click', () => {
+                        const next = readRaw();
+                        next.splice(index, 1);
+                        renderRows(next);
+                        sync();
+                    });
+                });
+                if (focusIndex >= 0 && focusIndex < values.length) rows.querySelectorAll('input')[focusIndex].focus();
+            };
+
+            const applyValues = values => {
+                if (scope === 'chat' && scopeToggle) {
+                    scopeToggle.checked = true;
+                    applyScope();
+                }
+                renderRows(this.translationLanguageList(values.languages));
+                textarea.value = String(values.prompt_template ?? '');
+                promptEditor.hidden = false;
+                promptToggle.textContent = '收起编辑';
+                sync();
+            };
+
+            const applyScope = () => {
+                const enabled = scope === 'global' || !scopeToggle || scopeToggle.checked;
+                const body = editor.querySelector('[data-translation-body]');
+                const summary = editor.querySelector('[data-scope-summary]');
+                if (body) body.hidden = scope === 'chat' && !enabled;
+                if (summary) summary.hidden = scope !== 'chat' || enabled;
+            };
+
+            modeButtons.forEach(button => button.addEventListener('click', async () => {
+                const target = Number(button.dataset.languageMode);
+                if (target === readRaw().length) return;
+                if (target === 3) {
+                    renderRows([...readRaw(), ''], readRaw().length);
+                    sync();
+                    return;
+                }
+                const third = readRaw()[2]?.trim();
+                if (third && !await UI.confirm(`将移除「${third}」，只保留双语互译。确定继续吗？`, {title: '切换为双语', confirmText: '切换为双语', variant: 'danger'})) return;
+                renderRows(readRaw().slice(0, 2));
+                sync();
+            }));
+
+            promptToggle.addEventListener('click', () => {
+                const open = promptEditor.hidden;
+                promptEditor.hidden = !open;
+                promptToggle.textContent = open ? '收起编辑' : '展开编辑';
+            });
+            textarea.addEventListener('input', sync);
+            editor.querySelectorAll('[data-insert-variable]').forEach(button => button.addEventListener('click', () => {
+                const token = '${' + button.dataset.insertVariable + '}';
+                const start = textarea.selectionStart ?? textarea.value.length;
+                const end = textarea.selectionEnd ?? start;
+                textarea.setRangeText(token, start, end, 'end');
+                textarea.dispatchEvent(new Event('input', {bubbles: true}));
+            }));
+            editor.querySelectorAll('[data-standard-template]').forEach(button => button.addEventListener('click', () => {
+                textarea.value = button.dataset.standardTemplate;
+                promptEditor.hidden = false;
+                promptToggle.textContent = '收起编辑';
+                sync();
+            }));
+            editor.querySelectorAll('[data-field-reset]').forEach(button => button.addEventListener('click', () => {
+                const key = button.dataset.fieldReset;
+                if (key === 'languages') renderRows(this.translationLanguageList(defaults.languages));
+                if (key === 'prompt_template') textarea.value = defaults.prompt_template ?? '';
+                sync();
+            }));
+
+            if (scope === 'chat' && textarea.value !== (defaults.prompt_template ?? '')) {
+                promptEditor.hidden = false;
+                promptToggle.textContent = '收起编辑';
+            }
+            renderRows(this.translationLanguageList(JSON.parse(hidden.value)));
+            editor._sync = sync;
+            editor._translationState = state;
+            editor._apply = applyValues;
+            editor._applyScope = applyScope;
+            applyScope();
+            sync();
+            const initial = state();
+            editor._initialSignature = JSON.stringify({enabled: initial.scopeEnabled, values: initial.values});
+        });
+    },
+
+    translationState(root) {
+        const editor = root?.querySelector?.('[data-translation-settings]');
+        return editor?._translationState
+            ? editor._translationState()
+            : {scopeEnabled: true, valid: true, message: '', values: {languages: [], prompt_template: ''}};
+    },
+
+    readTranslationValues(root, fallback = null) {
+        const state = this.translationState(root);
+        if (!state.scopeEnabled && fallback) {
+            return {languages: this.translationLanguageList(fallback.languages), prompt_template: String(fallback.prompt_template ?? '')};
+        }
+        return state.values;
+    },
+
+    applyTranslationValues(root, values) {
+        root.querySelectorAll('[data-translation-settings]').forEach(editor => editor._apply?.(values));
+    },
+
+    collectTranslationChatPatch(root, chatConfig) {
+        const editor = root.querySelector('[data-translation-settings]');
+        if (!editor?._translationState) return null;
+        const state = editor._translationState();
+        if (state.scopeEnabled && !state.valid) throw Error(state.message);
+        const overrides = chatConfig?.overrides || {};
+        let patch = null;
+        if (!state.scopeEnabled) {
+            if (Object.keys(overrides).length) patch = {set: {}, reset_all: true};
+        } else {
+            const defaults = chatConfig?.defaults || {};
+            const set = {};
+            const resetFields = [];
+            ['languages', 'prompt_template'].forEach(key => {
+                if (JSON.stringify(state.values[key]) !== JSON.stringify(defaults[key])) set[key] = state.values[key];
+                else if (Object.hasOwn(overrides, key)) resetFields.push(key);
+            });
+            if (Object.keys(set).length || resetFields.length) patch = {set, reset_fields: resetFields};
+        }
+        if (!patch) return null;
+        const signature = JSON.stringify({enabled: state.scopeEnabled, values: state.values});
+        return signature === editor._initialSignature ? null : patch;
+    },
+
+    setPluginScopeBadge(form, pluginName, customized) {
+        const card = form?.querySelector?.(`[data-plugin-card="${pluginName}"]`);
+        const badge = card?.querySelector('[data-plugin-scope]');
+        if (!badge) return;
+        badge.textContent = customized ? '本聊天已自定义' : '跟随默认';
+        badge.classList.toggle('is-custom', customized);
+    },
+
+    renderChatPluginSettingsForm(settings, draft = {}, {chatName = ''} = {}) {
+        if (settings.capability_id === 'builtin_translation' && settings.chat_config) {
+            return `<form id="chatPluginSettingsForm" class="translation-settings-form">${this.renderTranslationSettingsView(settings, {scope: 'chat', chatName})}</form>`;
+        }
+        const config = settings.chat_config;
+        const overrides = {...(config.overrides || {})};
+        if (draft.reset_all) Object.keys(overrides).forEach(key => delete overrides[key]);
+        (draft.reset_fields || []).forEach(key => delete overrides[key]);
+        Object.assign(overrides, draft.set || {});
+        return `<form id="chatPluginSettingsForm" class="chat-config-form">${settings.groups.map(group => group.fields.map(field => {
+                const custom = Object.hasOwn(overrides, field.key);
+                const value = custom ? overrides[field.key] : config.defaults[field.key];
+                return `<section class="chat-config-section" data-chat-config-field="${this.escapeHtml(field.key)}">
+                    <div class="chat-config-heading"><label for="cap-cfg-${this.escapeHtml(field.key)}">${this.escapeHtml(field.key === 'prompt_template' ? '翻译提示词' : field.title)}</label>
+                    <select class="form-select" data-chat-config-source aria-label="${this.escapeHtml(field.title)}的来源"><option value="global" ${custom ? '' : 'selected'}>继承全局</option><option value="chat" ${custom ? 'selected' : ''}>自定义</option></select></div>
+                    <fieldset data-chat-config-editor ${custom ? '' : 'disabled'}>${this.renderCapabilitySettingsField({...field, value}, {compact: true})}</fieldset>
+                </section>`;
+            }).join('')).join('')}</form><p class="chat-config-save-note">仅当前聊天生效 · 应用后，请在聊天页保存更改。</p>`;
+    },
+
+    renderCapabilitySettingsField(field, {compact = false} = {}) {
         const id = `cap-cfg-${field.key}`;
         const value = field.value ?? field.default ?? '';
         const common = `data-config-key="${this.escapeHtml(field.key)}" data-config-type="${this.escapeHtml(field.type)}" data-sensitive="${field.sensitive ? 'true' : 'false'}"`;
@@ -2285,16 +2871,19 @@ const UI = {
             control = `<input class="form-control" type="${inputType}" id="${id}" value="${field.sensitive ? '' : this.escapeHtml(String(value))}" placeholder="${this.escapeHtml(placeholder)}" ${common}>`;
         }
 
-        return `<div class="cap-settings-field" data-settings-level-value="${this.escapeHtml(field.level || 'basic')}" data-settings-search-value="${this.escapeHtml(`${field.title} ${field.description} ${field.key}`.toLowerCase())}">
+        if (compact) return `<div class="chat-config-control">${control}</div>`;
+        return `<div class="cap-settings-field ${field.control === 'languages' ? 'cap-settings-field-languages' : ''}" data-settings-level-value="${this.escapeHtml(field.level || 'basic')}" data-settings-search-value="${this.escapeHtml(`${field.title} ${field.description} ${field.key}`.toLowerCase())}">
             <div class="cap-settings-label"><label for="${id}">${this.escapeHtml(field.title)}</label><p>${this.escapeHtml(field.description || '')}</p>${field.level === 'developer' ? `<code>${this.escapeHtml(field.key)}</code>` : ''}</div>
             <div class="cap-settings-control">${control}</div>
         </div>`;
     },
 
     bindCapabilitySettingsControls(modalElement) {
+        this.bindTranslationSettings(modalElement);
         const shell = modalElement.querySelector('.cap-settings-shell');
         if (!shell) return;
         const search = shell.querySelector('#capabilitySettingsSearch');
+        if (!search) return;
         const filterButtons = shell.querySelectorAll('[data-settings-level]');
 
         const apply = () => {
@@ -2331,11 +2920,11 @@ const UI = {
         }));
         shell.querySelectorAll('[data-settings-anchor]').forEach(button => button.addEventListener('click', () => {
             const section = shell.querySelector(`#${button.dataset.settingsAnchor}`);
-            section?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            this.scrollIntoView(section);
         }));
         shell.querySelectorAll('[data-settings-jump]').forEach(button => button.addEventListener('click', () => {
             const targetId = `cap-settings-${button.dataset.settingsJump}`;
-            shell.querySelector(`#${targetId}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            this.scrollIntoView(shell.querySelector(`#${targetId}`));
         }));
         apply();
     },
@@ -2354,7 +2943,7 @@ const UI = {
         });
         target.classList.add('is-focused');
         window.setTimeout(() => {
-            target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            this.scrollIntoView(target);
             window.setTimeout(() => target.classList.remove('is-focused'), 1400);
         }, 180);
     },

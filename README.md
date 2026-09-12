@@ -2,7 +2,7 @@
 
 Mabobot 是运行在 Windows 上的本地微信自动化与 AI 助手。它使用内置 `mabowx` 连接微信，并提供 Web 控制台、AI 助手、插件、模型路由、聊天档案与文件处理能力。
 
-当前版本：`3.3.0`
+当前版本：`3.4.0`
 
 ## 启动
 
@@ -54,7 +54,7 @@ cd Mabobot
 
 大部分设置都在 Web 控制台中完成。`.env` 用于端口、运行参数和外部服务凭据；未使用的项目可以留空。
 
-公开版包含聊天记录、Magnet Check、菜单翻译、Summary Plus、Weekly、中国银行汇率和电子书下载 7 个插件。
+公开版包含聊天记录、翻译助手、Magnet Check、菜单翻译、Summary Plus、Weekly、中国银行汇率、电子书下载、图像编辑和游戏发售日历 10 个插件。翻译助手支持每聊天双语／三语、提示词与模板，启用前请先在模型配置中分配翻译模型。
 
 真实密钥、Cookie、数据库、聊天记录和下载文件不要提交到 Git。运行数据主要位于 `data/`、`logs/` 和 `tmp/`。
 
@@ -94,11 +94,13 @@ app/               应用核心、AI 助手、服务与插件
 mabowx/            微信 UI 自动化、选择器与消息模型
 web/               Web 控制台
 scripts/           安装、运维与文件工具
-tests/             自动化测试
 ```
 
 进一步说明：
 
+- [插件开发规范（Manifest / Runtime API v2）](app/plugins/README.md)
+- [每聊天插件配置与模板开发指南](docs/PLUGIN_CHAT_CONFIGURATION.md)
+- [翻译助手配置说明](docs/TRANSLATION_CHAT_CONFIG_UPGRADE.md)
 - [mabowx 与主程序边界](docs/MABOWX_BOUNDARY.md)
 - [Web 控制台架构](docs/WEB_CONSOLE_ARCHITECTURE.md)
 - [Codex Profile 配置与权限架构](docs/CODEX_PROFILE_ARCHITECTURE.md)

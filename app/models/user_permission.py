@@ -7,6 +7,7 @@
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Text
 from sqlalchemy.orm import relationship
 from .base import Base
+from .chat_plugin_config import ChatPluginConfig
 
 
 def _assistant_chat_policy_model():
@@ -43,6 +44,7 @@ class WeChatUser(Base):
     bot_group_nickname_checked_at = Column(String, nullable=True)
 
     permissions = relationship("UserPermission", back_populates="user", cascade="all, delete-orphan")
+    plugin_configs = relationship(ChatPluginConfig, back_populates="user", cascade="all, delete-orphan")
     assistant_policy = relationship(
         _assistant_chat_policy_model,
         back_populates="user",

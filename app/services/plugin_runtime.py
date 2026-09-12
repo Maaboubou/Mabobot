@@ -400,6 +400,9 @@ class PluginContext:
         self.plugin_id = plugin_id
         self.manifest = dict(manifest)
         self.plugin_path = plugin_path
+        from app.services.plugin_chat_config_service import ChatConfigFacade
+
+        self.config = ChatConfigFacade(plugin_id, plugin_path)
         self.storage = PluginStorage(plugin_id)
         self.tasks = OwnerTaskFacade(plugin_id)
         self.workers = OwnerWorkerFacade(plugin_id)

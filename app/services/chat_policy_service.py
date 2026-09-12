@@ -12,6 +12,7 @@ from app.models.chatbot_judge import UserChatBotJudge
 from app.models.chatbot_role import UserChatBotRole
 from app.models.user_permission import UserPermission, WeChatUser
 from app.services.assistant_console_service import AssistantConsoleService, _json_list
+from app.services.plugin_chat_config_service import PluginChatConfigError, PluginChatConfigService
 from app.services.codex_access_service import (
     ISOLATED_ACCESS,
     OWNER_FULL_ACCESS,
@@ -122,6 +123,7 @@ class ChatPolicyService:
             },
             "codex": codex,
             "plugin_grants": grants,
+            "plugin_configs": PluginChatConfigService(self.db, self.plugin_manager).describe_all(user.id),
         }
 
     def update(self, user_id: int, request: Any) -> Dict[str, Any]:
@@ -130,10 +132,19 @@ class ChatPolicyService:
         codex_changed = False
         chat_type_changed = False
         try:
-            user = self._user(user_id, lock=True)
-            current_version = int(user.policy_version or 1)
-            if int(request.expected_version) != current_version:
-                raise ChatPolicyConflict(current_version)
+            current_version = int(request.expected_version)
+            # Reserve this version before reading/mutating the aggregate. SQLite
+            # does not implement SELECT FOR UPDATE; a conditional write does.
+            changed = self.db.query(WeChatUser).filter(
+                WeChatUser.id == user_id,
+                WeChatUser.policy_version == current_version,
+            ).update({WeChatUser.policy_version: current_version + 1}, synchronize_session=False)
+            if changed != 1:
+                self.db.expire_all()
+                current = self._user(user_id)
+                raise ChatPolicyConflict(int(current.policy_version or 1))
+            self.db.expire_all()
+            user = self._user(user_id)
 
             chat_changes = _fields(request.chat)
             if "is_group" in chat_changes:
@@ -211,7 +222,11 @@ class ChatPolicyService:
                         )
                     )
 
-            user.policy_version = current_version + 1
+            if request.plugin_configs is not None:
+                try:
+                    PluginChatConfigService(self.db, self.plugin_manager).apply(user.id, request.plugin_configs)
+                except PluginChatConfigError as exc:
+                    raise ChatPolicyError(str(exc)) from exc
             self.db.commit()
         except Exception:
             self.db.rollback()

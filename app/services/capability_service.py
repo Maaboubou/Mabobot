@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Mapping, Optional
 from sqlalchemy.orm import Session
 
 from app.models.chatbot_role import ChatBotRole
-from app.models.user_permission import UserPermission
+from app.models.user_permission import UserPermission, WeChatUser
 
 
 PLUGIN_METADATA_KEYS = {
@@ -368,7 +368,7 @@ def _normalize_type(field: Mapping[str, Any]) -> tuple[str, str]:
     if raw_type == "object":
         return "object", "json"
     if raw_type == "array":
-        return "array", "list"
+        return "array", "languages" if field.get("control") == "languages" else "list"
     if raw_type == "boolean":
         return "boolean", "switch"
     if raw_type in {"integer", "number"}:
@@ -486,6 +486,7 @@ def normalize_settings_descriptor(plugin_id: str, config: Mapping[str, Any]) -> 
                 {"value": option, "label": option_labels.get(str(option), str(option))}
                 for option in options
             ],
+            "suggestions": field.get("suggestions") or [],
             "placeholder": field.get("placeholder"),
             "unit": field.get("unit"),
             "requires_restart": bool(field.get("requires_restart", False)),
@@ -621,6 +622,7 @@ class CapabilityService:
             "listener_count": listener_count,
             "settings_count": len(schema),
             "configurable": bool(schema),
+            "chat_configurable": any(isinstance(field, dict) and field.get("scope") == "global_and_chat" for field in schema.values()),
             "features": list(config.get("features") or []),
             "assigned_chat_count": assignments["chats"],
             "push_chat_count": assignments["push_chats"],
@@ -648,11 +650,30 @@ class CapabilityService:
             return None
         return self._capability_item(plugin_id, plugin, self._assignment_counts())
 
-    def get_settings(self, plugin_id: str) -> Optional[Dict[str, Any]]:
+    def get_settings(self, plugin_id: str, user_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
         plugin = self._component(plugin_id)
         if plugin is None:
             return None
-        groups = normalize_settings_descriptor(plugin_id, plugin.config or {})
+        config = plugin.config or {}
+        path = getattr(plugin, "path", None)
+        if path and (Path(path) / "config.json").is_file():
+            config = json.loads((Path(path) / "config.json").read_text(encoding="utf-8-sig"))
+        groups = normalize_settings_descriptor(plugin_id, config)
+        chat_config = None
+        if user_id is not None:
+            from app.services.plugin_chat_config_service import PluginChatConfigService, chat_fields
+
+            if self.db is None or self.db.query(WeChatUser.id).filter_by(id=user_id).first() is None:
+                raise CapabilityConfigError("聊天不存在")
+            if not chat_fields(config):
+                raise CapabilityConfigError("此插件只有全局设置")
+            chat_config = PluginChatConfigService(self.db, self.plugin_manager).describe(user_id, plugin_id, config)
+            groups = [{**group, "fields": [
+                {**field, "value": chat_config["effective"][field["key"]],
+                 "source": chat_config["sources"][field["key"]]}
+                for field in group["fields"] if field["key"] in chat_fields(config)
+            ]} for group in groups]
+            groups = [group for group in groups if group["fields"]]
         # Relational choices belong to the console contract rather than static
         # plugin manifests. Expose them as safe select options so users do not
         # have to type internal role identifiers by hand.
@@ -666,9 +687,12 @@ class CapabilityService:
                     if field["key"] == "default_role":
                         field["control"] = "select"
                         field["options"] = role_options
+        raw_ui = config.get("ui") if isinstance(config.get("ui"), Mapping) else {}
         return {
             "capability_id": plugin_id,
-            "scope": "global",
+            "scope": "chat" if user_id is not None else "global",
+            "chat_config": chat_config,
+            "layout": str(raw_ui.get("settings_layout") or ""),
             "notice": str(
                 (
                     (plugin.config or {}).get("ui")
@@ -707,6 +731,19 @@ class CapabilityService:
             config["config"].update(validated)
         else:
             config.update(validated)
+
+        from app.services.plugin_chat_config_service import (
+            PluginChatConfigError, PluginChatConfigService, chat_fields, default_values, validate_effective,
+        )
+        try:
+            if chat_fields(config):
+                normalized = validate_effective(plugin_id, config, default_values(config))
+                destination = config.get("config") if isinstance(config.get("config"), dict) else config
+                destination.update({key: normalized[key] for key in validated if key in normalized})
+                if self.db is not None:
+                    PluginChatConfigService(self.db).validate_defaults(plugin_id, config)
+        except PluginChatConfigError as exc:
+            raise CapabilityConfigError(str(exc)) from exc
 
         is_core_component = getattr(plugin, "kind", "plugin") == "core"
         should_reload = bool(plugin.loaded and plugin.enabled)

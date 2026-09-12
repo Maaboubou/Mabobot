@@ -13,7 +13,7 @@
     };
     const state = {userId: 0, view: 'messages', offset: 0, next: null, generation: 0, members: [], opening: 0};
     const endpoint = () => `/api/history/users/${state.userId}`;
-    const time = value => /T.*(?:Z|\+\d\d:\d\d)$/.test(value || '') ? new Date(value).toLocaleString('zh-CN', {timeZone: 'Asia/Shanghai', hour12: false}) : value;
+    const time = value => /T.*(?:Z|\+\d\d:\d\d)$/.test(value || '') ? UI.formatDateTime(value, {timeZone: 'Asia/Shanghai'}) : value;
     function ensureModal() {
         if ($('chatArchiveModal')) return;
         document.body.insertAdjacentHTML('beforeend', `
@@ -99,20 +99,20 @@
             if (state.view === 'messages') {
                 count = data.messages.length;
                 const summary = data.summary?.[0];
-                $('archiveSummary').textContent = summary ? `已保存 ${summary.messages.toLocaleString()} 条` : '暂无记录';
+                $('archiveSummary').textContent = summary ? `已保存 ${UI.formatNumber(summary.messages)} 条` : '暂无记录';
                 $('archiveSummary').title = data.coverage_notice || '';
                 html = table(['时间','发言人','内容',''], data.messages.map(row => `<tr class="archive-message-row"><td class="archive-time">${esc(time(row.time))}</td><td class="archive-sender"><strong>${esc(row.sender)}</strong>${row.is_bot ? '<small>机器人</small>' : ''}</td><td><div class="archive-excerpt">${esc(row.content)}${row.truncated ? '…' : ''}</div>${row.corrected ? '<span class="archive-note">含人工更正</span>' : ''}</td><td><button class="btn archive-text-button" data-message="${esc(row.id)}" aria-label="查看原文与上下文">展开</button></td></tr><tr class="archive-detail-row" id="archive-detail-${esc(row.id)}" hidden><td colspan="4"></td></tr>`).join(''), 'archive-message-table');
                 if (data.status === 'ambiguous_sender') html = '<div class="codex-empty">此别名对应多个成员，请在成员别名页查看后使用具体昵称。</div>';
             } else if (state.view === 'members') {
                 state.members = data.items; count = data.items.length;
-                $('archiveSummary').textContent = `${data.total.toLocaleString()} 位成员`;
+                $('archiveSummary').textContent = `${UI.formatNumber(data.total)} 位成员`;
                 html = table(['当前昵称','别名',''], data.items.map(row => `<tr><td class="archive-member-name">${esc(row.current_name)}</td><td class="archive-aliases">${row.aliases.map(name => `<span>${esc(name)}</span>`).join('') || '<span class="archive-muted">—</span>'}</td><td><div class="archive-member-actions"><button class="btn archive-text-button" data-member="${esc(row.id)}">编辑</button><button class="btn archive-text-button text-danger" data-delete-member="${esc(row.id)}" aria-label="删除成员 ${esc(row.current_name)}">删除</button></div></td></tr>`).join(''), 'archive-members-table');
             } else if (state.view === 'lookups') {
                 count = data.items.length; $('archiveSummary').textContent = '按需查阅记录';
-                html = table(['时间','操作','查询','返回量'], data.items.map(row => `<tr><td class="archive-time">${esc(time(row.created_at))}</td><td>${esc(row.tool)}</td><td class="archive-query-cell">${esc(Object.entries(row.details.filters || {}).map(([key,value]) => `${key}: ${value}`).join(' · '))}<small>${row.details.cache_hit ? '复用查询定位' : ''}</small></td><td>${Number(row.details.returned_bytes || 0).toLocaleString()} B</td></tr>`).join(''));
+                html = table(['时间','操作','查询','返回量'], data.items.map(row => `<tr><td class="archive-time">${esc(time(row.created_at))}</td><td>${esc(row.tool)}</td><td class="archive-query-cell">${esc(Object.entries(row.details.filters || {}).map(([key,value]) => `${key}: ${value}`).join(' · '))}<small>${row.details.cache_hit ? '复用查询定位' : ''}</small></td><td>${UI.formatNumber(row.details.returned_bytes || 0)} B</td></tr>`).join(''), 'archive-lookups-table');
             } else {
                 count = data.days.length; $('archiveSummary').textContent = '已保存记录的分布；空白日期不代表没有聊天';
-                html = table(['日期','类型','记录数'],data.days.map(row => `<tr><td>${esc(row.day)}</td><td>${esc(row.kind)}</td><td>${Number(row.messages).toLocaleString()}</td></tr>`).join(''));
+                html = table(['日期','类型','记录数'],data.days.map(row => `<tr><td>${esc(row.day)}</td><td>${esc(row.kind)}</td><td>${UI.formatNumber(row.messages)}</td></tr>`).join(''));
             }
             $('archiveResults').innerHTML = count ? html : '<div class="codex-empty">没有匹配记录</div>';
             if (data.status === 'ambiguous_sender') $('archiveResults').innerHTML = html;

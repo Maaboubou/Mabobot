@@ -1,0 +1,12 @@
+{
+  "schema_version": 2,
+  "plugin_api_version": 2,
+  "storage": {"cache_retention_days": 7, "cache_limit_mb": 64},
+  "backup": {"schema_version": 1, "include_persistent_storage": false, "include_generated_files": false, "supports_restore_migration": false, "sensitive": false},
+  "health": {"critical": false, "timeout_seconds": 5},
+  "listeners": [
+    {"event": "text_message_received", "handler": "handle_text_message", "title": "自动翻译文本", "trigger": {"kind": "dynamic", "summary": "翻译所有非空、非纯表情文本", "config_keys": [], "conditions": ["最终是否运行由聊天权限决定"]}, "scope": {"level": "global", "chat_types": ["group", "user"]}, "propagation": "continue"},
+    {"event": "quote_message_received", "handler": "handle_text_message", "title": "自动翻译引用", "trigger": {"kind": "dynamic", "summary": "清理引用后缀后翻译非空、非纯表情文本", "config_keys": [], "conditions": []}, "scope": {"level": "global", "chat_types": ["group", "user"]}, "propagation": "continue"}
+  ],
+  "jobs": []
+}

@@ -20,7 +20,7 @@ const SystemOperations = {
     formatTime(value) {
         if (!value) return '-';
         const date = typeof value === 'number' ? new Date(value * 1000) : new Date(value);
-        return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString('zh-CN', { hour12: false });
+        return Number.isNaN(date.getTime()) ? '-' : UI.formatDateTime(date);
     },
 
     statusLabel(status) {
@@ -86,7 +86,7 @@ const SystemOperations = {
             </div>
             <details class="system-platform-block system-fold" ${unhealthyPlugins ? 'open' : ''}>
                 <summary class="system-platform-block-head"><div><h4>插件状态</h4><p>任务、数据、健康检查和资源清理由系统统一管理</p></div><div class="system-fold-meta"><span class="${unhealthyPlugins ? 'text-danger' : ''}">${unhealthyPlugins ? `${unhealthyPlugins} 个异常` : `${Number(runtime.summary?.total || 0)} 个插件`}</span><i class="bi bi-chevron-down"></i></div></summary>
-                <div class="table-responsive"><table class="table system-compact-table align-middle mb-0">
+                <div class="table-responsive"><table class="table system-compact-table system-plugins-table align-middle mb-0">
                     <thead><tr><th>插件</th><th>健康</th><th>后台任务</th><th>数据占用</th></tr></thead>
                     <tbody>${plugins.length ? plugins.map(item => {
                         const storageBytes = (item.storage?.entries || []).reduce((sum, entry) => sum + Number(entry.bytes || 0), 0);
@@ -128,7 +128,7 @@ const SystemOperations = {
 
     renderIncidents(items) {
         if (!items.length) return '<div class="system-empty-row">最近日志中没有需要关注的警告或错误。</div>';
-        return `<div class="table-responsive"><table class="table system-compact-table align-middle mb-0">
+        return `<div class="table-responsive"><table class="table system-compact-table system-incidents-table align-middle mb-0">
             <thead><tr><th>事件</th><th>组件</th><th>级别</th><th>次数</th><th>最后发生</th></tr></thead>
             <tbody>${items.map(item => `<tr><td data-label="事件"><strong>${this.esc(item.message)}</strong><small>${this.esc(item.fingerprint)}</small></td>
                 <td data-label="组件"><code>${this.esc(item.component)}</code></td>
@@ -139,7 +139,7 @@ const SystemOperations = {
 
     renderAudit(items) {
         if (!items.length) return '<div class="system-empty-row">暂无变更记录。</div>';
-        return `<div class="table-responsive"><table class="table system-compact-table align-middle mb-0">
+        return `<div class="table-responsive"><table class="table system-compact-table system-audit-table align-middle mb-0">
             <thead><tr><th>变更</th><th>对象</th><th>分类</th><th>结果</th><th>时间</th></tr></thead>
             <tbody>${items.map(item => `<tr><td data-label="变更"><strong>${this.esc(item.summary)}</strong><small>${this.esc(item.action)}</small></td>
                 <td data-label="对象"><code>${this.esc(item.target)}</code></td><td data-label="分类">${this.esc(item.category)}</td>
@@ -149,7 +149,7 @@ const SystemOperations = {
 
     renderOperationsTable(items) {
         if (!items.length) return '<div class="system-empty-row">暂无后台任务。</div>';
-        return `<div class="table-responsive"><table class="table system-compact-table align-middle mb-0">
+        return `<div class="table-responsive"><table class="table system-compact-table system-operations-table align-middle mb-0">
             <thead><tr><th>任务</th><th>所有者</th><th>状态</th><th>进度</th><th>更新时间</th><th></th></tr></thead>
             <tbody>${items.map(item => {
                 const active = ['queued', 'running', 'cancelling'].includes(item.status);
@@ -374,7 +374,7 @@ const SystemOperations = {
 
     renderBackupsTable(backups, pendingRestoreName = null, actionsDisabled = false) {
         if (!backups.length) return '<div class="system-empty-row">尚未创建备份。</div>';
-        return `<div class="table-responsive"><table class="table system-compact-table backup-history-table align-middle mb-0">
+        return `<div class="table-responsive"><table class="table system-compact-table backup-history-table system-backup-table align-middle mb-0">
             <thead><tr><th>备份</th><th>类型</th><th>数据</th><th>创建时间</th><th></th></tr></thead>
             <tbody>${backups.map(item => {
                 const pending = item.name === pendingRestoreName;
@@ -485,7 +485,7 @@ const SystemOperations = {
             UI.showError('请输入“恢复备份”');
             return;
         }
-        if (!await UI.confirm('目标数据将在下一次启动前被替换，并会先创建恢复前快照。', { title: '确认准备恢复', confirmText: '准备恢复', danger: true })) return;
+        if (!await UI.confirm('目标数据将在下一次启动前被替换，并会先创建恢复前快照。', { title: '确认准备恢复', confirmText: '准备恢复', variant: 'danger' })) return;
         try {
             const response = await API.backups.prepareRestore(this.restoreSelection, confirmation);
             this.updateBackupOperation(response.operation);

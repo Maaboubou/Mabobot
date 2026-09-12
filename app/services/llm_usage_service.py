@@ -251,6 +251,32 @@ class LLMUsageService:
                          "timezone": datetime.now().astimezone().tzname(), "updated_at": now.isoformat()},
         }
 
+    def series(self, *, days=7):
+        """Daily totals for the trailing window, oldest day first.
+
+        Used by the dashboard sparklines; missing days are returned as zeroed
+        metrics so the chart never has to guess bucket positions.
+        """
+        days = max(1, min(int(days), 30))
+        now = self.clock()
+        keys = [(now.date() - timedelta(days=offset)).isoformat() for offset in range(days - 1, -1, -1)]
+        totals = {key: empty_metrics() for key in keys}
+        with self._connect() as db:
+            db.execute("BEGIN")
+            rows = db.execute(
+                "SELECT bucket, payload FROM usage_aggregate WHERE bucket LIKE 'day:%'"
+            ).fetchall()
+        wanted = set(keys)
+        for row in rows:
+            key = str(row["bucket"])[len("day:"):]
+            if key not in wanted:
+                continue
+            try:
+                merge_metrics(totals[key], json.loads(row["payload"]))
+            except (TypeError, json.JSONDecodeError):
+                continue
+        return [{"date": key, **totals[key]} for key in keys]
+
     def requests(self, *, period="today", subject=None, task=None, limit=20, offset=0):
         if period not in {"today", "7d", "30d", "session", "total"}:
             raise ValueError("Unsupported usage period")

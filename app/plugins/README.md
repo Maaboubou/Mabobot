@@ -15,7 +15,7 @@ app/plugins/my_plugin/
 
 `priority`、`routing_overrides` 和 `block_after_handling` 已废弃，不得出现在插件配置中。消息顺序只有一个事实来源：`app/plugins/routing_order.json`。用户在“插件 → 执行顺序”拖动并应用后，系统直接更新该中央顺序表；新安装的监听器第一次加载时追加到对应事件末尾。
 
-当前触发设置和执行顺序均为全局级，不支持聊天级覆盖。聊天页通过统一插件分配管理普通插件权限、推送权限，以及群聊是否要求 @；推送能力的声明与使用规则见第 2.2 节。
+执行顺序和 Manifest 监听器声明仍为全局级；执行顺序页编辑全局触发设置。插件业务字段可显式声明支持聊天覆盖，并通过 Runtime API v2 读取当前聊天的有效值，接入方式见第 2.3 节。聊天页通过统一插件分配管理普通插件权限、推送权限，以及群聊是否要求 @；独立配置不授予权限，推送规则见第 2.2 节。
 
 ## 2. 最小 config.json
 
@@ -42,7 +42,7 @@ app/plugins/my_plugin/
 }
 ```
 
-凡是允许用户从页面修改的触发条件，必须先在 `config_schema` 声明，并使用 `group: "trigger"`。处理代码必须通过 `get_config()` 读取同一个字段；页面展示值、保存值和运行判断因此来自同一份配置。
+凡是允许用户从页面修改的触发条件，必须先在 `config_schema` 声明，并使用 `group: "trigger"`。全局字段通过 `get_config()` 读取同一个字段；若字段允许聊天覆盖，则处理代码必须改用 `context.config.resolve(chat_id=...)` 读取有效值，不能只增加页面声明。固定触发逻辑不会因新增配置层而自动支持聊天覆盖。
 
 固定在代码里的正则、消息结构或业务前置条件不应伪装成可编辑字段，应写入 Manifest 的 `conditions`，在执行顺序页只读展示。
 
@@ -150,6 +150,18 @@ def get_push_enabled_chats(event_bus):
 
 可参考 [Weekly](Weekly/main.py) 的 `Weekly#push` 权限查询和 [游戏发售日历](game_release_calendar/main.py) 的每月调度、发送前权限查询与发送记录；新插件应按本节规范实现，不以旧插件中的兼容逻辑代替显式声明。
 
+### 2.3 声明每聊天配置与复用模板
+
+在 `config_schema` 的业务字段上设置 `"scope": "global_and_chat"`，平台才允许聊天覆盖；未声明的字段继续全局生效。敏感字段不允许进入聊天覆盖或复用模板。提供合法的 `default`，实际全局值统一写在 `config` 中。
+
+- 继承顺序为字段内置默认 → 插件全局值 → 当前聊天的显式覆盖；数组和对象按字段整体替换。
+- `register(event_bus, subscribe, context)` 中的 `context.config.resolve(chat_id=event.context.get("chat_id"))` 返回当前插件可覆盖字段的有效值字典。每次消息处理读取一次，再向业务方法传递该快照；不要把聊天配置存进共享插件实例或写回全局配置。
+- `chat_id` 是 EventBus 注入的 `WeChatUser.id`，不是聊天名称、微信 ID 或权限行 ID。解析配置不会授予普通权限或 `#push` 权限。
+- 聊天配置由平台主数据库保存，与授权记录独立；复用模板保存完整可覆盖字段快照，导入时复制，后续修改模板不联动聊天。
+- 本能力是 Runtime API v2 的增量接口，无需修改 Manifest 版本或将 `scope.level` 改成 `chat`。
+
+完整配置与代码示例、保存接口、并发版本、模板协议和迁移验收要求见 [每聊天插件配置开发指南](../../docs/PLUGIN_CHAT_CONFIGURATION.md)。翻译助手的具体业务规则见 [翻译配置说明](../../docs/TRANSLATION_CHAT_CONFIG_UPGRADE.md)。
+
 ## 3. manifest.json
 
 ```json
@@ -203,7 +215,7 @@ def get_push_enabled_chats(event_bus):
 | `trigger.summary` | 一句话说明何时进入处理逻辑 |
 | `trigger.config_keys` | 可直接编辑的全局配置键；必须存在于 `config_schema` |
 | `trigger.conditions` | 代码固定条件，只读展示 |
-| `scope.level` | 当前固定为 `global` |
+| `scope.level` | 当前固定为 `global`，描述监听器范围；与 `config_schema` 字段的 `scope` 无关 |
 | `scope.chat_types` | `group`、`user` 或两者 |
 | `scope.chat_name_config_key` | 可选；仅允许配置指定的单一聊天，例如管理员私聊 |
 | `propagation` | `observe`、`continue` 或 `stop_on_consumed` |
@@ -264,6 +276,7 @@ def register(event_bus, subscribe, context):
 - 浏览器配置、硬件索引等机器绑定数据写入 `context.storage.machine_bound_path()`；默认不进入备份，只有管理员显式勾选“包含机器绑定数据”时才打包。
 - 可重建缓存写入 `cache_path()`，临时下载写入 `temp_path()`；默认不备份，卸载时清理临时目录。
 - 后台工作通过 `context.tasks.submit()` 提交，自动获得进度、取消、历史和插件所有权。
+- 可覆盖业务参数通过 `context.config.resolve(chat_id=...)` 获取；全局专用字段仍用 `get_config()`。聊天覆盖由平台数据库管理，不另存到插件文件或存储目录。
 - 长任务通过 `context.tasks.submit()` 运行；长期调度循环通过 `context.workers.start()` 启动，并在循环中检查 `context.workers.stop_event`。
 - 浏览器、HTTP session、线程池等其他资源必须通过 `register_cleanup()` 登记。
 - 插件应注册轻量健康检查；异常会统一出现在“系统 → 运行状态”。
@@ -338,6 +351,7 @@ event_bus.release_session_permission(chat_name, "my_plugin")
 - 耗时工作不得长期阻塞同一聊天的串行消息队列。
 - `logging.getLogger(__name__)`，日志中包含插件名、聊天与失败阶段，但不得泄露密钥。
 - 配置项使用明确标题、说明、类型和默认值；触发字段归入 `trigger` 组。
+- 支持聊天覆盖的字段声明 `scope: "global_and_chat"`，处理器读取当前聊天快照；覆盖继承、重置、跨聊天隔离、授权独立和模板复制语义均需验证，详见每聊天配置开发指南。
 - 使用统一 LLM 路由的每个 `call_type` 都在 `ui.llm_tasks` 声明用户可读名称和用途。
 - Manifest 中每个监听器与 `register()` 逐一对应，定时任务放入 `jobs`。
 - 新插件声明 `plugin_api_version: 2`，并通过 `PluginContext` 管理任务、存储、健康和清理。

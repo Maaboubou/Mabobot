@@ -6,6 +6,7 @@ import hashlib
 import re
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -20,6 +21,23 @@ VOLATILE_PATTERN = re.compile(
     r"\b(?:[0-9a-f]{8,}|\d{4,}|pid=\d+|request_id=[^\s]+|chat=[^\s,]+|sender=[^\s,]+)\b",
     re.IGNORECASE,
 )
+TIMESTAMP_FORMATS = ("%Y-%m-%d %H:%M:%S,%f", "%Y-%m-%d %H:%M:%S")
+
+
+def parse_log_time(value: Any) -> Optional[float]:
+    """Return the epoch seconds for a log timestamp, or ``None`` when unparsable."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in TIMESTAMP_FORMATS:
+        try:
+            return datetime.strptime(text, fmt).timestamp()
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except ValueError:
+        return None
 
 
 class IncidentService:
@@ -37,7 +55,21 @@ class IncidentService:
         digest = hashlib.sha256(f"{component}|{normalized}".encode("utf-8")).hexdigest()[:16]
         return digest, normalized
 
-    def list(self, *, limit: int = 50, scan_lines: int = 10000, level: Optional[str] = None) -> List[Dict[str, Any]]:
+    def list(
+        self,
+        *,
+        limit: int = 50,
+        scan_lines: int = 10000,
+        level: Optional[str] = None,
+        within_hours: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
+        """Grouped log incidents, newest first.
+
+        ``within_hours`` keeps only incidents whose last occurrence is recent.
+        The scan still covers the whole window (and rotated files), so the
+        ``count`` stays a lifetime count; only visibility ages out. Unparsable
+        timestamps are kept rather than hidden.
+        """
         now = time.time()
         with self._lock:
             if now - self._cached_at < self.cache_seconds:
@@ -48,6 +80,12 @@ class IncidentService:
                 self._cached_at = now
         if level:
             incidents = [item for item in incidents if item.get("level") == level.upper()]
+        if within_hours:
+            cutoff = now - max(0.0, float(within_hours)) * 3600
+            incidents = [
+                item for item in incidents
+                if (parse_log_time(item.get("last_seen")) or cutoff + 1) >= cutoff
+            ]
         return incidents[: max(1, min(int(limit), 200))]
 
     def _scan(self, scan_lines: int) -> List[Dict[str, Any]]:
