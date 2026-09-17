@@ -84,8 +84,16 @@ def _tree_size(root: Path) -> tuple[int, int]:
     return total, files
 
 
+from app.services.plugin_config_context import ScopedConfigAttribute
+from app.utils.plugin_config import get_config
+
+
 class ArtifactManager:
     """Own Summary Plus generated files and enforce size/retention policy."""
+
+    @ScopedConfigAttribute
+    def max_artifact_bytes(self):
+        return max(1, int(get_config("max_artifact_size_mb", 512, plugin_name="summary_plus"))) * 1024 * 1024
 
     CATEGORIES = {"videos", "images", "mindmaps", "subtitles", "audio", "metadata"}
 

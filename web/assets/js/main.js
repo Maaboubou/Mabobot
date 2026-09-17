@@ -366,7 +366,7 @@ const App = {
             <div class="mb-2">
                 <div class="d-flex justify-content-between align-items-center mb-2">
                     <span class="badge ${shouldReply ? 'bg-success' : 'bg-secondary'}">
-                        ${shouldReply ? '✅ 需要回复' : '⏸️ 无需回复'}
+                        ${latest.state === 'failed' ? '判断失败' : shouldReply ? '✅ 需要回复' : '⏸️ 无需回复'}
                     </span>
                     <div class="d-flex align-items-center gap-2">
                         ${timeDisplay ? `<small class="text-muted">${this.escapeHtml(timeDisplay)}</small>` : ''}
@@ -377,7 +377,7 @@ const App = {
                         ` : ''}
                     </div>
                 </div>
-                ${judgeName ? `<div class="small text-muted mb-2"><strong>Judge：</strong>${this.escapeHtml(judgeName)}</div>` : ''}
+                ${judgeName ? `<div class="small text-muted mb-2"><strong>接话判断：</strong>${this.escapeHtml(judgeName)}</div>` : ''}
                 <div class="small text-muted">
                     <strong>原因：</strong><br>
                     ${this.escapeHtml(reason)}
@@ -401,7 +401,7 @@ const App = {
             body.innerHTML = `
                 <div class="text-center text-muted py-3">
                     <i class="bi bi-info-circle me-1"></i>
-                    暂无 Judge 历史记录
+                    暂无 接话判断 历史记录
                 </div>
             `;
         } else {
@@ -416,12 +416,12 @@ const App = {
                     <div class="py-3 ${idx > 0 ? 'border-top' : ''}">
                         <div class="d-flex justify-content-between align-items-center gap-2 mb-2">
                             <span class="badge ${itemShouldReply ? 'bg-success' : 'bg-secondary'}">
-                                ${itemShouldReply ? '需要回复' : '无需回复'}
+                                ${item.state === 'failed' ? '判断失败' : itemShouldReply ? '需要回复' : '无需回复'}
                             </span>
                             ${itemTime ? `<small class="text-muted">${this.escapeHtml(itemTime)}</small>` : ''}
                         </div>
                         <div class="small text-muted mb-2">
-                            ${itemJudgeName ? `<strong>Judge：</strong>${this.escapeHtml(itemJudgeName)}` : ''}
+                            ${itemJudgeName ? `<strong>接话判断：</strong>${this.escapeHtml(itemJudgeName)}` : ''}
                             ${itemRoleName ? `${itemJudgeName ? ' &nbsp;|&nbsp; ' : ''}<strong>角色：</strong>${this.escapeHtml(itemRoleName)}` : ''}
                         </div>
                         ${itemAtmosphere ? `<div class="small text-muted mb-2"><strong>氛围：</strong>${this.escapeHtml(itemAtmosphere)}</div>` : ''}
@@ -673,7 +673,10 @@ const App = {
             if (input.matches(':disabled')) return;
             const {configKey: key, configType: type} = input.dataset;
             if (input.dataset.sensitive === 'true' && input.value === '') return;
-            if (input.dataset.configControl === 'languages') {
+            if (input.dataset.configControl === 'json') {
+                try { values[key] = JSON.parse(input.value); }
+                catch (_) { throw Error(`${input.closest('.cap-settings-field')?.querySelector('label')?.textContent || key}：请填写有效的 JSON`); }
+            } else if (input.dataset.configControl === 'languages') {
                 values[key] = JSON.parse(input.value).map(value => UI.normalizeTranslationLanguage(value));
                 if (![2, 3].includes(values[key].length) || values[key].some(value => !value.trim())) throw Error('请选择 2 或 3 种互译语言');
                 if (new Set(values[key].map(value => value.trim().toLowerCase())).size !== values[key].length) throw Error('互译语言不能重复');
@@ -694,139 +697,93 @@ const App = {
             if (!parentForm.isConnected || requestId !== this._capabilitySettingsRequest) return;
             const modal = document.getElementById('configModal');
             const chatName = this._selectedChatPolicy?.chat?.chat_name || `聊天 ${userId}`;
-            if (settings.capability_id === 'builtin_translation' && settings.chat_config) {
-                return this.showTranslationChatSettings(name, settings, parentForm, modal, chatName, userId);
-            }
-            const draft = JSON.parse(parentForm.elements.plugin_config_draft.value)[name] || {};
-            document.getElementById('configModalTitle').textContent = `${chatName} · 本聊天设置`;
-            document.getElementById('configModalBody').innerHTML = UI.renderChatPluginSettingsForm(settings, draft);
+            const displayName = (this._managedChatReferenceData?.capabilities || []).find(item=>item.id===name)?.display_name || settings.display_name || name;
+            document.getElementById('configModalTitle').textContent = `${displayName} · ${chatName}`;
+            document.getElementById('configModalBody').innerHTML = UI.renderChatPluginSettingsForm(settings, {}, {chatName});
             const form = modal.querySelector('#chatPluginSettingsForm');
-            const fields = Object.fromEntries(settings.groups.flatMap(group => group.fields).map(field => [field.key, field]));
-            form.querySelectorAll('[data-chat-config-field]').forEach(section => {
-                const key = section.dataset.chatConfigField;
-                const selector = section.querySelector('[data-chat-config-source]');
-                const editor = section.querySelector('[data-chat-config-editor]');
-                let customValue = (draft.set || {})[key] ?? settings.chat_config.overrides[key] ?? settings.chat_config.effective[key];
-                selector.addEventListener('change', () => {
-                    if (!editor.disabled) {
-                        customValue = this.collectConfigValues(editor)[key];
-                    }
-                    editor.disabled = selector.value === 'global';
-                    editor.innerHTML = UI.renderCapabilitySettingsField({...fields[key], value: editor.disabled ? settings.chat_config.defaults[key] : customValue}, {compact: true});
-                });
-            });
-            const getValues = () => ({...settings.chat_config.defaults, ...this.collectConfigValues(form)});
-            const applyValues = values => {
-                form.querySelectorAll('[data-chat-config-field]').forEach(section => {
-                    const key = section.dataset.chatConfigField;
-                    if (!Object.hasOwn(values, key)) return;
-                    const selector = section.querySelector('[data-chat-config-source]');
-                    selector.value = 'chat';
-                    selector.dispatchEvent(new Event('change'));
-                    const editor = section.querySelector('[data-chat-config-editor]');
-                    editor.innerHTML = UI.renderCapabilitySettingsField({...fields[key], value: values[key]}, {compact: true});
-                });
-            };
-            this.bindConfigTemplates(modal, name, getValues, applyValues);
+            const translation = name === 'builtin_translation';
+            const config = settings.chat_config;
+            const fields = settings.groups.flatMap(group=>group.fields);
             const saveBtn = document.getElementById('configModalSaveBtn');
-            saveBtn.classList.remove('d-none');
-            saveBtn.disabled = false;
-            saveBtn.textContent = '应用到聊天';
-            saveBtn.onclick = () => {
-                if (!parentForm.isConnected || !form.isConnected) return;
-                if (!form.reportValidity()) return;
-                try {
-                    const values = this.collectConfigValues(form);
-                    const reset = [...form.querySelectorAll('[data-chat-config-field]')]
-                        .filter(section => section.querySelector('[data-chat-config-source]').value === 'global')
-                        .map(section => section.dataset.chatConfigField);
-                    const draftInput = parentForm.elements.plugin_config_draft;
-                    const patches = JSON.parse(draftInput.value);
-                    patches[name] = {set: values, reset_fields: reset};
-                    draftInput.value = JSON.stringify(patches);
-                    draftInput.dispatchEvent(new Event('change', {bubbles: true}));
-                    bootstrap.Modal.getInstance(modal)?.hide();
-                    UI.showInfo('已应用到草稿，请点击聊天页面“保存更改”');
-                } catch (error) { UI.showError(error.message); }
+            const resetBtn = form.querySelector('[data-chat-config-reset]');
+            const getValues = () => translation ? UI.readTranslationValues(form) : this.collectConfigValues(form);
+            const getPatch = () => translation ? UI.collectTranslationChatPatch(form, config)
+                : UI.pluginChatPatch(getValues(), config, Boolean(form._resetDefaults));
+            const refresh = () => {
+                let patch = null, valid = true, validationMessage = '';
+                try { patch = getPatch(); } catch (error) { valid = false; validationMessage = error.message; }
+                const validation = form.querySelector('[data-chat-config-error]');
+                if (validation) { validation.textContent = validationMessage; validation.hidden = !validationMessage; }
+                saveBtn.disabled = Boolean(form._saving) || !valid || !patch;
+                const overrides = form._resetDefaults ? {} : {...config.overrides};
+                Object.assign(overrides, patch?.set || {});
+                const custom = Object.keys(overrides).length > 0;
+                form.querySelector('[data-chat-config-status]').textContent = custom ? '已自定义' : '默认配置';
+                resetBtn.disabled = Boolean(form._saving) || (!custom && !patch);
             };
-            new bootstrap.Modal(modal).show();
-        } catch (error) { UI.showError(`加载本聊天设置失败：${error.message}`); }
-    },
-
-    async showTranslationChatSettings(name, settings, parentForm, modal, chatName, userId) {
-        const displayName = (this._managedChatReferenceData?.capabilities || [])
-            .find(item => item.id === name)?.display_name || '翻译助手';
-        document.getElementById('configModalTitle').textContent = `${displayName} · ${chatName}`;
-        document.getElementById('configModalBody').innerHTML = UI.renderChatPluginSettingsForm(settings, {}, {chatName});
-        const form = modal.querySelector('#chatPluginSettingsForm');
-        const editor = form.querySelector('[data-translation-settings]');
-        const scopeToggle = form.querySelector('[data-scope-toggle]');
-        const saveBtn = document.getElementById('configModalSaveBtn');
-        const refreshSave = () => {
-            let patch = null;
-            try { patch = UI.collectTranslationChatPatch(form, settings.chat_config); } catch (_) { patch = null; }
-            saveBtn.disabled = !UI.translationState(form).valid || !patch;
-        };
-        UI.bindTranslationSettings(form, {scope: 'chat', onChange: refreshSave});
-        scopeToggle.addEventListener('change', async () => {
-            const enabled = scopeToggle.checked;
-            const hasOverrides = Object.keys(settings.chat_config.overrides || {}).length > 0;
-            if (!enabled && hasOverrides && !await UI.confirm('保存后会移除本聊天的独立设置，恢复跟随默认。确定继续吗？', {
-                title: '恢复跟随默认', confirmText: '恢复跟随默认'
-            })) {
-                scopeToggle.checked = true;
-                editor._applyScope?.();
-                editor._sync?.();
-                return;
-            }
-            editor._applyScope?.();
-            editor._sync?.();
-        });
-        this.bindConfigTemplates(modal, name,
-            () => UI.readTranslationValues(form, settings.chat_config.effective),
-            values => UI.applyTranslationValues(form, values));
-        this.bindTranslationPreview(modal, () => UI.readTranslationValues(form, settings.chat_config.effective), userId);
-        saveBtn.classList.remove('d-none');
-        saveBtn.disabled = false;
-        saveBtn.textContent = '保存并生效';
-        refreshSave();
-        saveBtn.onclick = async () => {
-            if (!parentForm.isConnected || !form.isConnected) return;
-            let patch;
-            try {
-                patch = UI.collectTranslationChatPatch(form, settings.chat_config);
-            } catch (error) {
-                UI.showError(error.message);
-                return;
-            }
-            if (!patch) {
-                bootstrap.Modal.getInstance(modal)?.hide();
-                return;
-            }
-            saveBtn.disabled = true;
-            saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>正在保存';
-            try {
-                const updated = await API.chatPolicies.update(userId, {
-                    expected_version: Number(parentForm.dataset.version),
-                    plugin_configs: {[name]: patch}
+            const applyValues = values => {
+                if (translation) UI.applyTranslationValues(form, values);
+                else fields.forEach(field => {
+                    if (!Object.hasOwn(values, field.key)) return;
+                    const input = [...form.querySelectorAll('[data-config-key]')].find(item=>item.dataset.configKey===field.key);
+                    if (input) input.closest('.cap-settings-field').outerHTML = UI.renderCapabilitySettingsField({...field, value: values[field.key]});
                 });
-                if (parentForm.isConnected) {
-                    parentForm.dataset.version = String(updated.version);
-                    this._selectedChatPolicy = updated;
-                    UI.setPluginScopeBadge(parentForm, name, Object.keys(updated.plugin_configs?.[name]?.overrides || {}).length > 0);
-                }
-                bootstrap.Modal.getInstance(modal)?.hide();
-                UI.showSuccess('翻译设置已保存并生效');
-            } catch (error) {
-                UI.showError(`保存失败：${error.message}`);
-            } finally {
-                if (form.isConnected) {
-                    saveBtn.textContent = '保存并生效';
-                    refreshSave();
-                }
+                refresh();
+            };
+            if (translation) {
+                UI.bindTranslationSettings(form, {scope: 'chat', onChange: refresh});
+                this.bindConfigTemplates(modal, name, getValues, applyValues);
+                this.bindTranslationPreview(modal, getValues, userId);
             }
-        };
-        new bootstrap.Modal(modal).show();
+            form.addEventListener('submit', event=>event.preventDefault());
+            form.addEventListener('input', refresh);
+            form.addEventListener('change', refresh);
+            resetBtn.onclick = () => {
+                form._resetDefaults = true;
+                applyValues(config.defaults);
+            };
+            saveBtn.classList.remove('d-none');
+            saveBtn.textContent = '保存';
+            saveBtn.onclick = async () => {
+                if (form._saving || !parentForm.isConnected || !form.isConnected) return;
+                let patch;
+                try { patch = getPatch(); } catch (error) { UI.showError(error.message); return; }
+                if (!patch) return;
+                const invalid = form.querySelector(':invalid');
+                if (invalid) {
+                    for (let node = invalid.parentElement; node && node !== form; node = node.parentElement) {
+                        if (node.tagName === 'DETAILS') node.open = true;
+                    }
+                }
+                if (!form.reportValidity()) return;
+                form._saving = true;
+                form.inert = true;
+                refresh();
+                saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>正在保存';
+                try {
+                    const updated = await API.chatPolicies.update(userId, {
+                        expected_version: Number(parentForm.dataset.version), plugin_configs: {[name]: patch}
+                    });
+                    if (parentForm.isConnected) {
+                        parentForm.dataset.version = String(updated.version);
+                        this._selectedChatPolicy = updated;
+                        const drafts = JSON.parse(parentForm.elements.plugin_config_draft.value || '{}');
+                        delete drafts[name];
+                        parentForm.elements.plugin_config_draft.value = JSON.stringify(drafts);
+                        UI.setPluginScopeBadge(parentForm, name, Object.keys(updated.plugin_configs?.[name]?.overrides || {}).length > 0);
+                    }
+                    bootstrap.Modal.getInstance(modal)?.hide();
+                    UI.showSuccess('聊天配置已保存');
+                } catch (error) { UI.showError(`保存失败：${error.message}`); }
+                finally {
+                    form._saving = false;
+                    form.inert = false;
+                    if (form.isConnected) { saveBtn.textContent = '保存'; refresh(); }
+                }
+            };
+            refresh();
+            new bootstrap.Modal(modal).show();
+        } catch (error) { UI.showError(`加载聊天配置失败：${error.message}`); }
     },
 
     bindConfigTemplates(modal, pluginName, getValues, applyValues) {
@@ -940,14 +897,12 @@ const App = {
             this.currentCapabilityId = name;
 
             const displayName = capability.display_name || name;
-            document.getElementById('configModalTitle').textContent = settings.layout === 'simple'
-                ? `${displayName} · 默认设置`
-                : `全局默认 · ${displayName}`;
+            document.getElementById('configModalTitle').textContent = `${displayName} · 默认配置`;
             document.getElementById('configModalBody').innerHTML = UI.renderCapabilitySettingsForm(settings, capability);
 
             const saveBtn = document.getElementById('configModalSaveBtn');
             saveBtn.classList.remove('d-none');
-            saveBtn.textContent = settings.layout === 'simple' ? '保存默认设置' : '保存设置';
+            saveBtn.textContent = '保存默认配置';
             saveBtn.onclick = () => this.saveCapabilitySettings(name);
 
             const modalElement = document.getElementById('configModal');
@@ -1162,7 +1117,8 @@ const App = {
             });
             this.filterManagedChats();
             if (!this.currentThreadName) {
-                const firstManagedChat = mergedList.find(chat => chat.id);
+                const requestedChatId = Number(new URLSearchParams(window.location.search).get('chat_id'));
+                const firstManagedChat = mergedList.find(chat => chat.id === requestedChatId) || mergedList.find(chat => chat.id);
                 if (firstManagedChat) {
                     await this.selectUser(firstManagedChat.chat_name, firstManagedChat.id);
                 }
@@ -1393,7 +1349,7 @@ const App = {
         const proactiveEnabled = Boolean(isGroup && form.elements.proactive_enabled?.checked);
         const judgeValue = proactiveEnabled ? form.elements.judge_id?.value : '';
         if (proactiveEnabled && !judgeValue) {
-            UI.showError('启用主动参与前需要选择一个 Judge');
+            UI.showError('启用主动参与前需要选择一个 接话判断');
             form.elements.judge_id?.focus();
             return;
         }
@@ -1402,6 +1358,7 @@ const App = {
             chat: {
                 is_group: isGroup,
                 listening_enabled: form.elements.listening_enabled.checked,
+                attachment_content_review_enabled: form.elements.attachment_content_review_enabled.checked,
                 sender_blacklist: this.linesFromPolicyField(form, 'sender_blacklist'),
                 ...(isGroup && originalIsGroup ? {
                     bot_group_nickname: form.elements.bot_group_nickname?.value.trim() || '',
@@ -1424,7 +1381,7 @@ const App = {
                     judge_id: judgeValue ? Number(judgeValue) : null
                 } : { proactive_enabled: false, judge_id: null })
             },
-            codex: { mode: codexMode },
+            codex: CodexPermissions.chatPatch(form),
             plugin_grants: pluginGrants,
             plugin_configs: JSON.parse(form.elements.plugin_config_draft?.value || '{}')
         };
@@ -1446,8 +1403,16 @@ const App = {
             UI.showSuccess('聊天策略已保存');
             (updated.side_effect_warnings || []).forEach(message => UI.showInfo(message));
         } catch (error) {
-            UI.showError(`保存失败：${error.message}`);
-            // Keep the user's edits on a version conflict; never silently reload them away.
+            UI.showError(error.status === 409 ? '配置已被其他页面更新。已保留输入，请核对后重新保存。' : `保存失败：${error.message}`);
+            if (error.status === 409) {
+                const latest = await API.chatPolicies.get(userId).catch(() => null);
+                if (latest) {
+                    form.dataset.version = latest.version;
+                    this._selectedChatPolicy = latest;
+                    if (form._permissions) form._permissions = latest.codex;
+                }
+            }
+            // Retain the draft; an explicit second save is required after conflict review.
         } finally {
             controls.forEach(([control, disabled]) => {
                 if (control.isConnected) control.disabled = disabled;
@@ -1495,7 +1460,7 @@ const App = {
     async loadRoles() {
         try {
             // One aggregated request replaces the previous N+1 sequence (users,
-            // each user's permissions, role binding and Judge binding).
+            // each user's permissions, role binding and 接话判断 binding).
             const overview = await API.assistant.getOverview();
             const roles = overview.roles || [];
             const judges = overview.judges || [];
@@ -1508,10 +1473,7 @@ const App = {
 
             UI.updateMetric('statsTotalRoles', roles.length);
             UI.updateMetric('statsTotalJudges', judges.length);
-            this.renderAssistantOverview(overview);
-            this.renderAssistantChats(chats);
-            this.renderPremiumRoles(roles);
-            this.renderPremiumJudges(judges);
+            this.filterAndRenderRoles(document.getElementById('rolesSearchInput')?.value || '');
             this.setAssistantSection(this.getAssistantSectionFromPath(), { history: false });
 
             const searchInput = document.getElementById('rolesSearchInput');
@@ -1522,173 +1484,68 @@ const App = {
                 }, 150));
             }
 
-            const chatsSearch = document.getElementById('assistantChatsSearch');
-            const chatsFilter = document.getElementById('assistantChatsFilter');
-            if (chatsSearch && !chatsSearch.dataset.bound) {
-                chatsSearch.dataset.bound = 'true';
-                chatsSearch.addEventListener('input', UI.debounce(() => {
-                    this.filterAssistantChats();
-                }, 150));
-            }
-            if (chatsFilter && !chatsFilter.dataset.bound) {
-                chatsFilter.dataset.bound = 'true';
-                chatsFilter.addEventListener('change', () => this.filterAssistantChats());
-            }
 
         } catch (e) {
             console.error('Error loading roles/judges:', e);
-            UI.showError('加载 AI 助手控制中心失败：' + e.message);
+            UI.showError('加载角色管理失败：' + e.message);
         }
     },
 
     getAssistantSectionFromPath() {
-        const path = UI.normalizePath(window.location.pathname);
-        if (path === '/assistant/chats') return 'chats';
-        if (path === '/assistant/roles') return 'roles';
-        return 'overview';
+        return UI.normalizePath(window.location.pathname) === '/assistant/judges' ? 'judges' : 'roles';
     },
 
     setAssistantSection(section, options = {}) {
-        const sections = ['overview', 'chats', 'roles'];
-        const selected = sections.includes(section) ? section : 'overview';
-        const ids = {
-            overview: 'assistantOverviewSection',
-            chats: 'assistantChatsSection',
-            roles: 'assistantRolesSection'
-        };
+        if (section === 'chats') { UI.switchTab('users'); return; }
+        const selected = section === 'judges' ? 'judges' : 'roles';
+        this._assistantSection = selected;
+        const ids = { roles: 'assistantRolesSection', judges: 'assistantJudgesSection' };
         document.querySelectorAll('[data-assistant-section]').forEach(button => {
             const active = button.dataset.assistantSection === selected;
             button.classList.toggle('active', active);
             button.setAttribute('aria-selected', String(active));
+            button.id = `assistant-${button.dataset.assistantSection}-tab`;
+            button.setAttribute('aria-controls', ids[button.dataset.assistantSection]);
+            button.tabIndex = active ? 0 : -1;
+            button.onkeydown = event => {
+                if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+                event.preventDefault();
+                const next = event.key === 'Home' ? 'roles' : event.key === 'End' ? 'judges' : selected === 'roles' ? 'judges' : 'roles';
+                this.setAssistantSection(next);
+                document.querySelector(`[data-assistant-section="${next}"]`).focus();
+            };
         });
         Object.entries(ids).forEach(([key, id]) => {
-            document.getElementById(id)?.classList.toggle('d-none', key !== selected);
+            const panel = document.getElementById(id);
+            panel?.classList.toggle('d-none', key !== selected);
+            panel?.setAttribute('role', 'tabpanel');
+            panel?.setAttribute('aria-labelledby', `assistant-${key}-tab`);
         });
+        const search = document.getElementById('rolesSearchInput');
+        const name = selected === 'roles' ? '角色' : '接话判断';
+        if (search) { search.placeholder = `搜索${name}名称、用途或提示词…`; search.setAttribute('aria-label', `搜索${name}`); }
+        const create = document.querySelector('#assistantCreateButton span');
+        if (create) create.textContent = `新建${name}`;
         if (options.history !== false) {
-            const paths = { overview: '/assistant', chats: '/assistant/chats', roles: '/assistant/roles' };
-            const path = paths[selected];
-            if (UI.normalizePath(window.location.pathname) !== path) {
-                window.history.pushState({ tab: 'roles', section: selected }, '', path);
-            }
+            const path = selected === 'judges' ? '/assistant/judges' : '/assistant/roles';
+            if (UI.normalizePath(window.location.pathname) !== path) window.history.pushState({ tab: 'roles', section: selected }, '', path);
         }
     },
 
-    renderAssistantOverview(overview) {
-        const summary = overview.summary || {};
-        const capability = overview.capability || {};
-        const metricContainer = document.getElementById('assistantOverviewStats');
-        if (metricContainer) {
-            const metrics = [
-                ['bi-activity', '运行状态', capability.status === 'running' ? '正在运行' : '未运行', capability.status === 'running' ? 'success' : 'muted'],
-                ['bi-chat-square-text', '已启用聊天', `${summary.enabled_chat_count || 0} / ${summary.chat_count || 0}`, 'primary'],
-                ['bi-broadcast', '主动回复', `${summary.proactive_chat_count || 0} 个聊天`, 'warning'],
-                ['bi-person-badge', '角色 / Judge', `${summary.role_count || 0} / ${summary.judge_count || 0}`, 'violet']
-            ];
-            metricContainer.innerHTML = metrics.map(([icon, label, value, tone]) => `
-                <div class="assistant-metric-card ${tone}">
-                    <i class="bi ${icon}"></i>
-                    <div><small>${label}</small><strong>${value}</strong></div>
-                </div>
-            `).join('');
-        }
-
-        const flags = overview.global || {};
-        const globalSummary = document.getElementById('assistantGlobalSummary');
-        if (globalSummary) {
-            const defaultRole = (overview.roles || []).find(role => role.name === flags.default_role);
-            const rows = [
-                ['默认角色', defaultRole?.display_name || flags.default_role || '未设置'],
-                ['主动回复', '按群聊独立启用'],
-                ['@触发', flags.allow_mention_trigger ? '允许' : '关闭'],
-                ['历史上下文', '最近 50 条 + 按需查阅'],
-                ['网页搜索 / 图片内容补充', `${flags.search_enabled ? '搜索开启' : '搜索关闭'} · ${flags.image_enrichment_enabled ? '图片补充开启' : '图片补充关闭'}`]
-            ];
-            globalSummary.innerHTML = rows.map(([label, value]) => `
-                <div><span>${label}</span><strong>${UI.escapeHtml(String(value))}</strong></div>
-            `).join('');
-        }
-
-        const modelSummary = document.getElementById('assistantModelSummary');
-        if (modelSummary) {
-            const mappings = Object.entries(overview.models?.mappings || {});
-            if (!mappings.length) {
-                modelSummary.innerHTML = '<div class="assistant-empty-inline">尚未配置 Judge 辅助模型。</div>';
-            } else {
-                const labels = {
-                    chat: '对话回复', judge: '主动判断',
-
-                    };
-                modelSummary.innerHTML = mappings.slice(0, 6).map(([type, mapping]) => `
-                    <div><span>${UI.escapeHtml(labels[type] || type)}</span><strong>${UI.escapeHtml(mapping.primary || '未设置')}</strong></div>
-                `).join('');
-            }
-        }
-    },
-
-    filterAssistantChats() {
-        const query = (document.getElementById('assistantChatsSearch')?.value || '').trim().toLowerCase();
-        const filter = document.getElementById('assistantChatsFilter')?.value || 'all';
-        const chats = (this._assistantChats || []).filter(chat => {
-            const matchesText = !query || chat.chat_name.toLowerCase().includes(query);
-            const matchesState = filter === 'all'
-                || (filter === 'enabled' && chat.enabled)
-                || (filter === 'disabled' && !chat.enabled)
-                || (filter === 'proactive' && chat.enabled && chat.proactive_enabled);
-            return matchesText && matchesState;
-        });
-        this.renderAssistantChats(chats);
-    },
-
-    renderAssistantChats(chats) {
-        const container = document.getElementById('assistantChatsGrid');
-        if (!container) return;
-        if (!chats.length) {
-            container.innerHTML = `
-                <div class="assistant-empty-state">
-                    <i class="bi bi-chat-square"></i><strong>没有匹配的聊天</strong>
-                    <span>可以在“聊天”页添加监听对象，然后在这里配置 AI 助手。</span>
-                </div>`;
-            return;
-        }
-        container.innerHTML = chats.map(chat => {
-            const name = UI.escapeHtml(chat.chat_name);
-            const rawName = UI.escapeHtml(chat.chat_name);
-            const role = UI.escapeHtml(chat.role?.display_name || '默认角色');
-            const judge = UI.escapeHtml(chat.judge?.display_name || '未启用');
-            const triggerCard = chat.is_group
-                ? `<div><span>Judge</span><strong>${judge}</strong><small>${chat.proactive_enabled ? '主动回复开启' : '主动回复关闭'}</small></div>`
-                : '<div><span>触发方式</span><strong>收到消息</strong><small>私聊直接回复，无需 Judge</small></div>';
-            return `
-                <article class="assistant-chat-card ${chat.enabled ? 'enabled' : 'disabled'}">
-                    <div class="assistant-chat-card-head">
-                        <div class="assignment-avatar" style="background:${this.getAvatarColor(chat.chat_name)}">${UI.escapeHtml(this.getInitials(chat.chat_name))}</div>
-                        <div class="assistant-chat-identity">
-                            <strong title="${rawName}">${name}</strong>
-                            <small>${chat.is_group ? '群聊' : '私聊'}${chat.is_listening ? ' · 正在监听' : ' · 未监听'}</small>
-                        </div>
-                        <span class="assistant-state-pill ${chat.enabled ? 'on' : 'off'}">${chat.enabled ? 'AI 助手已启用' : '未启用'}</span>
-                    </div>
-                    <div class="assistant-chat-config">
-                        <div><span>角色</span><strong>${role}</strong><small>${chat.role_source === 'chat' ? '聊天覆盖' : '继承全局'}</small></div>
-                        ${triggerCard}
-                        <div><span>连续对话</span><strong>${chat.followup_enabled ? '开启' : '关闭'}</strong><small>${chat.followup_enabled ? `${chat.followup_window_seconds} 秒 · ${chat.followup_max_turns} 轮` : '需要重新触发'}</small></div>
-                        <div><span>聊天档案</span><strong>按需查阅</strong><small>最近 50 条 · 原文长期保存</small></div>
-                    </div>
-                    <div class="assistant-chat-card-footer">
-                        <button class="btn btn-sm btn-light border" onclick="App.showAssistantChatEditor(${Number(chat.id)})"><i class="bi bi-box-arrow-up-right me-1"></i>在聊天页配置</button>
-                    </div>
-                </article>`;
-        }).join('');
+    createAssistantEntry() {
+        if (this._assistantSection === 'judges') this.showCreateJudgeModal();
+        else this.showCreateRoleModal();
     },
 
     async showAssistantGlobalSettings() {
         await this.showCapabilitySettings('assistant');
     },
 
-    openAssistantRoleManager() {
-        window.history.pushState({ tab: 'roles', section: 'roles' }, '', '/assistant/roles');
+    openAssistantRoleManager(section = 'roles') {
+        const selected = section === 'judges' ? 'judges' : 'roles';
+        window.history.pushState({ tab: 'roles', section: selected }, '', `/assistant/${selected}`);
         UI.switchTab('roles', { history: false });
-        this.setAssistantSection('roles', { history: false });
+        this.setAssistantSection(selected, { history: false });
     },
 
     async showAssistantChatEditor(userId) {
@@ -1754,376 +1611,141 @@ const App = {
             normalizeSearchValue(j.prompt).includes(q)
         );
 
-        this.renderPremiumRoles(filteredRoles);
-        this.renderPremiumJudges(filteredJudges);
+        this.renderPremiumRoles(filteredRoles, query);
+        this.renderPremiumJudges(filteredJudges, query);
     },
 
-    renderPremiumRoles(rolesList) {
+    getAssistantEntrySummary(item) {
+        const description = String(item.description || '').trim();
+        if (description) return description;
+        // This is a plain-text excerpt, never an inferred description or rendered Markdown.
+        return String(item.prompt || '')
+            .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+            .replace(/^\s*[-*+]\s+/gm, '')
+            .replace(/\*\*|__|`/g, '')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 160) || '尚未填写用途说明';
+    },
+
+    renderAssistantEntryActions(kind, item) {
+        const isRole = kind === 'role';
+        const label = isRole ? '角色' : '接话判断';
+        const method = isRole ? 'Role' : 'Judge';
+        const id = Number(item.id);
+        const name = UI.escapeHtml(item.display_name || item.name || `未命名${label}`);
+        const userCount = Number(item.user_count || 0);
+        const canDelete = userCount === 0;
+        const reason = canDelete ? '' : `已关联 ${userCount} 个聊天，解除关联后可删除。`;
+        return `
+            <div class="roles-entry-actions">
+                <button type="button" class="btn btn-sm btn-surface" onclick="App.show${method}Editor(${id})"
+                        aria-label="编辑${label}：${name}">编辑</button>
+                <span class="roles-entry-delete-wrap" title="${reason || `删除${label}`}"
+                      ${reason ? `tabindex="0" role="group" aria-label="无法删除${label}：${name}。${reason}"` : ''}>
+                    <button type="button" class="btn btn-sm roles-entry-delete" onclick="App.delete${method}(${id})"
+                            aria-label="删除${label}：${name}" title="${reason || `删除${label}`}" ${canDelete ? '' : 'disabled'}>
+                        <i class="bi bi-trash" aria-hidden="true"></i>
+                    </button>
+                </span>
+            </div>`;
+    },
+
+    renderAssistantCollectionEmpty(kind, query) {
+        if (String(query || '').trim()) {
+            return `<div class="assistant-empty-inline roles-collection-empty" role="status">
+                <span>没有匹配“${UI.escapeHtml(String(query).trim())}”的${kind === 'role' ? '角色' : '接话判断'}</span>
+                <button type="button" class="btn btn-sm btn-surface" onclick="App.clearAssistantEntrySearch()">清除筛选</button>
+            </div>`;
+        }
+        return `<div class="assistant-empty-inline roles-collection-empty">${kind === 'role'
+            ? '还没有角色，点击“新建角色”添加第一个。'
+            : '还没有接话判断，点击“新建接话判断”配置主动回复条件。'}</div>`;
+    },
+
+    clearAssistantEntrySearch() {
+        const search = document.getElementById('rolesSearchInput');
+        if (search) search.value = '';
+        this.filterAndRenderRoles('');
+        search?.focus();
+    },
+
+    renderAssistantEntryChats(kind, identity) {
+        const chats = (this._assistantChats || []).filter(chat => Number(chat[kind]?.id) === Number(identity));
+        if (!chats.length) return '';
+        return `<div class="roles-entry-chats" aria-label="关联聊天">${chats.map(chat => `<button type="button" class="chat-policy-inline-action" onclick="App.showAssistantChatEditor(${Number(chat.id)})">${UI.escapeHtml(chat.chat_name)}</button>`).join('')}</div>`;
+    },
+
+    renderPremiumRoles(rolesList, query = '') {
         const container = document.getElementById('rolesGrid');
         if (!container) return;
 
-        const roleCards = rolesList.map(r => {
-            const rawPrompt = String(r.prompt || '');
-            const promptPreview = UI.escapeHtml(rawPrompt.substring(0, 160)) + (rawPrompt.length > 160 ? '...' : '');
-            const displayName = UI.escapeHtml(r.display_name || r.name || '未命名角色');
-            const description = UI.escapeHtml(r.description || '暂无描述');
+        container.innerHTML = rolesList.map(r => {
             const roleId = Number(r.id);
+            const displayName = UI.escapeHtml(r.display_name || r.name || '未命名角色');
+            const summary = UI.escapeHtml(this.getAssistantEntrySummary(r));
             const userCount = Number(r.user_count || 0);
-            const countBadge = `<span class="badge bg-light text-secondary border rounded-pill"><i class="bi bi-people me-1"></i>${userCount} 个启用</span>`;
-
             return `
-                <div class="premium-card-modern premium-role-card fade-in">
-                    <div class="card-body p-3 flex-grow-1">
-                        <div class="d-flex justify-content-between align-items-start gap-2 mb-1">
-                            <h6 class="card-title fw-bold text-truncate mb-0 u-text-15" title="${displayName}">${displayName}</h6>
-                            ${countBadge}
+                <article class="roles-entry" aria-labelledby="role-${roleId}-title">
+                    <div class="roles-entry-head">
+                        <div class="roles-entry-identity">
+                            <h6 id="role-${roleId}-title" title="${displayName}">${displayName}</h6>
+                            <span class="roles-entry-usage">${userCount > 0 ? `已关联 ${userCount} 个聊天` : '暂未关联聊天'}</span>
                         </div>
-                        <small class="text-muted text-truncate d-block mb-3 u-text-13">${description}</small>
-
-                        <div class="prompt-snippet" title="系统提示词预览">${promptPreview || '<span class="text-muted">提示词为空。</span>'}</div>
-
-                        <div class="d-flex flex-wrap gap-1 mt-2">
-                            ${r.output_split_enabled
-                                ? `<span class="badge bg-success-subtle text-success border border-success-subtle rounded-pill u-text-12"><i class="bi bi-scissors me-1"></i>拆分 ${Number(r.output_max_chars || 0)}×${Number(r.output_max_count || 0)}</span>`
-                                : `<span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle rounded-pill u-text-12"><i class="bi bi-chat-left-dots me-1"></i>单条消息</span>`}
-                            ${r.output_strip_trailing_period ? `<span class="badge bg-info-subtle text-info border border-info-subtle rounded-pill u-text-12"><i class="bi bi-eraser me-1"></i>移除句号</span>` : ''}
-                        </div>
+                        ${this.renderAssistantEntryActions('role', r)}
                     </div>
-                    <div class="premium-card-footer">
-                        <button class="btn btn-sm btn-outline-primary flex-fill" onclick="App.showRoleEditor(${roleId})" title="编辑角色规则">
-                            <i class="bi bi-pencil me-1"></i> 编辑
-                        </button>
-                        <button class="btn btn-sm btn-outline-danger"
-                                onclick="App.deleteRole(${roleId})"
-                                title="${userCount > 0 ? `无法删除：有 ${userCount} 个用户正在使用此角色` : '删除'}"
-                                ${userCount > 0 ? 'disabled' : ''}>
-                            <i class="bi bi-trash"></i>
-                        </button>
-                    </div>
-                </div>
-            `;
-        }).join('');
-
-        container.innerHTML = roleCards || '<div class="assistant-empty-inline">还没有角色，请创建第一个角色。</div>';
+                    <p class="roles-entry-summary" title="${summary}">${summary}</p>
+                    ${this.renderAssistantEntryChats('role', roleId)}
+                    <ul class="roles-entry-properties" aria-label="回复方式">
+                        <li>${r.output_split_enabled
+                            ? `最多 ${Number(r.output_max_count || 0)} 条 · 建议 ${Number(r.output_max_chars || 0)} 字/条`
+                            : '单条消息'}</li>
+                        ${r.output_strip_trailing_period ? '<li>移除句号</li>' : ''}
+                    </ul>
+                </article>`;
+        }).join('') || this.renderAssistantCollectionEmpty('role', query);
     },
 
-    renderPremiumJudges(judgesList) {
+    renderPremiumJudges(judgesList, query = '') {
         const container = document.getElementById('judgesGrid');
         if (!container) return;
 
-        const judgeCards = judgesList.map(j => {
-            const rawPrompt = String(j.prompt || '');
-            const promptPreview = UI.escapeHtml(rawPrompt.substring(0, 160)) + (rawPrompt.length > 160 ? '...' : '');
-            const displayName = UI.escapeHtml(j.display_name || j.name || '未命名 Judge');
-            const description = UI.escapeHtml(j.description || '暂无描述');
+        container.innerHTML = judgesList.map(j => {
             const judgeId = Number(j.id);
+            const displayName = UI.escapeHtml(j.display_name || j.name || '未命名接话判断');
+            const summary = UI.escapeHtml(this.getAssistantEntrySummary(j));
             const userCount = Number(j.user_count || 0);
-            const canDelete = userCount === 0;
-            const deleteTitle = userCount > 0
-                ? `无法删除：有 ${userCount} 个用户正在使用此 Judge`
-                : '删除';
-            const modeBadge = j.prompt_mode === 'template'
-                ? '<span class="badge bg-primary-subtle text-primary border border-primary-subtle rounded-pill u-text-12">模板模式</span>'
-                : '<span class="badge bg-success-subtle text-success border border-success-subtle rounded-pill u-text-12">简洁</span>';
-
             return `
-                <div class="premium-card-modern premium-judge-card fade-in">
-                    <div class="card-body p-3 flex-grow-1">
-                        <div class="d-flex justify-content-between align-items-start gap-2 mb-1">
-                            <h6 class="card-title fw-bold text-truncate mb-0 u-text-15" title="${displayName}">${displayName}</h6>
-                            ${modeBadge}
+                <article class="roles-entry" aria-labelledby="judge-${judgeId}-title">
+                    <div class="roles-entry-head">
+                        <div class="roles-entry-identity">
+                            <h6 id="judge-${judgeId}-title" title="${displayName}">${displayName}</h6>
+                            <span class="roles-entry-usage">${userCount > 0 ? `已关联 ${userCount} 个聊天` : '暂未关联聊天'}</span>
                         </div>
-                        <small class="text-muted text-truncate d-block mb-3 u-text-13">${description}</small>
-
-                        <div class="prompt-snippet" title="判断规则预览">${promptPreview || '<span class="text-muted">规则为空。</span>'}</div>
-
-                        <div class="timing-grid mt-2">
-                            <div class="timing-item" title="触发阈值">
-                                <i class="bi bi-chat-left-dots text-primary"></i>
-                                <span>触发：${Number(j.trigger_msg_threshold || 0)} 条消息</span>
-                            </div>
-                            <div class="timing-item" title="触发间隔（分钟）">
-                                <i class="bi bi-clock text-primary"></i>
-                                <span>间隔：${Number(j.trigger_interval_minutes || 0)} 分钟</span>
-                            </div>
-                            <div class="timing-item" title="冷却阈值">
-                                <i class="bi bi-hourglass text-warning"></i>
-                                <span>冷却：${Number(j.cooldown_msg_threshold || 0)} 条消息</span>
-                            </div>
-                            <div class="timing-item" title="冷却时间（分钟）">
-                                <i class="bi bi-shield text-warning"></i>
-                                <span>冷却：${Number(j.cooldown_minutes || 0)} 分钟</span>
-                            </div>
-                        </div>
+                        ${this.renderAssistantEntryActions('judge', j)}
                     </div>
-                    <div class="premium-card-footer">
-                        <button class="btn btn-sm btn-outline-primary flex-fill" onclick="App.showJudgeEditor(${judgeId})" title="编辑 Judge 设置">
-                            <i class="bi bi-pencil me-1"></i> 编辑
-                        </button>
-                        <button class="btn btn-sm btn-outline-danger"
-                                onclick="App.deleteJudge(${judgeId})"
-                                title="${UI.escapeHtml(deleteTitle)}"
-                                ${canDelete ? '' : 'disabled'}>
-                            <i class="bi bi-trash"></i>
-                        </button>
-                    </div>
-                </div>
-            `;
-        }).join('');
-
-        container.innerHTML = judgeCards || '<div class="assistant-empty-inline">还没有 Judge，主动回复将不会生效。</div>';
+                    <p class="roles-entry-summary" title="${summary}">${summary}</p>
+                    ${this.renderAssistantEntryChats('judge', judgeId)}
+                    <dl class="roles-entry-rules">
+                        <dt>触发</dt><dd>${Number(j.trigger_msg_threshold || 0)} 条消息，且间隔 ${Number(j.trigger_interval_minutes || 0)} 分钟</dd>
+                        <dt>冷却</dt><dd>${Number(j.cooldown_msg_threshold || 0)} 条消息，且经过 ${Number(j.cooldown_minutes || 0)} 分钟</dd>
+                    </dl>
+                </article>`;
+        }).join('') || this.renderAssistantCollectionEmpty('judge', query);
     },
 
     renderTabbedRoleEditorForm(role = {}, isCreate = false) {
-        const splitEnabled = !!role.output_split_enabled;
-        const maxChars = UI.escapeHtml(role.output_max_chars ?? 120);
-        const maxCount = UI.escapeHtml(role.output_max_count ?? 3);
-        const stripPeriod = role.output_strip_trailing_period !== false;
-        const interval = UI.escapeHtml(role.output_interval_seconds ?? 1.0);
-        const roleId = UI.escapeHtml(role.id || '');
-        const displayName = UI.escapeHtml(role.display_name || '');
-        const internalName = UI.escapeHtml(role.name || '');
-        const description = UI.escapeHtml(role.description || '');
-        const prompt = UI.escapeHtml(role.prompt || '');
-
-        return `
-            <form id="roleForm" class="p-1">
-                <input type="hidden" name="id" value="${roleId}">
-
-                <!-- Tab Controls -->
-                <ul class="nav editor-modal-tabs mb-4" role="tablist">
-                    <li class="nav-item" role="presentation">
-                        <button class="nav-link active" id="role-prompt-tab" data-bs-toggle="tab" data-bs-target="#role-prompt-panel" type="button" role="tab">
-                            <i class="bi bi-chat-square-quote"></i> 系统身份
-                        </button>
-                    </li>
-                    <li class="nav-item" role="presentation">
-                        <button class="nav-link" id="role-output-tab" data-bs-toggle="tab" data-bs-target="#role-output-panel" type="button" role="tab">
-                            <i class="bi bi-sliders"></i> 输出拆分
-                        </button>
-                    </li>
-                </ul>
-
-                <!-- Tab Contents -->
-                <div class="tab-content">
-                    <!-- Panel 1: Identity & System Prompt -->
-                    <div class="tab-pane fade show active" id="role-prompt-panel" role="tabpanel">
-                        <div class="row g-3 mb-3">
-                            <div class="col-md-6">
-                                <label class="form-label fw-semibold">显示名称 <span class="text-danger">*</span></label>
-                                <input type="text" class="form-control" name="display_name" value="${displayName}" placeholder="例如：客户服务" required>
-                            </div>
-                            <div class="col-md-6">
-                                <label class="form-label fw-semibold">内部 ID（唯一）<span class="text-danger">*</span></label>
-                                <input type="text" class="form-control ${!isCreate ? 'bg-light' : ''}" name="name" value="${internalName}" placeholder="例如：support_role" ${!isCreate ? 'disabled readonly' : 'required'}>
-                                ${isCreate ? '<div class="form-text u-text-12">仅支持字母、数字和下划线，创建后无法修改。</div>' : ''}
-                            </div>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label fw-semibold">简要描述</label>
-                            <input type="text" class="form-control" name="description" value="${description}" placeholder="简要说明角色用途">
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label fw-semibold d-flex justify-content-between align-items-center">
-                                <span>系统提示词 <span class="text-danger">*</span></span>
-                                <span class="badge bg-secondary-subtle text-secondary rounded-pill fw-normal u-text-12">LLM 指令</span>
-                            </label>
-                            <textarea class="form-control font-monospace border-secondary border-opacity-25 u-text-13" name="prompt" rows="10" placeholder="你是一名专业的聊天助手……" style="line-height: 1.5" required>${prompt}</textarea>
-                            <div class="form-text mt-2 u-text-13" style="line-height: 1.45">
-                                <strong class="text-primary"><i class="bi bi-info-circle"></i> 动态变量：</strong><br>
-                                <code>{chat_text}</code> - 最近消息 &nbsp;|&nbsp;
-                                <code>{search_results}</code> - Web 搜索上下文 &nbsp;|&nbsp;
-                                <code>{sender}</code> - 当前用户 &nbsp;|&nbsp;
-                                <code>{content}</code> - 用户消息
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Panel 2: Human-like Splitting Controls -->
-                    <div class="tab-pane fade" id="role-output-panel" role="tabpanel">
-                        <div class="bg-light p-3 rounded mb-4 border d-flex justify-content-between align-items-center">
-                            <div>
-                                <h6 class="fw-bold mb-1 text-dark">模拟真人输入</h6>
-                                <p class="text-muted mb-0 u-text-13">按角色拆分消息，让 Bot 回复显得更自然。</p>
-                            </div>
-                            <div class="form-check form-switch modern-toggle">
-                                <input class="form-check-input" type="checkbox" role="switch" name="output_split_enabled" ${splitEnabled ? 'checked' : ''}>
-                            </div>
-                        </div>
-
-                        <div class="row g-3">
-                            <div class="col-md-4">
-                                <label class="form-label fw-semibold">单段字符上限</label>
-                                <div class="input-group input-group-sm">
-                                    <input type="number" class="form-control" name="output_max_chars" min="10" max="2000" value="${maxChars}">
-                                    <span class="input-group-text">字符</span>
-                                </div>
-                                <div class="form-text u-text-12">单段消息的最大长度。</div>
-                            </div>
-                            <div class="col-md-4">
-                                <label class="form-label fw-semibold">最多消息段数</label>
-                                <div class="input-group input-group-sm">
-                                    <input type="number" class="form-control" name="output_max_count" min="1" max="10" value="${maxCount}">
-                                    <span class="input-group-text">条</span>
-                                </div>
-                                <div class="form-text u-text-12">一条回复最多拆分成多少段。</div>
-                            </div>
-                            <div class="col-md-4">
-                                <label class="form-label fw-semibold">发送间隔</label>
-                                <div class="input-group input-group-sm">
-                                    <input type="number" class="form-control" name="output_interval_seconds" min="0" max="10" step="0.1" value="${interval}">
-                                    <span class="input-group-text">秒</span>
-                                </div>
-                                <div class="form-text u-text-12">各消息段之间的发送间隔。</div>
-                            </div>
-                        </div>
-
-                        <div class="form-check mt-4 border-top pt-3">
-                            <input class="form-check-input" type="checkbox" name="output_strip_trailing_period" id="stripTrailingPeriod" ${stripPeriod ? 'checked' : ''}>
-                            <label class="form-check-label fw-semibold u-text-15" for="stripTrailingPeriod">移除末尾句号</label>
-                            <div class="form-text u-text-12">自动移除回复末尾的句号（。或 .），使表达更自然。</div>
-                        </div>
-                    </div>
-                </div>
-            </form>
-        `;
+        return PromptWorkbench.render('role', role, isCreate);
     },
 
     renderTabbedJudgeEditorForm(judge = {}, isCreate = false) {
-        const triggerMsgs = UI.escapeHtml(judge.trigger_msg_threshold ?? 5);
-        const triggerMinutes = UI.escapeHtml(judge.trigger_interval_minutes ?? 1);
-        const cooldownMsgs = UI.escapeHtml(judge.cooldown_msg_threshold ?? triggerMsgs);
-        const cooldownMinutes = UI.escapeHtml(judge.cooldown_minutes ?? triggerMinutes);
-        const judgeId = UI.escapeHtml(judge.id || '');
-        const displayName = UI.escapeHtml(judge.display_name || '');
-        const internalName = UI.escapeHtml(judge.name || '');
-        const description = UI.escapeHtml(judge.description || '');
-        const prompt = UI.escapeHtml(judge.prompt || '');
-
-        return `
-            <form id="judgeForm" class="p-1">
-                <input type="hidden" name="id" value="${judgeId}">
-
-                <!-- Tab Controls -->
-                <ul class="nav editor-modal-tabs mb-4" role="tablist">
-                    <li class="nav-item" role="presentation">
-                        <button class="nav-link active" id="judge-rules-tab" data-bs-toggle="tab" data-bs-target="#judge-rules-panel" type="button" role="tab">
-                            <i class="bi bi-shield-check"></i> 判断规则
-                        </button>
-                    </li>
-                    <li class="nav-item" role="presentation">
-                        <button class="nav-link" id="judge-timing-tab" data-bs-toggle="tab" data-bs-target="#judge-timing-panel" type="button" role="tab">
-                            <i class="bi bi-clock"></i> 触发时机
-                        </button>
-                    </li>
-                </ul>
-
-                <!-- Tab Contents -->
-                <div class="tab-content">
-                    <!-- Panel 1: Decision Prompt -->
-                    <div class="tab-pane fade show active" id="judge-rules-panel" role="tabpanel">
-                        <div class="row g-3 mb-3">
-                            <div class="col-md-6">
-                                <label class="form-label fw-semibold">显示名称 <span class="text-danger">*</span></label>
-                                <input type="text" class="form-control" name="display_name" value="${displayName}" placeholder="例如：主动销售 Judge" required>
-                            </div>
-                            <div class="col-md-6">
-                                <label class="form-label fw-semibold">内部 ID（唯一）<span class="text-danger">*</span></label>
-                                <input type="text" class="form-control ${!isCreate ? 'bg-light' : ''}" name="name" value="${internalName}" placeholder="例如：strict_judge" ${!isCreate ? 'disabled readonly' : 'required'}>
-                                ${isCreate ? '<div class="form-text u-text-12">仅支持字母、数字和下划线，创建后无法修改。</div>' : ''}
-                            </div>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label fw-semibold">简要描述</label>
-                            <input type="text" class="form-control" name="description" value="${description}" placeholder="简要说明此 Judge 的用途">
-                        </div>
-                        <div class="row g-3 mb-3">
-                            <div class="col-md-6">
-                                <label class="form-label fw-semibold">提示词判断模式</label>
-                                <select class="form-select" name="prompt_mode" onchange="App.onJudgePromptModeChange(this.value)">
-                                    <option value="simple" ${judge.prompt_mode === 'simple' || !judge.prompt_mode ? 'selected' : ''}>简洁（推荐）</option>
-                                    <option value="template" ${judge.prompt_mode === 'template' ? 'selected' : ''}>模板（高级）</option>
-                                </select>
-                            </div>
-                            <div class="col-md-6 d-flex align-items-end">
-                                <div id="judgePromptModeHint" class="form-text mt-0 bg-light p-2 rounded border u-text-12" style="line-height: 1.4">
-                                    简洁模式会自动注入上下文，系统会强制要求 JSON 输出格式。
-                                </div>
-                            </div>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label fw-semibold d-flex justify-content-between align-items-center">
-                                <span>Judge 判断规则 <span class="text-danger">*</span></span>
-                                <span class="badge bg-secondary-subtle text-secondary rounded-pill fw-normal u-text-12">判断提示词</span>
-                            </label>
-                            <textarea class="form-control font-monospace border-secondary border-opacity-25 u-text-13" name="prompt" rows="9" placeholder="指定触发 Bot 的用户意图条件……" style="line-height: 1.5" required>${prompt}</textarea>
-
-                            <div id="judgeTemplateTools" class="mt-2 d-none">
-                                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="App.insertJudgeTemplateVar('{{chat_text}}')">
-                                    <i class="bi bi-braces me-1"></i> 插入 {{chat_text}}
-                                </button>
-                                <small class="text-muted ms-2">高级用法：使用 <code>{{chat_text}}</code> 注入自定义聊天上下文。</small>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Panel 2: Cadence Timing Controls -->
-                    <div class="tab-pane fade" id="judge-timing-panel" role="tabpanel">
-                        <div class="alert alert-info py-2 px-3 small border-info border-opacity-25 mb-4 d-flex align-items-start gap-2">
-                            <i class="bi bi-info-circle-fill mt-1 text-info"></i>
-                            <div>
-                                <strong>触发频率规则：</strong>主动判断按以下时间限制执行。消息较多或间隔较短时会触发检查，判断拒绝后则进入冷却期。
-                            </div>
-                        </div>
-
-                        <h6 class="fw-bold mb-3 text-dark border-bottom pb-2"><i class="bi bi-lightning text-primary me-1"></i>触发时机规则</h6>
-                        <div class="row g-3 mb-4">
-                            <div class="col-md-6">
-                                <label class="form-label fw-semibold">触发消息数</label>
-                                <div class="input-group input-group-sm">
-                                    <input type="number" class="form-control" name="trigger_msg_threshold" min="0" max="1000" value="${triggerMsgs}">
-                                    <span class="input-group-text">条</span>
-                                </div>
-                                <div class="form-text u-text-12">未回复消息达到此数量时主动检查。</div>
-                            </div>
-                            <div class="col-md-6">
-                                <label class="form-label fw-semibold">触发间隔上限</label>
-                                <div class="input-group input-group-sm">
-                                    <input type="number" class="form-control" name="trigger_interval_minutes" min="0" max="1440" value="${triggerMinutes}">
-                                    <span class="input-group-text">分钟</span>
-                                </div>
-                                <div class="form-text u-text-12">距上一条 AI 消息达到此时长时主动检查。</div>
-                            </div>
-                        </div>
-
-                        <h6 class="fw-bold mb-3 text-dark border-bottom pb-2"><i class="bi bi-hourglass-split text-warning me-1"></i>冷却规则（判断拒绝后）</h6>
-                        <div class="row g-3">
-                            <div class="col-md-6">
-                                <label class="form-label fw-semibold">冷却消息数</label>
-                                <div class="input-group input-group-sm">
-                                    <input type="number" class="form-control" name="cooldown_msg_threshold" min="0" max="1000" value="${cooldownMsgs}">
-                                    <span class="input-group-text">条</span>
-                                </div>
-                                <div class="form-text u-text-12">Judge 拒绝后，在收到这些消息前跳过主动检查。</div>
-                            </div>
-                            <div class="col-md-6">
-                                <label class="form-label fw-semibold">冷却时长</label>
-                                <div class="input-group input-group-sm">
-                                    <input type="number" class="form-control" name="cooldown_minutes" min="0" max="1440" value="${cooldownMinutes}">
-                                    <span class="input-group-text">分钟</span>
-                                </div>
-                                <div class="form-text u-text-12">Judge 拒绝后，在此时长内跳过主动检查。</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </form>
-        `;
+        return PromptWorkbench.render('judge', judge, isCreate);
     },
 
     showCreateRoleModal() {
         const html = this.renderTabbedRoleEditorForm({}, true);
         document.getElementById('configModalBody').innerHTML = html;
+            PromptWorkbench.mount();
         document.getElementById('configModalTitle').textContent = '创建新角色';
 
         const saveBtn = document.getElementById('configModalSaveBtn');
@@ -2142,6 +1764,7 @@ const App = {
 
             const html = this.renderTabbedRoleEditorForm(role, false);
             document.getElementById('configModalBody').innerHTML = html;
+            PromptWorkbench.mount();
             document.getElementById('configModalTitle').textContent = `编辑角色：${role.display_name}`;
 
             const saveBtn = document.getElementById('configModalSaveBtn');
@@ -2158,14 +1781,18 @@ const App = {
     },
 
     async saveRole(roleId) {
+        const saveButton = document.getElementById('configModalSaveBtn');
+        if (saveButton?.disabled) return;
+        if (saveButton) saveButton.disabled = true;
         try {
             const form = document.getElementById('roleForm');
             if (!form.checkValidity()) {
-                form.reportValidity();
+                PromptWorkbench.revealInvalid(form);
                 return;
             }
 
             const data = {
+                revision: form.elements.revision?.value || null,
                 display_name: form.display_name.value,
                 description: form.description.value,
                 prompt: form.prompt.value,
@@ -2177,13 +1804,15 @@ const App = {
             };
 
             // If creating, we also need the name
+            let saved;
             if (!roleId) {
                 data.name = form.name.value;
-                await API.roles.create(data);
+                saved = await API.roles.create(data);
             } else {
-                await API.roles.update(roleId, data);
+                saved = await API.roles.update(roleId, data);
             }
 
+            UI.showSuccess(saved?.applied === false ? '已保存；助手启动或重新加载后生效' : '已保存；下一次请求采用新配置');
             const modal = bootstrap.Modal.getInstance(document.getElementById('configModal'));
             if (modal) modal.hide();
 
@@ -2191,6 +1820,8 @@ const App = {
             await this.loadRoles();
         } catch (e) {
             UI.showError('操作失败：' + e.message);
+        } finally {
+            if (saveButton) saveButton.disabled = false;
         }
     },
 
@@ -2211,7 +1842,8 @@ const App = {
     showCreateJudgeModal() {
         const html = this.renderTabbedJudgeEditorForm({}, true);
         document.getElementById('configModalBody').innerHTML = html;
-        document.getElementById('configModalTitle').textContent = '创建新 Judge';
+            PromptWorkbench.mount();
+        document.getElementById('configModalTitle').textContent = '创建接话判断';
 
         const saveBtn = document.getElementById('configModalSaveBtn');
         saveBtn.classList.remove('d-none');
@@ -2220,7 +1852,7 @@ const App = {
         };
 
         new bootstrap.Modal(document.getElementById('configModal')).show();
-        this.onJudgePromptModeChange('simple');
+
     },
 
     async showJudgeEditor(judgeId) {
@@ -2230,7 +1862,8 @@ const App = {
 
             const html = this.renderTabbedJudgeEditorForm(judge, false);
             document.getElementById('configModalBody').innerHTML = html;
-            document.getElementById('configModalTitle').textContent = `编辑 Judge：${judge.display_name}`;
+            PromptWorkbench.mount();
+            document.getElementById('configModalTitle').textContent = `编辑接话判断：${judge.display_name}`;
 
             const saveBtn = document.getElementById('configModalSaveBtn');
             saveBtn.classList.remove('d-none');
@@ -2239,54 +1872,28 @@ const App = {
             };
 
             new bootstrap.Modal(document.getElementById('configModal')).show();
-            this.onJudgePromptModeChange(judge.prompt_mode || 'simple');
+
         } catch (e) {
             UI.showError(e.message);
         }
     },
 
-    onJudgePromptModeChange(mode) {
-        const hint = document.getElementById('judgePromptModeHint');
-        const tools = document.getElementById('judgeTemplateTools');
-        const isTemplate = mode === 'template';
-
-        if (hint) {
-            hint.textContent = isTemplate
-                ? '模板模式：使用 {chat_text} / {{chat_text}} 插入上下文。系统仍会强制要求 JSON 输出格式。'
-                : '简洁模式会自动注入上下文。系统会强制要求 JSON 输出格式，无需手动指定。';
-        }
-        if (tools) {
-            tools.classList.toggle('d-none', !isTemplate);
-        }
-    },
-
-    insertJudgeTemplateVar(token) {
-        const form = document.getElementById('judgeForm');
-        if (!form || !form.prompt) return;
-
-        const textarea = form.prompt;
-        const start = textarea.selectionStart || 0;
-        const end = textarea.selectionEnd || 0;
-        const before = textarea.value.substring(0, start);
-        const after = textarea.value.substring(end);
-
-        textarea.value = `${before}${token}${after}`;
-        textarea.focus();
-        textarea.selectionStart = textarea.selectionEnd = start + token.length;
-    },
-
     async saveJudge(judgeId) {
+        const saveButton = document.getElementById('configModalSaveBtn');
+        if (saveButton?.disabled) return;
+        if (saveButton) saveButton.disabled = true;
         try {
             const form = document.getElementById('judgeForm');
             if (!form.checkValidity()) {
-                form.reportValidity();
+                PromptWorkbench.revealInvalid(form);
                 return;
             }
 
             const data = {
+                revision: form.elements.revision?.value || null,
                 display_name: form.display_name.value,
                 description: form.description.value,
-                prompt_mode: form.prompt_mode.value,
+                prompt_mode: "simple",
                 prompt: form.prompt.value,
                 trigger_msg_threshold: parseInt(form.trigger_msg_threshold.value || '0', 10),
                 trigger_interval_minutes: parseInt(form.trigger_interval_minutes.value || '0', 10),
@@ -2294,24 +1901,28 @@ const App = {
                 cooldown_minutes: parseInt(form.cooldown_minutes.value || '0', 10)
             };
 
+            let saved;
             if (!judgeId) {
                 data.name = form.name.value;
-                await API.judges.create(data);
+                saved = await API.judges.create(data);
             } else {
-                await API.judges.update(judgeId, data);
+                saved = await API.judges.update(judgeId, data);
             }
 
+            UI.showSuccess(saved?.applied === false ? '已保存；助手启动或重新加载后生效' : '已保存；下一次请求采用新配置');
             const modal = bootstrap.Modal.getInstance(document.getElementById('configModal'));
             if (modal) modal.hide();
             this.loadRoles();
         } catch (e) {
-            UI.showError('Judge 操作失败：' + e.message);
+            UI.showError('接话判断操作失败：' + e.message);
+        } finally {
+            if (saveButton) saveButton.disabled = false;
         }
     },
 
     async deleteJudge(judgeId) {
-        if (!await UI.confirm('确定删除此 Judge 吗？该操作无法撤销。', {
-            title: '删除 Judge',
+        if (!await UI.confirm('确定删除此接话判断吗？该操作无法撤销。', {
+            title: '删除接话判断',
             confirmText: '删除',
             variant: 'danger'
         })) return;
@@ -2319,7 +1930,7 @@ const App = {
             await API.judges.delete(judgeId);
             this.loadRoles();
         } catch (e) {
-            UI.showError('删除 Judge 失败：' + e.message);
+            UI.showError('删除接话判断 失败：' + e.message);
         }
     },
 

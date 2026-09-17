@@ -67,7 +67,7 @@ class ReleaseCalendarPlugin:
         finally:
             db.close()
 
-    def submit(self, month, wx=None, chat_name=None, scheduled=False, resume_run_id=None):
+    def submit(self, month, wx=None, chat_name=None, scheduled=False, resume_run_id=None, operation=None):
         if resume_run_id is not None:
             if scheduled or not re.fullmatch(r"[0-9a-f]{32}", str(resume_run_id)):
                 raise ValueError("恢复任务须指定有效的运行编号，且不能作为定时发布")
@@ -100,7 +100,7 @@ class ReleaseCalendarPlugin:
                 if scheduled:
                     if not result.get("publishable", False):
                         raise RuntimeError("资料覆盖或核实未通过，已保留预览，停止自动发布")
-                    self._publish(month, result, wx, cancelled=lambda: operation.cancelled)
+                    self._publish(month, result, wx, cancelled=lambda: operation.cancelled, target_chat=chat_name)
                 elif wx and chat_name:
                     paths = [str(path) for path in result.get("image_paths", [])]
                     if paths and not wx.send_files(chat_name, paths):
@@ -115,6 +115,8 @@ class ReleaseCalendarPlugin:
                     self.active = False
 
         try:
+            if operation is not None:
+                return run(operation)
             return self.context.tasks.submit(
                 "monthly_publish" if scheduled else "calendar_preview",
                 f"刘局推荐 · {month} 发售日历",
@@ -126,7 +128,7 @@ class ReleaseCalendarPlugin:
                 self.active = False
             raise
 
-    def _publish(self, month, result, wx, cancelled=lambda: False):
+    def _publish(self, month, result, wx, cancelled=lambda: False, target_chat=None):
         if not wx:
             raise RuntimeError("消息发送服务尚未就绪")
         paths = [str(path) for path in result.get("image_paths", [])]
@@ -135,6 +137,8 @@ class ReleaseCalendarPlugin:
         state = self._read_state()
         # Generation may take several minutes: refresh grants before sending.
         for chat_name in self._push_enabled_chats():
+            if target_chat is not None and chat_name != target_chat:
+                continue
             key = f"{month}:{chat_name}"
             if key in state:
                 continue
@@ -170,26 +174,17 @@ class ReleaseCalendarPlugin:
         return True
 
     def scheduler(self):
-        while not self.context.workers.stop_event.is_set():
-            try:
-                now = datetime.now(ZoneInfo("Asia/Shanghai"))
-                publish_time = str(cfg("publish_time", "09:00"))
-                if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", publish_time):
-                    raise ValueError("每月发布时间须为 HH:MM")
-                if now.day == 1 and now.strftime("%H:%M") >= publish_time:
-                    month = now.strftime("%Y-%m")
-                    state = self._read_state()
-                    claim = f"attempt:{month}"
-                    if claim not in state and not self.active and self._push_enabled_chats():
-                        wx = self.event_bus.context.get("wx")
-                        if wx:
-                            # Record admission once per month. Failures stay visible in tasks.
-                            state[claim] = {"status": "claimed"}
-                            self._save_state(state)
-                            self.submit(month, wx=wx, scheduled=True)
-            except Exception:
-                logger.exception("%s monthly scheduler failed", PLUGIN_NAME)
-            self.context.workers.stop_event.wait(30)
+        from app.services.plugin_chat_schedule import ChatSchedule
+
+        def publish(chat_name, operation):
+            month = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m")
+            self.submit(month, wx=self.event_bus.context.get("wx"), chat_name=chat_name,
+                        scheduled=True, operation=operation)
+
+        schedule = ChatSchedule(self.context, self.event_bus, time_key="publish_time",
+                                month_day=1, execution_lock=threading.Lock(),
+                                ready=lambda: not self.active, callback=publish)
+        schedule.run()
 
 
 def handle_text(event):

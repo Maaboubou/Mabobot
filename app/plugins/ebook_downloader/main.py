@@ -9,6 +9,7 @@ from typing import Any, Optional
 
 from app.core.event_bus import Event, EventType
 from app.services.llm_manager import get_llm_manager
+from app.services.plugin_config_context import ScopedConfigAttribute
 from app.utils.plugin_config import get_config
 
 from .browser_service import EbookBrowserError, EbookBrowserService
@@ -32,6 +33,35 @@ def _cfg(key: str, default: Any) -> Any:
 
 
 class EbookDownloaderPlugin:
+    @ScopedConfigAttribute
+    def policy(self):
+        custom = str(_cfg("local_policy_path", "") or "").strip()
+        return PolicyEngine.from_paths(Path(__file__).with_name("download_policy_rules.json"), Path(custom) if custom else None)
+
+    @ScopedConfigAttribute
+    def trigger_keywords(self):
+        return tuple((str(item).strip() for item in _cfg('trigger_keywords', ['找书', '下载电子书', '电子书']) or [] if str(item).strip()))
+
+    @ScopedConfigAttribute
+    def session_timeout(self):
+        return min(60, max(10, int(_cfg('session_timeout_seconds', 60) or 60)))
+
+    @ScopedConfigAttribute
+    def max_choices(self):
+        return min(5, max(1, int(_cfg('max_choices', 5) or 5)))
+
+    @ScopedConfigAttribute
+    def parse_confidence_threshold(self):
+        return min(1.0, max(0.0, float(_cfg('parse_confidence_threshold', 0.85) or 0.85)))
+
+    @ScopedConfigAttribute
+    def selection_options(self):
+        return {'title_author_threshold': float(_cfg('title_author_threshold', 0.9) or 0.9), 'title_only_threshold': float(_cfg('title_only_threshold', 0.96) or 0.96), 'title_author_margin': float(_cfg('title_author_margin', 0.08) or 0.08), 'title_only_margin': float(_cfg('title_only_margin', 0.12) or 0.12), 'max_choices': self.max_choices}
+
+    @ScopedConfigAttribute
+    def browser(self):
+        return EbookBrowserService(temp_root=self.context.storage.temp_root, page_timeout=int(_cfg('page_timeout_seconds', 20) or 20), download_timeout=int(_cfg('download_timeout_seconds', 120) or 120), max_file_mb=int(_cfg('max_file_mb', 100) or 100))
+
     def __init__(self, event_bus: Any, context: Any):
         self.event_bus = event_bus
         self.context = context
@@ -284,7 +314,7 @@ class EbookDownloaderPlugin:
         with self._session_lock:
             self._remove_session_locked(chat_name, sender_key)
             payload = tuple((request, choice) for choice in choices[: self.max_choices])
-            session = self._sessions.put(chat_name, sender_key, payload)
+            session = self._sessions.put(chat_name, sender_key, payload, ttl_seconds=self.session_timeout, max_choices=self.max_choices)
             self.event_bus.request_session_permission(chat_name, PLUGIN_NAME, self.session_timeout)
             timer = self.context.workers.start_timer(
                 f"ebook-choice-{time.time_ns()}",

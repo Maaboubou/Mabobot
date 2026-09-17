@@ -21,6 +21,7 @@ from app.services.shared_chrome import get_shared_chrome_operation_lock
 from app.services.email_service import get_email_service
 from app.services.plugin_runtime import PluginContext
 from app.services.runtime_operations import OperationContext
+from app.services.plugin_config_context import ScopedConfigAttribute
 from app.utils.plugin_config import get_config
 from .asr_service import bili_transcribe_local, douyin_transcribe_local
 from .browser_service import browser_summarize
@@ -71,6 +72,150 @@ class SummaryService(BrowserRuntimeMixin, MediaPipelineMixin, XiaohongshuMixin):
 
     # 内容限制
     MAX_CONTENT_LENGTH = 20000  # 最大内容长度(字符)
+
+    @ScopedConfigAttribute
+    def max_pending_tasks(self):
+        return max(1, int(get_config('max_pending_tasks', plugin_name='summary_plus', default=12)))
+
+    @ScopedConfigAttribute
+    def media_worker_count(self):
+        return max(1, int(get_config('media_worker_count', plugin_name='summary_plus', default=2)))
+
+    @ScopedConfigAttribute
+    def artifact_retention_hours(self):
+        return max(1, int(get_config('artifact_retention_hours', plugin_name='summary_plus', default=24)))
+
+    @ScopedConfigAttribute
+    def max_artifact_size_mb(self):
+        return max(1, int(get_config('max_artifact_size_mb', plugin_name='summary_plus', default=512)))
+
+    @ScopedConfigAttribute
+    def artifact_quota_mb(self):
+        return max(1, int(get_config('artifact_quota_mb', plugin_name='summary_plus', default=8192)))
+
+    @ScopedConfigAttribute
+    def page_load_timeout(self):
+        return int(get_config('page_load_timeout', plugin_name='summary_plus'))
+
+    @ScopedConfigAttribute
+    def webdriver_command_timeout_sec(self):
+        return int(get_config('webdriver_command_timeout_sec', plugin_name='summary_plus', default=8))
+
+    @ScopedConfigAttribute
+    def special_translation_groups(self):
+        return set(get_config('special_translation_groups', plugin_name='summary_plus') or [])
+
+    @ScopedConfigAttribute
+    def special_translation_target_language(self):
+        return str(get_config('special_translation_target_language', plugin_name='summary_plus') or 'English')
+
+    @ScopedConfigAttribute
+    def domain_blacklist(self):
+        return [d.lower() for d in get_config('domain_blacklist', plugin_name='summary_plus') or []]
+
+    @ScopedConfigAttribute
+    def sender_blacklist(self):
+        return set((s.lower().strip() for s in get_config('sender_blacklist', plugin_name='summary_plus') or [] if isinstance(s, str) and s.strip()))
+
+    @ScopedConfigAttribute
+    def prompt_summary(self):
+        return get_config('prompt_summary', plugin_name='summary_plus')
+
+    @ScopedConfigAttribute
+    def prompt_bilibili_mindmap(self):
+        return str(get_config('prompt_bilibili_mindmap', plugin_name='summary_plus', default=MINDMAP_SYSTEM_PROMPT_DEFAULT) or MINDMAP_SYSTEM_PROMPT_DEFAULT)
+
+    @ScopedConfigAttribute
+    def prompt_youtube_mindmap(self):
+        return str(get_config('prompt_youtube_mindmap', plugin_name='summary_plus', default=MINDMAP_SYSTEM_PROMPT_DEFAULT) or MINDMAP_SYSTEM_PROMPT_DEFAULT)
+
+    @ScopedConfigAttribute
+    def mindmap_layout(self):
+        return str(get_config('mindmap_layout', plugin_name='summary_plus', default='vertical') or 'vertical').strip().lower()
+
+    @ScopedConfigAttribute
+    def danmaku_font_size(self):
+        return int(get_config('danmaku_font_size', plugin_name='summary_plus', default=50))
+
+    @ScopedConfigAttribute
+    def danmaku_line_spacing(self):
+        return float(get_config('danmaku_line_spacing', plugin_name='summary_plus', default=1.2))
+
+    @ScopedConfigAttribute
+    def danmaku_display_region_ratio(self):
+        return float(get_config('danmaku_display_region_ratio', plugin_name='summary_plus', default=0.8))
+
+    @ScopedConfigAttribute
+    def danmaku_limit_window_seconds(self):
+        return float(get_config('danmaku_limit_window_seconds', plugin_name='summary_plus', default=5))
+
+    @ScopedConfigAttribute
+    def danmaku_max_per_window(self):
+        return int(get_config('danmaku_max_per_window', plugin_name='summary_plus', default=20))
+
+    @ScopedConfigAttribute
+    def bilibili_danmaku_webmask_enabled(self):
+        return bool(get_config('bilibili_danmaku_webmask_enabled', plugin_name='summary_plus', default=True))
+
+    @ScopedConfigAttribute
+    def bilibili_video_crf(self):
+        return int(get_config('bilibili_video_crf', plugin_name='summary_plus', default=20))
+
+    @ScopedConfigAttribute
+    def bilibili_max_download_duration(self):
+        return int(get_config('bilibili_max_download_duration', plugin_name='summary_plus', default=300))
+
+    @ScopedConfigAttribute
+    def douyin_max_download_duration(self):
+        return max(1, int(get_config('douyin_max_download_duration', plugin_name='summary_plus', default=300)))
+
+    @ScopedConfigAttribute
+    def ffmpeg_bin(self):
+        return self._resolve_media_tool('ffmpeg', plugin_name='summary_plus', configured_path=str(get_config('ffmpeg_path', plugin_name='summary_plus', default='') or ''))
+
+    @ScopedConfigAttribute
+    def ffprobe_bin(self):
+        return self._resolve_media_tool('ffprobe', plugin_name='summary_plus', configured_path=str(get_config('ffprobe_path', plugin_name='summary_plus', default='') or ''))
+
+    @ScopedConfigAttribute
+    def local_asr_enabled(self):
+        return bool(get_config('local_asr_enabled', plugin_name='summary_plus', default=True))
+
+    @ScopedConfigAttribute
+    def local_asr_max_duration_minutes(self):
+        return max(1, int(get_config('local_asr_max_duration_minutes', plugin_name='summary_plus', default=35)))
+
+    @ScopedConfigAttribute
+    def local_asr_timeout_seconds(self):
+        return max(30, int(get_config('local_asr_timeout_seconds', plugin_name='summary_plus', default=600)))
+
+    @ScopedConfigAttribute
+    def xhs_max_download_duration(self):
+        return int(get_config('xhs_max_download_duration', plugin_name='summary_plus', default=300))
+
+    @ScopedConfigAttribute
+    def xhs_max_images(self):
+        return int(get_config('xhs_max_images', plugin_name='summary_plus', default=9))
+
+    @ScopedConfigAttribute
+    def yt_transcript_proxy(self):
+        return get_config('yt_transcript_proxy', plugin_name='summary_plus', default='')
+
+    @ScopedConfigAttribute
+    def yt_transcript_local_port(self):
+        return int(get_config('yt_transcript_local_port', plugin_name='summary_plus', default=7897))
+
+    @ScopedConfigAttribute
+    def bilibili_burn_danmu(self):
+        return bool(get_config('bilibili_burn_danmu', plugin_name='summary_plus', default=True))
+
+    @ScopedConfigAttribute
+    def bili_cookie_email_alert_enabled(self):
+        return bool(get_config('bili_cookie_email_alert_enabled', plugin_name='summary_plus', default=True))
+
+    @ScopedConfigAttribute
+    def bili_cookie_alert_cooldown_sec(self):
+        return int(get_config('bili_cookie_alert_cooldown_sec', plugin_name='summary_plus', default=21600))
 
     def __init__(self, context: Optional[PluginContext] = None):
         self.llm_manager = get_llm_manager()

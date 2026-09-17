@@ -74,6 +74,27 @@ class RoleManager:
         except Exception as e:
             logger.error(f"❌ 从数据库加载角色失败: {e}", exc_info=True)
 
+    def get_role_snapshot(self, role_name: str) -> tuple[str, dict]:
+        """Read one coherent row so edits apply across Web/listener processes."""
+        try:
+            from app.models.base import SessionLocal
+            from app.models.chatbot_role import ChatBotRole
+            with SessionLocal() as db:
+                role = db.query(ChatBotRole).filter(ChatBotRole.name == role_name).first()
+                if role is not None:
+                    return role.prompt, {
+                        "enabled": bool(role.output_split_enabled),
+                        "max_chars": int(role.output_max_chars or 120),
+                        "max_count": int(role.output_max_count or 3),
+                        "strip_trailing_period": bool(role.output_strip_trailing_period),
+                        "interval_seconds": float(role.output_interval_seconds or 0),
+                    }
+        except Exception:
+            logger.debug("角色实时读取不可用，使用已加载配置", exc_info=True)
+        return (self.roles.get(role_name, self.roles.get("通用助手", self._get_default_role_template())),
+                self.output_settings.get(role_name, {"enabled": False, "max_chars": 120,
+                    "max_count": 3, "strip_trailing_period": True, "interval_seconds": 1.0}).copy())
+
     def get_role_prompt(self, role_name: str, variables: dict = None) -> str:
         """获取指定角色的 prompt 并替换系统变量
 
@@ -91,15 +112,7 @@ class RoleManager:
         logger.debug(f"🔍 尝试获取角色 '{role_name}' 的prompt，当前roles字典有 {len(self.roles)} 个角色")
         logger.debug(f"📋 当前所有角色: {list(self.roles.keys())}")
 
-        # 获取基础 Prompt
-        if role_name in self.roles:
-            logger.debug(f"✅ 找到角色 '{role_name}'")
-            base_prompt = self.roles[role_name]
-        else:
-            # 如果找不到，使用默认角色
-            base_prompt = self.roles.get("通用助手", self._get_default_role_template())
-            logger.warning(f"⚠️ 角色 '{role_name}' 不存在，使用默认角色")
-
+        base_prompt, _ = self.get_role_snapshot(role_name)
 
         # 如果提供了变量，进行替换
         if variables:
@@ -110,13 +123,7 @@ class RoleManager:
 
     def get_output_settings(self, role_name: str) -> dict:
         """获取角色的输出规范配置。"""
-        return self.output_settings.get(role_name, {
-            "enabled": False,
-            "max_chars": 120,
-            "max_count": 3,
-            "strip_trailing_period": True,
-            "interval_seconds": 1.0,
-        }).copy()
+        return self.get_role_snapshot(role_name)[1]
 
     def add_role(self, role_name: str, prompt: str) -> bool:
         """添加新角色"""
@@ -188,20 +195,7 @@ class RoleManager:
             logger.error(f"❌ 保存角色配置失败: {e}")
 
     def _get_default_role_template(self) -> str:
-        """获取默认角色模板（包含所有系统变量）"""
-        return """你是一个专业的AI助手。
-
-## 聊天历史
-{chat_text}
-
-## 网络搜索结果
-{search_results}
-
-## 当前问题
-发送者：{sender}
-问题：{content}
-
-请基于以上信息提供专业、准确的回复。"""
+        return "你是一个专业的 AI 助手，提供准确、简洁的回复。"
 
     def reload_roles(self) -> None:
         """重新加载角色配置"""

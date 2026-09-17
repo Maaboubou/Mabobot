@@ -17,11 +17,11 @@ ASSISTANT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "assistant" / "con
 def get_plugin_config(plugin_name: str, plugin_path: Optional[str] = None) -> Dict[str, Any]:
     """
     读取插件的配置文件
-    
+
     Args:
         plugin_name: 插件名称
         plugin_path: 插件路径，如果不提供则自动推断
-        
+
     Returns:
         插件配置字典，如果读取失败返回空字典
     """
@@ -37,11 +37,11 @@ def get_plugin_config(plugin_name: str, plugin_path: Optional[str] = None) -> Di
             # 将插件名称中的斜杠转换为路径分隔符
             plugin_path_parts = plugin_name.split('/')
             config_file = Path(__file__).parent.parent / "plugins" / Path(*plugin_path_parts) / "config.json"
-        
+
         if not config_file.exists():
             logger.warning(f"Plugin config file not found: {config_file}")
             return {}
-        
+
         with open(config_file, 'r', encoding='utf-8') as f:
             config = json.load(f)
             return config
@@ -53,22 +53,33 @@ def get_plugin_config(plugin_name: str, plugin_path: Optional[str] = None) -> Di
 def get_plugin_setting(plugin_name: str, key: str, default: Any = None, plugin_path: Optional[str] = None) -> Any:
     """
     从插件配置中获取特定设置值
-    
+
     Args:
         plugin_name: 插件名称
         key: 配置键名
         default: 默认值
         plugin_path: 插件路径，如果不提供则自动推断
-        
+
     Returns:
         配置值或默认值
     """
+    from app.services.plugin_config_context import current_config_scope
+
+    scope = current_config_scope()
+    if scope is not None and plugin_name in scope.snapshots:
+        from copy import deepcopy
+
+        return deepcopy(scope.snapshots[plugin_name].get(key, default))
     config = get_plugin_config(plugin_name, plugin_path)
-    
+    if scope is not None:
+        from copy import deepcopy
+
+        return deepcopy(scope.values(plugin_name, config, plugin_path).get(key, default))
+
     # 1. 优先从根目录获取 (Root level)
     if key in config:
         return config[key]
-        
+
     # 2. 尝试从 nested 'config' 字典获取 (Frontend often saves here)
     if "config" in config and isinstance(config["config"], dict) and key in config["config"]:
         return config["config"][key]
@@ -77,7 +88,7 @@ def get_plugin_setting(plugin_name: str, key: str, default: Any = None, plugin_p
     if "config_schema" in config and key in config["config_schema"]:
         schema_item = config["config_schema"][key]
         return schema_item.get("default", default)
-    
+
     # 4. 返回提供的默认值
     return default
 
@@ -85,12 +96,12 @@ def get_plugin_setting(plugin_name: str, key: str, default: Any = None, plugin_p
 def get_current_plugin_name() -> Optional[str]:
     """
     从调用栈中自动推断当前插件名称
-    
+
     Returns:
         插件名称或None
     """
     import inspect
-    
+
     try:
         # 获取调用栈
         frame = inspect.currentframe()
@@ -98,7 +109,7 @@ def get_current_plugin_name() -> Optional[str]:
             frame = frame.f_back
             if frame and frame.f_code.co_filename:
                 file_path = Path(frame.f_code.co_filename)
-                
+
                 # 检查是否在插件目录中
                 if "plugins" in file_path.parts:
                     plugins_index = file_path.parts.index("plugins")
@@ -112,11 +123,11 @@ def get_current_plugin_name() -> Optional[str]:
                             if part.endswith(".py") or part in ["config.json", "__pycache__"]:
                                 break
                             plugin_parts.append(part)
-                        
+
                         if plugin_parts:
                             # 使用正斜杠连接，确保跨平台兼容
                             return "/".join(plugin_parts)
-        
+
         return None
     except Exception as e:
         logger.warning(f"Failed to auto-detect plugin name: {e}")
@@ -126,20 +137,20 @@ def get_current_plugin_name() -> Optional[str]:
 def get_config(key: str, default: Any = None, plugin_name: Optional[str] = None) -> Any:
     """
     便捷函数：自动推断插件名称并获取配置
-    
+
     Args:
         key: 配置键名
         default: 默认值
         plugin_name: 插件名称，如果不提供则自动推断
-        
+
     Returns:
         配置值或默认值
     """
     if not plugin_name:
         plugin_name = get_current_plugin_name()
-    
+
     if not plugin_name:
         logger.warning(f"Cannot auto-detect plugin name for config key '{key}', using default value")
         return default
-    
+
     return get_plugin_setting(plugin_name, key, default)

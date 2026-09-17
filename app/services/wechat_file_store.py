@@ -106,10 +106,23 @@ def quoted_file_name(quote_content: Any) -> str:
 
 
 def looks_like_file_quote(quote_content: Any) -> bool:
-    name = quoted_file_name(quote_content)
+    # Inspect the preview before filename sanitization: stripping trailing dots
+    # or replacing URL/path characters can turn ordinary prose into a filename.
+    lines = unicodedata.normalize("NFKC", str(quote_content or "")).splitlines()
+    values = [line.strip() for line in lines
+              if line.strip() and line.strip().casefold() not in _FILE_UI_MARKERS]
+    if len(values) != 1:
+        return False
+    name = values[0]
     if not name or len(name) > 180:
         return False
-    return bool(Path(name).suffix)
+    if _INVALID_PATH_CHARS.search(name):
+        return False
+    # A decimal, sentence fragment, or truncated preview is not an extension.
+    # Retain mixed-case and alphanumeric extensions (DOCX, mp3, 7z archives
+    # are handled explicitly), without treating arbitrary suffix text as one.
+    suffix = Path(name).suffix
+    return bool(re.fullmatch(r"\.(?:[a-z][a-z0-9]{0,9}|7z)", suffix, re.IGNORECASE))
 
 
 def _safe_project_relative(value: str) -> PurePosixPath:
@@ -446,7 +459,7 @@ class WeChatFileStore:
 
         if not rows:
             return FileResolution(
-                "not_found" if looks_like_file_quote(name) else "not_file",
+                "not_found" if looks_like_file_quote(quote_content) else "not_file",
                 file_name=name,
             )
 

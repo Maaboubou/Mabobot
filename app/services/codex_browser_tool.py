@@ -1,7 +1,7 @@
 """Host-managed, read-only Chromium tools for Codex App Server turns.
 
-The Codex process never receives browser credentials or direct network access.
-Instead, the application executes a small dynamic-tool surface in an ephemeral
+The Codex process never receives browser credentials. The application executes
+a small dynamic-tool surface in an ephemeral
 Playwright context and binds every call to the current chat's managed request
 directory.
 """
@@ -9,6 +9,7 @@ directory.
 from __future__ import annotations
 
 import hashlib
+from http.client import HTTPException
 import importlib.util
 import ipaddress
 import json
@@ -16,6 +17,9 @@ import logging
 import os
 import re
 import socket
+import shutil
+from subprocess import TimeoutExpired
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -23,6 +27,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Dict, Iterable, Optional, Sequence
 from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 from urllib.request import url2pathname
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+from urllib.error import HTTPError, URLError
 
 from app.services.codex_browser_proxy import PinnedPublicProxy, SafeBrowserProxyError
 
@@ -30,7 +36,7 @@ from app.services.codex_browser_proxy import PinnedPublicProxy, SafeBrowserProxy
 logger = logging.getLogger(__name__)
 
 
-_BROWSER_TOOL_POLICY_VERSION = "public-readonly-v1"
+_BROWSER_TOOL_POLICY_VERSION = "public-reviewed-download-v4-dash"
 _BROWSER_NAMESPACE = "wx_browser"
 _READ_ONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _PASSIVE_SCHEMES = frozenset({"about", "blob", "data"})
@@ -60,6 +66,12 @@ class BrowserToolContext:
     runtime_request_dir: str
     runtime_output_dir: str
     use_wsl: bool = False
+    # Immutable per-turn snapshot. Every tool call checks it, including old threads.
+    online_research_allowed: bool = True
+    reviewed_download_allowed: bool = True
+    workspace_access: str = "read_write"
+    permission_chat_id: Optional[int] = None
+    policy_signature: str = ""
 
 
 def _as_bool(value: Any, default: bool) -> bool:
@@ -343,6 +355,7 @@ class CodexBrowserToolService:
         max_concurrency: Optional[int] = None,
         resolver: Callable[..., Sequence[Any]] = socket.getaddrinfo,
         doh_resolver: Optional[Callable[[str], Sequence[str]]] = None,
+        content_review: Any = None,
     ) -> None:
         self.enabled = _as_bool(
             os.getenv("CODEX_BROWSER_TOOL_ENABLED") if enabled is None else enabled,
@@ -360,6 +373,7 @@ class CodexBrowserToolService:
         self._slots = threading.BoundedSemaphore(concurrency)
         self._resolver = resolver
         self._doh_resolver = doh_resolver
+        self._content_review = content_review
 
     @staticmethod
     def dynamic_tool_specs() -> list[dict[str, Any]]:
@@ -379,7 +393,8 @@ class CodexBrowserToolService:
                         "description": (
                             "Open a public HTTP(S) URL in Chromium, run page JavaScript, and save "
                             "the rendered DOM, visible text, and captured JSON responses for local "
-                            "analysis. Use this when ordinary web search cannot see a dynamic list."
+                            "analysis. Use this when ordinary web search cannot see a dynamic list. "
+                            "For video, PDF, or other file URLs, use download instead."
                         ),
                         "inputSchema": {
                             "type": "object",
@@ -436,6 +451,46 @@ class CodexBrowserToolService:
                                 },
                             },
                             "required": ["urls"],
+                        },
+                    },
+                    {
+                        "type": "function",
+                        "name": "download",
+                        "description": (
+                            "Download a public HTTP(S) file, including MP4 video, "
+                            "PDF, images, text, or Office documents, into this request's outputs directory. "
+                            "The host enforces this chat's administrator-configured attachment policy. "
+                            "Returns the saved path and byte count. Redirects are checked and "
+                            "private network targets are blocked. Prefer this over browser "
+                            "JavaScript or proxy websites when retrieving files. A URL that "
+                            "needs a login is unsupported. When attachment content review is enabled, "
+                            "only allowlisted, reviewable files can be saved; pornography and China political "
+                            "sensitive content are blocked. Review errors or uncertainty block "
+                            "delivery. Do not retry a content denial via another URL or tool. "
+                            "For separate DASH video/audio streams (including Bilibili .m4s), "
+                            "pass the video URL as url, the audio URL as audio_url, and a .mp4 "
+                            "filename. Streams are merged on the host before content review. "
+                            "Bilibili CDN requests use a fixed site Referer. In isolated chats, "
+                            "shell networking is disabled: do not try curl, wget, Python HTTP, "
+                            "or DNS/hostname workarounds after this tool fails. Report the cause."
+                        ),
+                        "inputSchema": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "url": {"type": "string", "description": "Public file HTTP(S) URL."},
+                                "audio_url": {
+                                    "type": "string", "minLength": 1,
+                                    "description": "Optional public audio-track URL for DASH video; output filename must end in .mp4.",
+                                },
+                                "filename": {
+                                    "type": "string",
+                                    "description": "Filename with extension, without directory components.",
+                                    "minLength": 1,
+                                    "maxLength": 160,
+                                },
+                            },
+                            "required": ["url", "filename"],
                         },
                     },
                     {
@@ -512,6 +567,7 @@ class CodexBrowserToolService:
             "synthetic_dns_validation": "https_doh",
             "dns_rebinding_protection": "pinned_loopback_proxy",
             "render_image_optimization": True,
+            "file_downloads": "wechat_content_review_per_chat",
         }
 
     def execute(
@@ -524,10 +580,19 @@ class CodexBrowserToolService:
     ) -> Dict[str, Any]:
         if not self.enabled:
             raise CodexBrowserToolError("browser tools are disabled by the administrator")
+        if not context.online_research_allowed:
+            from app.services.codex_permission_service import audit
+            audit("tool_gate_denied", chat_id=context.permission_chat_id, policy_signature=context.policy_signature, tool_id="wx_browser", reason_code="online_research_disabled")
+            raise CodexBrowserToolError("当前聊天已禁止在线研究工具")
         normalized_namespace = str(namespace or "").strip()
         normalized_tool = str(tool or "").strip()
         if not normalized_namespace and normalized_tool.startswith(f"{_BROWSER_NAMESPACE}."):
             normalized_namespace, normalized_tool = normalized_tool.split(".", 1)
+        if normalized_tool == "download" and not context.reviewed_download_allowed:
+            raise CodexBrowserToolError("当前聊天不允许下载文件")
+        if context.workspace_access == "read_only":
+            # Browser operations persist screenshots, extracts or rendered files.
+            raise CodexBrowserToolError("当前聊天工作区只读，不能写入浏览器结果")
         if normalized_namespace != _BROWSER_NAMESPACE:
             raise CodexBrowserToolError("unknown dynamic tool namespace")
         if not isinstance(arguments, dict):
@@ -539,6 +604,8 @@ class CodexBrowserToolService:
                 return self._open(arguments, context)
             if normalized_tool == "fetch_json_pages":
                 return self._fetch_json_pages(arguments, context)
+            if normalized_tool == "download":
+                return self._download(arguments, context)
             if normalized_tool == "render_html":
                 return self._render_html(arguments, context)
             raise CodexBrowserToolError(f"unknown browser tool: {normalized_tool}")
@@ -1024,6 +1091,160 @@ class CodexBrowserToolService:
                     browser.close()
                 except Exception:
                     logger.debug("Could not close Chromium cleanly", exc_info=True)
+
+    def _download(self, arguments: Dict[str, Any], context: BrowserToolContext) -> Dict[str, Any]:
+        guard = PublicUrlGuard(resolver=self._resolver, doh_resolver=self._doh_resolver)
+        target_url = guard.validate_public_url(arguments.get("url"))
+        filename = str(arguments.get("filename") or "").strip()
+        if (
+            not filename or len(filename) > 160 or filename in {".", ".."}
+            or any(char in filename for char in '/\\\\:*?"<>|')
+            or any(ord(char) < 32 for char in filename)
+            or filename.endswith((".", " "))
+        ):
+            raise CodexBrowserToolError("filename must be a plain filename without directory components")
+        if _is_link_like(context.output_dir) or not context.output_dir.is_dir():
+            raise CodexBrowserToolError("chat output directory is unsafe")
+        if not _is_within(context.output_dir, context.request_dir):
+            raise CodexBrowserToolError("chat output directory escaped the request scope")
+        audio_url = None
+        if arguments.get("audio_url") is not None:
+            audio_url = guard.validate_public_url(arguments["audio_url"])
+            if Path(filename).suffix.lower() != ".mp4":
+                raise CodexBrowserToolError("separate audio/video streams require an .mp4 output filename")
+        from app.services.wechat_content_review import ContentReviewError, get_wechat_content_review
+        review = self._content_review or get_wechat_content_review()
+        try:
+            review.validate_download(target_url, filename, chat_name=context.chat_id)
+            if audio_url:
+                review.validate_download(audio_url, filename, chat_name=context.chat_id)
+        except ContentReviewError as exc:
+            raise CodexBrowserToolError(str(exc)) from exc
+        max_bytes = _bounded_int(
+            os.getenv("CODEX_BROWSER_DOWNLOAD_MAX_BYTES"),
+            default=256 * 1024 * 1024, minimum=1024, maximum=1024 * 1024 * 1024,
+        )
+        timeout = _bounded_int(
+            os.getenv("CODEX_BROWSER_DOWNLOAD_TIMEOUT_SECONDS"),
+            default=120, minimum=5, maximum=600,
+        )
+
+        class PublicRedirectHandler(HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                guard.validate_public_url(newurl)
+                review.validate_download(newurl, filename, chat_name=context.chat_id)
+                redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+                if redirected is not None:
+                    redirected.remove_header("Referer")
+                    for key, value in CodexBrowserToolService._download_headers(newurl).items():
+                        redirected.add_header(key, value)
+                return redirected
+
+        saved_path = None
+        completed = False
+        try:
+            # Neither DASH track nor the assembled file is readable by the chat
+            # until the final MP4 passes review, including its complete audio.
+            with tempfile.TemporaryDirectory(prefix="mabobot_download_") as temporary_dir, PinnedPublicProxy(guard.resolve_public_endpoint) as public_proxy:
+                proxy_url = public_proxy.playwright_settings["server"]
+                opener = build_opener(
+                    ProxyHandler({"http": proxy_url, "https": proxy_url}), PublicRedirectHandler(),
+                )
+                deadline = time.monotonic() + timeout
+                downloaded_bytes = 0
+                downloads, metadata = [], []
+                for index, url in enumerate([target_url] + ([audio_url] if audio_url else [])):
+                    temporary_path = Path(temporary_dir) / ("audio.m4a" if index else "file" + Path(filename).suffix.lower())
+                    request = Request(url, headers=self._download_headers(url))
+                    remaining_time = deadline - time.monotonic()
+                    if remaining_time <= 0:
+                        raise CodexBrowserToolError("file download timed out")
+                    with opener.open(request, timeout=remaining_time) as response, temporary_path.open("xb") as temporary:
+                        declared = response.headers.get("Content-Length")
+                        if declared is not None and int(declared) > max_bytes - downloaded_bytes:
+                            raise CodexBrowserToolError(f"download exceeds the {max_bytes} byte limit")
+                        size = 0
+                        while True:
+                            if time.monotonic() > deadline:
+                                raise CodexBrowserToolError("file download timed out")
+                            chunk = response.read(64 * 1024)
+                            if not chunk:
+                                break
+                            size += len(chunk)
+                            downloaded_bytes += len(chunk)
+                            if downloaded_bytes > max_bytes:
+                                raise CodexBrowserToolError(f"download exceeds the {max_bytes} byte limit")
+                            temporary.write(chunk)
+                        if not size:
+                            raise CodexBrowserToolError("download returned an empty file")
+                        if declared is not None and size != int(declared):
+                            raise CodexBrowserToolError("download was incomplete")
+                        metadata.append({"url": response.geturl(), "status": response.status,
+                            "content_type": response.headers.get("Content-Type", "")})
+                    downloads.append(temporary_path)
+                deliverable = downloads[0]
+                if audio_url:
+                    from app.utils.video_frames import _resolve_media_tools, _run_command
+                    ffmpeg, _ffprobe = _resolve_media_tools()
+                    deliverable = Path(temporary_dir) / "merged.mp4"
+                    merged = _run_command([
+                        ffmpeg, "-v", "error",
+                        "-protocol_whitelist", "file,pipe", "-format_whitelist", "mov,matroska,webm",
+                        "-i", str(downloads[0]),
+                        "-protocol_whitelist", "file,pipe", "-format_whitelist", "mov,matroska,webm,mp3,wav",
+                        "-i", str(downloads[1]), "-map", "0:v:0", "-map", "1:a:0",
+                        "-c", "copy", "-movflags", "+faststart", "-f", "mp4", "-y", str(deliverable),
+                    ], timeout=min(timeout, 120))
+                    if merged.returncode or not deliverable.is_file():
+                        raise CodexBrowserToolError("audio/video streams could not be merged into a complete MP4")
+                size = deliverable.stat().st_size
+                if not 0 < size <= max_bytes:
+                    raise CodexBrowserToolError(f"assembled file is empty or exceeds the {max_bytes} byte limit")
+                review_status = review.review_file(deliverable, source_url="\n".join(item["url"] for item in metadata),
+                    chat_name=context.chat_id, filename=filename)
+                digest = hashlib.sha256()
+                with deliverable.open("rb") as source:
+                    for chunk in iter(lambda: source.read(64 * 1024), b""):
+                        digest.update(chunk)
+                name = Path(filename)
+                destination = self._unique_output_path(context.output_dir, name.stem, name.suffix)
+                with deliverable.open("rb") as source, destination.open("xb") as output:
+                    saved_path = destination
+                    shutil.copyfileobj(source, output, length=64 * 1024)
+                result = {
+                    "tool": f"{_BROWSER_NAMESPACE}.download", "requested_url": target_url,
+                    "final_url": metadata[0]["url"], "status": metadata[0]["status"],
+                    "content_type": "video/mp4" if audio_url else metadata[0]["content_type"],
+                    "bytes": size, "sha256": digest.hexdigest(), "filename": destination.name,
+                    "saved_path": _runtime_path(destination, context),
+                    "content_review": "disabled" if review_status == "disabled" else "passed",
+                }
+                if audio_url:
+                    result.update({"audio_url": audio_url, "downloaded_bytes": downloaded_bytes, "streams_merged": True})
+                completed = True
+                return result
+        except HTTPError as exc:
+            raise CodexBrowserToolError(f"file download failed: HTTP {exc.code}") from exc
+        except ContentReviewError as exc:
+            raise CodexBrowserToolError(str(exc)) from exc
+        except TimeoutExpired as exc:
+            raise CodexBrowserToolError("audio/video stream merge timed out") from exc
+        except (OSError, URLError, ValueError, RuntimeError, HTTPException, SafeBrowserProxyError) as exc:
+            if isinstance(exc, CodexBrowserToolError):
+                raise
+            raise CodexBrowserToolError(f"file download failed: {str(exc)[:500]}") from exc
+        finally:
+            # A partial file must never enter the delivery manifest.
+            if saved_path is not None and not completed:
+                saved_path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _download_headers(url: str) -> Dict[str, str]:
+        headers = {"User-Agent": "Mozilla/5.0", "Accept-Encoding": "identity"}
+        host = (urlsplit(url).hostname or "").lower().rstrip(".")
+        if host == "bilivideo.com" or host.endswith(".bilivideo.com"):
+            headers["Referer"] = "https://www.bilibili.com/"
+        return headers
 
     def _resolve_html_path(self, raw_path: Any, context: BrowserToolContext) -> Path:
         candidate = _host_path_from_runtime(raw_path, use_wsl=context.use_wsl)

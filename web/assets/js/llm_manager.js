@@ -1331,13 +1331,14 @@ const LLMManager = {
                 const credential = this.getModelManagementMeta(config).credential || {};
                 return credential.mode === 'missing' || (credential.mode === 'environment' && !credential.configured);
             }).length;
+            const count = document.getElementById('llmModelCount');
+            if (count) count.textContent = allEntries.length;
             const summary = document.getElementById('llmModelSummary');
             if (summary) {
                 summary.innerHTML = `
-                    <span><strong>${allEntries.length}</strong> 个模型连接</span>
-                    <span class="ready"><i class="bi bi-shield-check"></i>${envCount} 个 API Key 已统一管理</span>
-                    ${directCount ? `<span class="warning"><i class="bi bi-exclamation-circle"></i>${directCount} 个使用旧版凭据</span>` : ''}
-                    ${missingCount ? `<span class="muted"><i class="bi bi-key"></i>${missingCount} 个未配置密钥</span>` : ''}
+                    ${envCount ? `<span>${envCount} 个连接使用共享凭据</span>` : ''}
+                    ${directCount ? `<span>${directCount} 个连接使用独立凭据</span>` : ''}
+                    ${missingCount ? `<span class="warning"><i class="bi bi-key" aria-hidden="true"></i>${missingCount} 个未配置密钥</span>` : ''}
                     ${entries.length !== allEntries.length ? `<span class="filter-result">当前显示 ${entries.length} 个</span>` : ''}`;
             }
 
@@ -1370,57 +1371,60 @@ const LLMManager = {
                 const domModelId = this.getModelDomId(modelId);
                 const providerLabel = this.escapeHtml(this.getProviderLabel(meta.provider));
                 const credentialState = credential.mode === 'environment' && credential.configured
-                    ? { className: 'ready', icon: 'bi-shield-check', label: 'API Key 已就绪' }
+                    ? { className: 'configured', icon: 'bi-key', label: '密钥已配置' }
                     : credential.mode === 'environment'
-                        ? { className: 'missing', icon: 'bi-key', label: 'API Key 未配置' }
+                        ? { className: 'missing', icon: 'bi-key', label: '未配置密钥' }
                     : credential.mode === 'direct'
-                        ? { className: 'warning', icon: 'bi-exclamation-circle', label: 'API Key 已配置（旧版）' }
+                        ? { className: 'configured', icon: 'bi-key', label: '密钥已配置' }
                         : credential.mode === 'none'
                             ? { className: 'local', icon: 'bi-pc-display', label: '本地调用' }
                             : { className: 'missing', icon: 'bi-key', label: '未配置密钥' };
                 const tokenPills = [];
                 if (config.context_window_tokens || config.max_input_tokens) {
-                    tokenPills.push(`<span title="上下文窗口"><i class="bi bi-arrows-expand"></i>${this.formatTokenCount(config.context_window_tokens || config.max_input_tokens)}</span>`);
+                    const label = config.context_window_tokens ? '上下文' : '最大输入';
+                    tokenPills.push(`<span>${label} ${this.formatTokenCount(config.context_window_tokens || config.max_input_tokens)}</span>`);
                 }
-                if (config.max_tokens && meta.provider !== 'local_codex') tokenPills.push(`<span title="最大输出"><i class="bi bi-box-arrow-up"></i>${this.formatTokenCount(config.max_tokens)}</span>`);
-                if (config.supports_vision) tokenPills.push('<span title="支持图片"><i class="bi bi-image"></i>图片</span>');
-                if (config.enable_web_search || config.codex_web_search) tokenPills.push('<span title="启用 Web 搜索"><i class="bi bi-globe"></i>搜索</span>');
+                if (config.max_tokens && meta.provider !== 'local_codex') tokenPills.push(`<span>最大输出 ${this.formatTokenCount(config.max_tokens)}</span>`);
+                if (config.supports_vision) tokenPills.push('<span>支持图片</span>');
+                if (config.enable_web_search || config.codex_web_search) tokenPills.push('<span>启用搜索</span>');
+                if (meta.provider === 'local_codex') tokenPills.push(`<span>推理强度 ${this.escapeHtml(config.codex_reasoning_effort || config.extra_body?.reasoning_effort || 'medium')}</span>`);
+                let endpointLabel = '';
+                if (config.api_base) {
+                    // Keep connection identity visible; raw environment references belong in the editor.
+                    endpointLabel = '自定义接入';
+                    try { endpointLabel = new URL(config.api_base).host || endpointLabel; } catch (_) {}
+                }
                 html += `
                     <div class="col-md-6 col-lg-4" data-id="${safeModelId}" data-provider="${this.escapeHtml(meta.provider)}">
                         <div class="card h-100 llm-model-card">
                             <div class="card-body">
-                                <div class="llm-model-card-topline">
-                                    <span class="llm-provider-badge"><i class="bi bi-cpu"></i>${providerLabel}</span>
-                                    <i class="bi bi-grip-vertical drag-handle" title="拖动排序"></i>
-                                </div>
                                 <div class="llm-model-identity">
-                                    <h6>${safeModelId}</h6>
+                                    <div class="llm-model-card-topline">
+                                        <h6 title="${safeModelId}">${safeModelId}</h6>
+                                        <span class="llm-provider-badge" title="${providerLabel}">${providerLabel}</span>
+                                        ${!search && !activeProvider ? '<i class="bi bi-grip-vertical drag-handle" title="拖动排序" aria-hidden="true"></i>' : ''}
+                                    </div>
                                     <code title="${safeConfiguredModel}">${safeConfiguredModel}</code>
                                 </div>
-                                <div class="llm-model-status ${credentialState.className}">
-                                    <i class="bi ${credentialState.icon}"></i>
-                                    <span>${this.escapeHtml(credentialState.label)}</span>
-                                    ${meta.mapping_count ? `<em>${Number(meta.mapping_count)} 个任务在用</em>` : '<em>尚未分配任务</em>'}
+                                <div class="llm-model-meta">
+                                    <div class="llm-model-status ${credentialState.className}">
+                                        <i class="bi ${credentialState.icon}" aria-hidden="true"></i>
+                                        <span>${this.escapeHtml(credentialState.label)}</span>
+                                    </div>
+                                    <span class="llm-model-associations">${meta.mapping_count ? `关联 ${Number(meta.mapping_count)} 个任务` : '未关联任务'}</span>
+                                    ${endpointLabel ? `<span class="llm-model-endpoint" title="${this.escapeHtml(endpointLabel)}">接入 ${this.escapeHtml(endpointLabel)}</span>` : ''}
                                 </div>
-                                ${config.api_base ? `<div class="llm-model-endpoint" title="${this.escapeHtml(config.api_base)}"><i class="bi bi-link-45deg"></i>${this.escapeHtml(config.api_base)}</div>` : ''}
-                                <div class="llm-model-capabilities">
-                                    ${meta.provider === 'local_codex'
-                                        ? `<span title="独立调用的推理强度"><i class="bi bi-stars"></i>${this.escapeHtml(config.codex_reasoning_effort || config.extra_body?.reasoning_effort || 'medium')}</span>`
-                                        : this.isGemini3ModelConfig(config)
-                                        ? '<span title="Gemini 3+ 使用模型默认采样设置"><i class="bi bi-stars"></i>默认采样</span>'
-                                        : `<span title="温度"><i class="bi bi-thermometer-half"></i>${this.formatTemperature(config.temperature, '默认')}</span>`}
-                                    ${tokenPills.join('')}
-                                </div>
+                                ${tokenPills.length ? `<div class="llm-model-capabilities">${tokenPills.join('')}</div>` : ''}
                                 <div id="modelTestResult_${domModelId}" class="llm-model-test-result" style="display:none;"></div>
                                 <div class="llm-model-actions">
-                                    <button class="btn btn-sm btn-quiet-accent llm-model-test" id="testModelBtn_${domModelId}" data-model-id="${safeModelId}">
-                                        <i class="bi bi-lightning-charge me-1"></i>测试
+                                    <button type="button" class="btn btn-sm btn-outline-secondary llm-model-edit" data-model-id="${safeModelId}">
+                                        <i class="bi bi-pencil me-1" aria-hidden="true"></i>编辑
                                     </button>
-                                    <button class="btn btn-sm btn-outline-secondary llm-model-edit" data-model-id="${safeModelId}">
-                                        <i class="bi bi-pencil me-1"></i>编辑
+                                    <button type="button" class="btn btn-sm btn-quiet-accent llm-model-test" id="testModelBtn_${domModelId}" data-model-id="${safeModelId}">
+                                        <i class="bi bi-lightning-charge me-1" aria-hidden="true"></i>测试
                                     </button>
-                                    <button class="btn btn-sm btn-link text-danger llm-model-delete" data-model-id="${safeModelId}" title="删除">
-                                        <i class="bi bi-trash"></i>
+                                    <button type="button" class="btn btn-sm llm-model-delete" data-model-id="${safeModelId}" title="删除模型" aria-label="删除模型 ${safeModelId}">
+                                        <i class="bi bi-trash" aria-hidden="true"></i>
                                     </button>
                                 </div>
                             </div>
@@ -2103,7 +2107,7 @@ const LLMManager = {
         document.getElementById('modelEditMode').value = 'false';
         document.getElementById('modelId').dataset.oldId = '';
         document.getElementById('addModelModalTitle').textContent = '添加模型';
-        document.getElementById('addModelModalSubtitle').textContent = '选择供应商和模型，填写 API Key 即可。';
+        document.getElementById('addModelModalSubtitle').textContent = '选择供应商和模型，密钥保存为本机共享凭据；保存后可立即测试。';
         document.getElementById('modelTemplateGroup').classList.remove('d-none');
         document.getElementById('modelAdvancedOptions').open = false;
         document.getElementById('modelFormAlert').classList.add('d-none');

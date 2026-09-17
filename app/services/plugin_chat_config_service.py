@@ -19,11 +19,12 @@ class PluginTemplateConflict(PluginChatConfigError):
 
 
 def chat_fields(config):
-    from app.services.capability_service import _is_sensitive
+    from app.services.capability_service import LEGACY_SETTINGS_FIELDS
 
     return {key: field for key, field in (config.get("config_schema") or {}).items()
-            if isinstance(field, dict) and field.get("scope") == "global_and_chat"
-            and not _is_sensitive(key, field)}
+            if isinstance(field, dict) and field.get("scope") != "global"
+            and not field.get("readOnly", False)
+            and field.get("level") != "hidden" and key not in LEGACY_SETTINGS_FIELDS}
 
 
 def default_values(config):
@@ -35,6 +36,12 @@ def default_values(config):
         elif key in configured:
             values[key] = copy.deepcopy(configured[key])
     return values
+
+
+def template_fields(config):
+    from app.services.capability_service import _is_sensitive
+
+    return {key: value for key, value in chat_fields(config).items() if not _is_sensitive(key, value)}
 
 
 def validate_effective(plugin_name, config, values):
@@ -82,7 +89,7 @@ class PluginChatConfigService:
             raise PluginChatConfigError("聊天插件配置必须是对象")
         return values
 
-    def describe(self, user_id, plugin_name, config=None, row=None):
+    def describe(self, user_id, plugin_name, config=None, row=None, *, redact=True):
         if config is None:
             config = self.config_for(plugin_name)
         if row is None:
@@ -94,8 +101,17 @@ class PluginChatConfigService:
         defaults = validate_effective(plugin_name, config, default_values(config))
         effective = validate_effective(plugin_name, config, {**defaults, **overrides})
         fingerprint = hashlib.sha256(json.dumps(defaults, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        from app.services.capability_service import _is_sensitive
+
+        configured = {key: effective[key] not in (None, "", [], {}) for key in fields}
+        if redact:
+            sensitive = {key for key, field in fields.items() if _is_sensitive(key, field)}
+            defaults = {key: None if key in sensitive else value for key, value in defaults.items()}
+            effective = {key: None if key in sensitive else value for key, value in effective.items()}
+            overrides = {key: None if key in sensitive else value for key, value in overrides.items()}
         return {"schema_version": 1, "overrides": copy.deepcopy(overrides), "effective": effective,
                 "defaults": defaults, "sources": {key: "chat" if key in overrides else "global" for key in fields},
+                "configured": configured,
                 "defaults_revision": fingerprint}
 
     def describe_all(self, user_id):
@@ -167,14 +183,14 @@ class PluginConfigTemplateService:
 
     def list(self, plugin_name):
         config = self.configs.config_for(plugin_name)
-        if not chat_fields(config):
+        if not template_fields(config):
             raise PluginChatConfigError("此插件不支持聊天模板")
         return [self.public(row) for row in self.db.query(PluginConfigTemplate)
                 .filter_by(plugin_name=plugin_name).order_by(PluginConfigTemplate.name).all()]
 
     def save(self, plugin_name, name, values, template_id=None, expected_version=None):
         config = self.configs.config_for(plugin_name)
-        allowed = chat_fields(config)
+        allowed = template_fields(config)
         if not allowed or set(values) != set(allowed):
             raise PluginChatConfigError("模板必须包含完整的可覆盖配置，不能包含授权或全局专属字段")
         normalized = validate_effective(plugin_name, config, values)
@@ -232,7 +248,13 @@ class ChatConfigFacade:
         if not isinstance(chat_id, int) or isinstance(chat_id, bool):
             raise PluginChatConfigError("缺少可信聊天 ID")
         config = json.loads((self.plugin_path / "config.json").read_text(encoding="utf-8-sig"))
+        from app.services.plugin_config_context import current_config_scope
+
+        scope = current_config_scope()
+        if scope is not None and scope.chat_id == chat_id:
+            values = scope.values(self.plugin_name, config, self.plugin_path)
+            return {key: copy.deepcopy(values[key]) for key in chat_fields(config)}
         with (self.session_factory or SessionLocal)() as db:
             if db.query(WeChatUser.id).filter_by(id=chat_id).first() is None:
                 raise PluginChatConfigError("聊天不存在")
-            return PluginChatConfigService(db).describe(chat_id, self.plugin_name, config)["effective"]
+            return PluginChatConfigService(db).describe(chat_id, self.plugin_name, config, redact=False)["effective"]

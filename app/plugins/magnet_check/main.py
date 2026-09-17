@@ -25,6 +25,7 @@ from typing import Any
 
 from app.core.event_bus import Event, EventType
 from app.services.config_service import get_setting
+from app.services.plugin_config_context import ScopedConfigAttribute
 from app.utils.plugin_config import get_config
 
 
@@ -1336,6 +1337,34 @@ def write_html(output: Path, content: str) -> Path:
 class MagnetCheckPlugin:
     """Mabobot plugin adapter for automatic magnet-link inspection."""
 
+    @ScopedConfigAttribute
+    def trigger_word(self):
+        return str(get_config('trigger_word', TRIGGER_WORD, plugin_name=PLUGIN_NAME) or TRIGGER_WORD).strip()
+
+    @ScopedConfigAttribute
+    def timeout(self):
+        return max(3.0, float(get_config('timeout', plugin_name=PLUGIN_NAME, default=30.0) or 30.0))
+
+    @ScopedConfigAttribute
+    def max_screenshots(self):
+        return max(1, min(12, int(get_config('max_screenshots', plugin_name=PLUGIN_NAME, default=6) or 6)))
+
+    @ScopedConfigAttribute
+    def use_system_proxy(self):
+        return bool(get_config('use_system_proxy', plugin_name=PLUGIN_NAME, default=False))
+
+    @ScopedConfigAttribute
+    def enable_full_magnet_match(self):
+        return bool(get_config('enable_full_magnet_match', plugin_name=PLUGIN_NAME, default=False))
+
+    @ScopedConfigAttribute
+    def detection_threshold(self):
+        return min(0.5, max(0.05, float(get_config('detection_threshold', plugin_name=PLUGIN_NAME, default=NUDENET_THRESHOLD) or NUDENET_THRESHOLD)))
+
+    @ScopedConfigAttribute
+    def blur_strength(self):
+        return min(1.0, max(0.1, float(get_config('blur_strength', plugin_name=PLUGIN_NAME, default=1.0) or 1.0)))
+
     def __init__(self) -> None:
         self.trigger_word = str(
             get_config("trigger_word", TRIGGER_WORD, plugin_name=PLUGIN_NAME) or TRIGGER_WORD
@@ -1449,24 +1478,18 @@ class MagnetCheckPlugin:
         except ValueError:
             return None
 
+    @ScopedConfigAttribute
+    def inference_resolution(self):
+        resolution = int(get_config("inference_resolution", NUDENET_INFERENCE_RESOLUTION, plugin_name="magnet_check") or NUDENET_INFERENCE_RESOLUTION)
+        return max(320, min(1280, round(resolution / 32) * 32))
+
     def _get_detector(self) -> Any:
-        if self._detector is not None:
-            return self._detector
-        if self._detector_error:
-            raise NudityDetectionError(self._detector_error)
+        resolution = self.inference_resolution
         with self._detector_init_lock:
-            if self._detector is not None:
-                return self._detector
-            if self._detector_error:
-                raise NudityDetectionError(self._detector_error)
-            try:
-                self._detector = create_nudenet_detector(
-                    inference_resolution=self.inference_resolution,
-                )
-            except NudityDetectionError as exc:
-                self._detector_error = str(exc)
-                raise
-        return self._detector
+            if self._detector is None or getattr(self, "_detector_resolution", None) != resolution:
+                self._detector = create_nudenet_detector(inference_resolution=resolution)
+                self._detector_resolution = resolution
+            return self._detector
 
     def generate_report(self, magnet: str) -> Path:
         data: Any = {}

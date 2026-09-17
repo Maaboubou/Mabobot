@@ -1,15 +1,19 @@
 """Assistant role management API endpoints."""
 
 import logging
+import uuid
 from typing import Dict, Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.models.base import get_db
 from app.models.chatbot_role import ChatBotRole, UserChatBotRole
 from app.models.user_permission import WeChatUser
 
+
+from app.services.assistant_prompt_service import prompt_revision, commit_prompt_update
+from app.assistant.prompt_composer import normalize_legacy_prompt
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -32,26 +36,27 @@ def _reload_assistant_roles_safely() -> bool:
 
 
 class RoleCreateRequest(BaseModel):
-    name: str
-    display_name: str
-    prompt: str
+    name: str = ""
+    display_name: str = Field(min_length=1, max_length=160)
+    prompt: str = Field(min_length=1, max_length=30000)
     description: str = ""
     output_split_enabled: bool = False
-    output_max_chars: int = 120
-    output_max_count: int = 3
+    output_max_chars: int = Field(default=120, ge=10, le=2000)
+    output_max_count: int = Field(default=3, ge=1, le=10)
     output_strip_trailing_period: bool = True
-    output_interval_seconds: float = 1.0
+    output_interval_seconds: float = Field(default=1.0, ge=0, le=10)
 
 
 class RoleUpdateRequest(BaseModel):
-    display_name: Optional[str] = None
-    prompt: Optional[str] = None
+    display_name: Optional[str] = Field(default=None, min_length=1, max_length=160)
+    revision: Optional[str] = None
+    prompt: Optional[str] = Field(default=None, min_length=1, max_length=30000)
     description: Optional[str] = None
     output_split_enabled: Optional[bool] = None
-    output_max_chars: Optional[int] = None
-    output_max_count: Optional[int] = None
+    output_max_chars: Optional[int] = Field(default=None, ge=10, le=2000)
+    output_max_count: Optional[int] = Field(default=None, ge=1, le=10)
     output_strip_trailing_period: Optional[bool] = None
-    output_interval_seconds: Optional[float] = None
+    output_interval_seconds: Optional[float] = Field(default=None, ge=0, le=10)
 
 
 class UserRoleAssignRequest(BaseModel):
@@ -74,6 +79,7 @@ def _normalize_output_settings(data: Dict[str, Any]) -> Dict[str, Any]:
 def _role_to_dict(role: ChatBotRole, db: Session) -> Dict[str, Any]:
     return {
         "id": role.id,
+        "revision": prompt_revision(role),
         "name": role.name,
         "display_name": role.display_name,
         "description": role.description,
@@ -133,6 +139,8 @@ async def create_role(
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
     """创建新角色"""
+    if not role_request.name.strip():
+        role_request.name = "role_" + uuid.uuid4().hex[:12]
     try:
         # 检查角色名是否已存在
         existing_role = db.query(ChatBotRole).filter(ChatBotRole.name == role_request.name).first()
@@ -143,7 +151,7 @@ async def create_role(
         new_role = ChatBotRole(
             name=role_request.name,
             display_name=role_request.display_name,
-            prompt=role_request.prompt,
+            prompt=normalize_legacy_prompt(role_request.prompt, decision=False),
             description=role_request.description,
             **_normalize_output_settings(role_request.dict())
         )
@@ -152,9 +160,10 @@ async def create_role(
         db.commit()
         db.refresh(new_role)
 
-        _reload_assistant_roles_safely()
+        cache_refreshed = _reload_assistant_roles_safely()
 
         return {
+            "applied": True, "cache_refreshed": cache_refreshed,
             "message": f"角色 '{role_request.display_name}' 创建成功",
             "role_id": new_role.id
         }
@@ -180,10 +189,13 @@ async def update_role(
         role_name = role.name  # 保存角色名用于日志
 
         # 更新字段
+        if role_request.revision is not None and role_request.revision != prompt_revision(role):
+            raise HTTPException(status_code=409, detail="配置已被其他操作更新，请重新打开后再保存")
+
         if role_request.display_name is not None:
             role.display_name = role_request.display_name
         if role_request.prompt is not None:
-            role.prompt = role_request.prompt
+            role.prompt = normalize_legacy_prompt(role_request.prompt, decision=False)
         if role_request.description is not None:
             role.description = role_request.description
         update_data = role_request.dict(exclude_unset=True)
@@ -191,11 +203,12 @@ async def update_role(
             if key in update_data:
                 setattr(role, key, value)
 
-        db.commit()
+        commit_prompt_update(db, role)
 
-        _reload_assistant_roles_safely()
+        cache_refreshed = _reload_assistant_roles_safely()
 
         return {
+            "applied": True, "cache_refreshed": cache_refreshed,
             "message": f"角色 '{role.display_name}' 更新成功"
         }
     except HTTPException:
@@ -253,6 +266,7 @@ async def get_user_role(user_id: int, db: Session = Depends(get_db)) -> Dict[str
                 "chat_name": user.chat_name,
                 "role": {
                     "id": role.id,
+        "revision": prompt_revision(role),
                     "name": role.name,
                     "display_name": role.display_name,
                     "description": role.description

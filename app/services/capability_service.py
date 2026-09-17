@@ -368,7 +368,7 @@ def _normalize_type(field: Mapping[str, Any]) -> tuple[str, str]:
     if raw_type == "object":
         return "object", "json"
     if raw_type == "array":
-        return "array", "languages" if field.get("control") == "languages" else "list"
+        return "array", ("languages" if field.get("control") == "languages" else "json" if (field.get("items") or {}).get("type") in {"object", "array", "number", "integer", "boolean"} else "list")
     if raw_type == "boolean":
         return "boolean", "switch"
     if raw_type in {"integer", "number"}:
@@ -451,7 +451,6 @@ def normalize_settings_descriptor(plugin_id: str, config: Mapping[str, Any]) -> 
         group_id = _infer_group(plugin_id, key, field)
         level = _infer_level(plugin_id, key, group_id, field)
         sensitive = _is_sensitive(key, field)
-        is_object = normalized_type == "object"
         value = values.get(key, field.get("default"))
         if (
             normalized_type == "string"
@@ -471,13 +470,13 @@ def normalize_settings_descriptor(plugin_id: str, config: Mapping[str, Any]) -> 
             "control": control,
             "group": group_id,
             "level": level,
-            "scope": str(field.get("scope") or "global"),
+            "scope": str(field.get("scope") or ("global" if plugin_id == CORE_ASSISTANT_ID else "global_and_chat")),
             "sensitive": sensitive,
             "configured": value not in (None, "", [], {}),
-            "editable": not is_object,
+            "editable": not bool(field.get("readOnly", False)),
             "deprecated": deprecated,
             "deprecation_message": "该字段仅用于历史数据迁移，不再参与运行。" if deprecated else "",
-            "value": None if sensitive or is_object else value,
+            "value": None if sensitive else value,
             "default": None if sensitive else field.get("default"),
             "minimum": field.get("minimum"),
             "maximum": field.get("maximum"),
@@ -622,7 +621,7 @@ class CapabilityService:
             "listener_count": listener_count,
             "settings_count": len(schema),
             "configurable": bool(schema),
-            "chat_configurable": any(isinstance(field, dict) and field.get("scope") == "global_and_chat" for field in schema.values()),
+            "chat_configurable": any(isinstance(field, dict) and field.get("scope") != "global" and not field.get("readOnly", False) and field.get("level") != "hidden" and key not in LEGACY_SETTINGS_FIELDS for key, field in schema.items()) if getattr(plugin, "kind", "plugin") == "plugin" else False,
             "features": list(config.get("features") or []),
             "assigned_chat_count": assignments["chats"],
             "push_chat_count": assignments["push_chats"],
@@ -670,6 +669,7 @@ class CapabilityService:
             chat_config = PluginChatConfigService(self.db, self.plugin_manager).describe(user_id, plugin_id, config)
             groups = [{**group, "fields": [
                 {**field, "value": chat_config["effective"][field["key"]],
+                 "configured": chat_config["configured"][field["key"]],
                  "source": chat_config["sources"][field["key"]]}
                 for field in group["fields"] if field["key"] in chat_fields(config)
             ]} for group in groups]

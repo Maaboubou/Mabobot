@@ -446,7 +446,7 @@ class CodexProfileRuntimeRegistry:
             raise CodexProfileError(f"Codex Profile 尚未完成登录或密钥配置：{normalized}")
         signature = "|".join(
             str(profile.get(key) or "")
-            for key in ("wrapper_path", "model", "reasoning_effort", "context_window", "created_at")
+            for key in ("wrapper_path", "model", "reasoning_effort", "context_window", "created_at", "supports_web_search")
         )
         with self._lock:
             cached = self._runtimes.get(normalized)
@@ -456,6 +456,8 @@ class CodexProfileRuntimeRegistry:
             runtime = CodexAgentRuntime(
                 codex_bin=str(profile["wrapper_path"]),
                 permission_read_roots=_managed_profile_permission_roots(profile),
+                managed_profile_id=normalized,
+                model_supports_web_search=bool(profile.get("supports_web_search")),
             )
             try:
                 runtime.start()

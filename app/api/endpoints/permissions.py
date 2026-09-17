@@ -18,10 +18,11 @@ from app.schemas import permission as schemas_permission
 from app.core.wechat_manager import WeChatManager
 from app.dependencies import get_wechat_manager_instance
 from app.services.codex_access_service import (
-    ISOLATED_ACCESS,
     OWNER_FULL_ACCESS,
     normalize_codex_access_mode,
 )
+from app.schemas.codex_permission import ChatPermissionPatch
+from app.services.codex_permission_service import CodexPermissionService
 
 
 router = APIRouter()
@@ -122,6 +123,9 @@ def create_wechat_user(
     new_user.listening_enabled = True
     new_user.sender_blacklist = _normalize_sender_blacklist(user.sender_blacklist)
     db.add(new_user)
+    db.flush()
+    if requested_mode == OWNER_FULL_ACCESS:
+        CodexPermissionService(db).apply_chat(new_user, ChatPermissionPatch(set={"access_scope": "owner_full", "boundary_action": "auto_review"}))
     db.commit()
     db.refresh(new_user)
 
@@ -162,10 +166,10 @@ def update_wechat_user(
 
     access_changed = False
     if user_update.is_group is not None:
+        access_changed = bool(db_user.is_group) != user_update.is_group
         db_user.is_group = user_update.is_group
-        if user_update.is_group and db_user.codex_access_mode == OWNER_FULL_ACCESS:
-            db_user.codex_access_mode = ISOLATED_ACCESS
-            access_changed = True
+        if access_changed:
+            CodexPermissionService(db).apply_chat(db_user, ChatPermissionPatch())
     if _field_was_set(user_update, "sender_blacklist"):
         db_user.sender_blacklist = _normalize_sender_blacklist(user_update.sender_blacklist)
     if _field_was_set(user_update, "bot_group_nickname"):

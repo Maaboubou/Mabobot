@@ -95,22 +95,30 @@
     "chrome_debug_port": {
       "type": "integer",
       "description": "Summary Plus 独占的 Chrome 远程调试端口，避免与其他插件共享浏览器会话",
-      "default": 19223
+      "default": 19223,
+      "scope": "global",
+      "level": "hidden"
     },
     "chrome_path": {
       "type": "string",
       "description": "Chrome浏览器路径",
-      "default": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+      "default": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+      "scope": "global",
+      "level": "hidden"
     },
     "chrome_user_data_dir": {
       "type": "string",
       "description": "Summary Plus 独占的受管 Chrome 用户数据目录",
-      "default": "data/plugins/summary_plus/machine_bound/chrome_profile"
+      "default": "data/plugins/summary_plus/machine_bound/chrome_profile",
+      "scope": "global",
+      "level": "hidden"
     },
     "chrome_profile_dir": {
       "type": "string",
       "description": "Chrome配置文件目录名称",
-      "default": "Default"
+      "default": "Default",
+      "scope": "global",
+      "level": "hidden"
     },
     "page_load_timeout": {
       "type": "integer",
@@ -178,21 +186,24 @@
       "title": "SenseVoice 运行时路径",
       "description": "官方 Windows x64 AVX2 可执行文件路径",
       "level": "developer",
-      "default": "data/models/sensevoice/llama-funasr-sensevoice.exe"
+      "default": "data/models/sensevoice/llama-funasr-sensevoice.exe",
+      "scope": "global"
     },
     "local_asr_model_path": {
       "type": "string",
       "title": "SenseVoice F32 模型路径",
       "description": "本地 SenseVoiceSmall F32 GGUF 权重路径",
       "level": "developer",
-      "default": "data/models/sensevoice/sensevoice-small-f32.gguf"
+      "default": "data/models/sensevoice/sensevoice-small-f32.gguf",
+      "scope": "global"
     },
     "local_asr_vad_path": {
       "type": "string",
       "title": "FSMN-VAD 模型路径",
       "description": "长音频静音检测与切段使用的 GGUF 模型路径",
       "level": "developer",
-      "default": "data/models/sensevoice/fsmn-vad.gguf"
+      "default": "data/models/sensevoice/fsmn-vad.gguf",
+      "scope": "global"
     },
     "douyin_max_download_duration": {
       "type": "integer",
@@ -252,19 +263,22 @@
       "type": "string",
       "description": "FFmpeg目录（可选），例如 C:\\msys64\\ucrt64\\bin；为空则自动探测",
       "level": "developer",
-      "default": ""
+      "default": "",
+      "scope": "global"
     },
     "ffmpeg_path": {
       "type": "string",
       "description": "ffmpeg可执行文件路径（可选），优先级高于ffmpeg_dir；为空则自动探测",
       "level": "developer",
-      "default": ""
+      "default": "",
+      "scope": "global"
     },
     "ffprobe_path": {
       "type": "string",
       "description": "ffprobe可执行文件路径（可选），优先级高于ffmpeg_dir；为空则自动探测",
       "level": "developer",
-      "default": ""
+      "default": "",
+      "scope": "global"
     },
     "bilibili_burn_danmu": {
       "type": "boolean",
@@ -328,7 +342,8 @@
       "type": "integer",
       "description": "YouTube 字幕抓取直连失败后的本地保底代理端口",
       "level": "advanced",
-      "default": 7897
+      "default": 7897,
+      "scope": "global"
     },
     "max_pending_tasks": {
       "type": "integer",
@@ -337,7 +352,8 @@
       "group": "runtime",
       "minimum": 1,
       "maximum": 100,
-      "default": 12
+      "default": 12,
+      "scope": "global"
     },
     "media_worker_count": {
       "type": "integer",
@@ -346,7 +362,8 @@
       "group": "runtime",
       "minimum": 1,
       "maximum": 8,
-      "default": 2
+      "default": 2,
+      "scope": "global"
     },
     "artifact_retention_hours": {
       "type": "integer",
@@ -355,7 +372,8 @@
       "group": "runtime",
       "minimum": 1,
       "maximum": 720,
-      "default": 24
+      "default": 24,
+      "scope": "global"
     },
     "max_artifact_size_mb": {
       "type": "integer",
@@ -373,7 +391,8 @@
       "group": "runtime",
       "minimum": 128,
       "maximum": 65536,
-      "default": 8192
+      "default": 8192,
+      "scope": "global"
     }
   },
   "config": {

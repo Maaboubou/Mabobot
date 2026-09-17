@@ -28,7 +28,7 @@ The console is organized around operator tasks, not backend modules:
    chart's `min-width` widen the implicit column and clip the right half of
    both activity panels.
 2. **Chats** — group/private-chat configuration and effective capabilities.
-3. **AI Assistant** — first-class Chatbot configuration, roles, Judge, models,
+3. **AI Assistant** — first-class Chatbot configuration, roles, 接话判断, models,
    chat archives and diagnostics.
 4. **Automations** — all other user-facing capabilities.
 5. **AI Resources** — model connections, task routing, usage, Codex sessions,
@@ -70,24 +70,27 @@ by the Chats domain.
 
 ### Implemented plugin chat configuration
 
-Plugin fields opt in with `config_schema.<key>.scope: "global_and_chat"`;
-sensitive fields are excluded. Overrides are keyed by database chat ID and
-plugin ID in `chat_plugin_configs`, independently of grants. A partial chat
-policy PATCH saves overrides atomically with any other submitted policy fields
-using the existing chat version. Runtime API v2 exposes
-`context.config.resolve(chat_id=...)` for a fresh effective configuration.
-Listener declarations and execution order remain global.
+All editable plugin business fields support defaults and chat overrides automatically.
+Only explicit process-wide `scope: "global"`, hidden and read-only fields are
+excluded. Sensitive overrides are editable but redacted from management responses;
+templates exclude credentials. Overrides are keyed by database chat ID and plugin ID,
+independently of grants, and use the chat policy optimistic version.
 
-Named templates in `plugin_config_templates` store complete snapshots of the
-overridable fields and have their own optimistic version. Importing copies
-values into the editor; template changes never propagate to chats.
+EventBus establishes the trusted chat configuration context. `get_config()` reads
+an invocation snapshot that managed workers and tasks inherit. Scheduled and replayed
+work selects its target chat explicitly. Existing startup-cached plugin settings use
+scoped attributes so shared instances do not leak configuration between chats.
 
-The translation editor saves directly through the chat policy endpoint and
-updates the parent form's version without discarding other unsaved fields.
-The generic plugin editor still stages a draft for the chat page to save.
-These UI paths share the same backend contract. See the
-[plugin chat configuration guide](PLUGIN_CHAT_CONFIGURATION.md) for field
-declarations, runtime examples, endpoints and validation boundaries.
+Both generic and translation editors open directly, become custom when edited, and
+save immediately through a partial chat policy PATCH. There is one restore-defaults
+control, no manual scope selection and no second parent-form save. Saving synchronizes
+the parent version and badge while retaining other unsaved fields. Failed saves retain
+the editor draft. Advanced groups collapse and bound long content with internal scrolling.
+
+Named templates store complete non-sensitive overridable snapshots. Importing copies
+values; subsequent template edits never propagate to chats. See the
+[plugin chat configuration guide](PLUGIN_CHAT_CONFIGURATION.md) for runtime examples,
+endpoints and validation boundaries.
 
 ## Routing contract
 
@@ -98,8 +101,9 @@ history. The implemented routes are:
 /
 /chats
 /assistant
-/assistant/chats
+/assistant/chats  (legacy alias for /chats)
 /assistant/roles
+/assistant/judges
 /automations
 /ai
 /ai/models
@@ -177,3 +181,22 @@ remaining safeguards are still required:
 - Legacy duplicate renderers and unused CSS/HTML are removed.
 - Existing backend tests plus Web contract and critical-flow tests pass.
 - No management API response exposes stored credentials.
+
+### Assistant prompt workbench
+
+The role and 接话判断 editors own persona/decision prose; context and schemas are
+assembled automatically. System policies have one versioned editor under the
+Assistant command bar. Preview blocks use native disclosures, collapsed by
+default, with bounded independently scrollable content. Draft previews never
+invoke a model; explicit decision trials do not send messages or alter online
+cooldown state. Preview scenarios choose either simulated or recent real chat
+history; selecting real history hides and disables the preserved simulation
+draft. Scenario forms have bounded scrolling. Recent history uses three fields
+(time, sender, content), with saved image observations and corrections included
+by the same renderer for previews and runtime archive deltas.
+Recent actual request snapshots are scoped to the selected chat
+and expire after seven days (at most twenty per chat). Internal judge IDs and
+routes remain stable. See [v3.5.0 release notes](releases/v3.5.0.md).
+
+
+Role management: `/assistant` opens roles by default; `/assistant/roles` and `/assistant/judges` are the two collection views. Overview and duplicate chat configuration views are removed. System rules and global settings remain secondary actions. Linked chat names open the existing chat management editor.

@@ -27,6 +27,10 @@ from .net_utils import request_with_retry
 from lxml import etree
 
 
+from app.services.plugin_config_context import ScopedConfigAttribute
+from app.utils.plugin_config import get_config
+
+
 class BOCExchangeService:
     """中国银行外汇牌价查询服务"""
 
@@ -57,12 +61,16 @@ class BOCExchangeService:
         "澳门元": ["澳门元", "澳门币", "MOP"], "文莱元": ["文莱元", "BND"], "尼泊尔卢比": ["尼泊尔卢比", "NPR"],
         "巴基斯坦卢比": ["巴基斯坦卢比", "PKR"], "塞尔维亚第纳尔": ["塞尔维亚第纳尔", "RSD"]
     }
-    
+
+    @ScopedConfigAttribute
+    def cache_duration(self):
+        return timedelta(hours=float(get_config("cache_expire_hours", 1, plugin_name="boc_rate")))
+
     def __init__(self, config, cache_dir, workers):
         self.config = config
         self.workers = workers
         self.logger = logging.getLogger(__name__)
-        
+
         # 中行在 2026 年 7 月下线了旧的 JSP 历史查询接口，并将历史查询
         # 切换为带极验验证的新 JSON 接口。插件查询实时牌价无需绕过验证码，
         # 直接读取中行公开发布的牌价快照页（当前页 + 归档分页）即可。
@@ -73,30 +81,30 @@ class BOCExchangeService:
         self.captcha_url = self.base_url + "CaptchaServlet.jsp"
         self.search_url = self.base_url + "search_cn.jsp"
         self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        
+
         # 时区配置 - BOC数据使用北京时间
         self.beijing_tz = pytz.timezone('Asia/Shanghai')
-        
+
         # 缓存配置：改为插件私有目录 app/plugins/boc_rate/exchange_rate_cache
         # 使用文件所在目录作为基准，便于统一管理与清理
         self.cache_dir = str(cache_dir or os.path.join(os.path.dirname(__file__), "exchange_rate_cache"))
         self.cache_index_file = os.path.join(self.cache_dir, "cache_index.json")
         self.memory_cache = {}
         self.cache_duration = timedelta(minutes=30)
-        
+
         self._query_lock = threading.Lock()
         self._is_querying = False
         self._ocr = None
         self._chart_callback = None
-        
+
         self._init_cache()
-        
+
         self.logger.info("✅ 中行汇率查询服务初始化完成 (含文件缓存)")
-    
+
     def _get_beijing_now(self) -> datetime:
         """获取北京时间的当前时间"""
         return datetime.now(self.beijing_tz).replace(tzinfo=None)
-    
+
     def _get_beijing_today_str(self) -> str:
         """获取北京时间的今天日期字符串"""
         return self._get_beijing_now().strftime("%Y-%m-%d")
@@ -114,12 +122,12 @@ class BOCExchangeService:
         """将发布时间标准化为 2025.12.06 10:30:00 形式"""
         dt = self._parse_publish_time(time_str)
         return dt.strftime("%Y.%m.%d %H:%M:%S")
-    
+
     def _init_cache(self):
         if not os.path.exists(self.cache_dir):
             os.makedirs(self.cache_dir)
             self.logger.info(f"创建缓存目录: {self.cache_dir}")
-        
+
         if not os.path.exists(self.cache_index_file):
             self._save_cache_index({"currencies": {}, "version": "2.0"})
 
@@ -341,14 +349,14 @@ class BOCExchangeService:
             return "history-complete", len(content), content
         except Exception as e:
             raise Exception(f"获取第一页数据失败: {e}") from e
-    
+
     def _normalize_currency(self, user_input: str) -> Optional[str]:
         user_input = user_input.strip().upper()
         for official_name, aliases in self.CURRENCY_MAPPING.items():
             if user_input == official_name.upper() or user_input in [a.upper() for a in aliases]:
                 return official_name
         return None
-    
+
     def _extract_currency_from_message(self, message: str) -> str:
         cleaned_message = re.sub(r'@\S+', '', message).strip()
         for official_name, aliases in self.CURRENCY_MAPPING.items():
@@ -358,7 +366,7 @@ class BOCExchangeService:
         return "欧元"
 
     # === 🔥 新增：文件缓存核心逻辑 (从test.py移植并优化) ===
-    
+
     def _get_cache_filename(self, currency: str, date_str: str) -> str:
         """生成缓存文件名"""
         safe_currency = currency.replace("/", "_").replace("\\", "_")
@@ -369,10 +377,10 @@ class BOCExchangeService:
         cached_data, cached_dates = [], set()
         today_latest_time = None
         today_str = self._get_beijing_today_str()  # 使用北京时间的今天
-        
+
         current_date = datetime.strptime(start_date, "%Y-%m-%d")
         end_datetime = datetime.strptime(end_date, "%Y-%m-%d")
-        
+
         while current_date <= end_datetime:
             date_str = current_date.strftime("%Y-%m-%d")
             cache_file = self._get_cache_filename(currency, date_str)
@@ -383,7 +391,7 @@ class BOCExchangeService:
                     records = cache_content.get("records", cache_content)
                     cached_data.extend(records)
                     cached_dates.add(date_str)
-                    
+
                     # 如果是今天的数据，找出最新时间戳（BOC数据本身就是北京时间）
                     if date_str == today_str and records:
                         for record in records:
@@ -393,27 +401,27 @@ class BOCExchangeService:
                                     today_latest_time = record_time
                             except Exception as e:
                                 self.logger.warning(f"解析时间戳失败: {record.get('发布时间')}, error: {e}")
-                                
+
                 except Exception as e:
                     self.logger.warning(f"加载缓存文件失败 {cache_file}: {e}")
             current_date += timedelta(days=1)
-        
+
         self.logger.info(f"从文件缓存加载 {currency} 数据: {len(cached_data)} 条, 覆盖 {len(cached_dates)} 天")
         if today_latest_time:
             self.logger.info(f"今日最新缓存数据时间(北京时间): {today_latest_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        
+
         return cached_data, cached_dates, today_latest_time
-    
+
     def _get_missing_date_ranges(self, start_date: str, end_date: str, cached_dates: set) -> List[Tuple[str, str]]:
         """获取缺失的日期范围"""
         missing_ranges = []
         current_date = datetime.strptime(start_date, "%Y-%m-%d")
         end_datetime = datetime.strptime(end_date, "%Y-%m-%d")
-        
+
         range_start = None
         while current_date <= end_datetime:
             date_str = current_date.strftime("%Y-%m-%d")
-            
+
             if date_str not in cached_dates:
                 # 开始一个新的缺失范围
                 if range_start is None:
@@ -423,27 +431,27 @@ class BOCExchangeService:
                 if range_start is not None:
                     missing_ranges.append((range_start, (current_date - timedelta(days=1)).strftime("%Y-%m-%d")))
                     range_start = None
-            
+
             current_date += timedelta(days=1)
-        
+
         # 处理最后一个范围
         if range_start is not None:
             missing_ranges.append((range_start, end_date))
-        
+
         self.logger.info(f"发现 {len(missing_ranges)} 个缺失日期范围: {missing_ranges}")
         return missing_ranges
-    
+
     def _should_update_today_data(self, today_latest_time: Optional[datetime], min_interval_minutes: int = 10) -> bool:
         """检查是否应该更新今天的数据（基于北京时间）"""
         if today_latest_time is None:
             self.logger.info("今日没有缓存数据，需要获取")
             return True
-        
+
         # 计算距离最新缓存数据的时间间隔（使用北京时间）
         beijing_now = self._get_beijing_now()
         time_diff = beijing_now - today_latest_time
         minutes_diff = time_diff.total_seconds() / 60
-        
+
         if minutes_diff >= min_interval_minutes:
             self.logger.info(f"今日最新缓存数据时间(北京): {today_latest_time.strftime('%H:%M:%S')}, "
                            f"距离北京时间现在 {minutes_diff:.1f} 分钟，需要更新")
@@ -475,7 +483,7 @@ class BOCExchangeService:
     def _save_data_to_cache(self, currency: str, data: List[Dict]):
         """保存数据到文件缓存"""
         if not data: return
-        
+
         daily_data = {}
         for item in data:
             try:
@@ -488,7 +496,7 @@ class BOCExchangeService:
                 daily_data[date].append(normalized_item)
             except Exception as e:
                 self.logger.warning(f"解析时间失败，跳过缓存: {item.get('发布时间')}, error: {e}")
-        
+
         for date, records in daily_data.items():
             cache_file = self._get_cache_filename(currency, date)
             cache_data = {
@@ -510,7 +518,7 @@ class BOCExchangeService:
         normalized_currency = self._normalize_currency(currency)
         if not normalized_currency:
             return f"❌ 不支持的币种: {currency}", None
-        
+
         self.logger.info(f"🔍 查询汇率: {normalized_currency}")
         self.logger.info(f"🕐 当前北京时间: {self._get_beijing_now().strftime('%Y-%m-%d %H:%M:%S')}")
 
@@ -526,12 +534,12 @@ class BOCExchangeService:
         beijing_now = self._get_beijing_now()
         end_date_str = beijing_now.strftime("%Y-%m-%d")
         start_date_str = (beijing_now - timedelta(days=30)).strftime("%Y-%m-%d")
-        
+
         all_contents, cached_dates, today_latest_time = self._load_cached_data(normalized_currency, start_date_str, end_date_str)
-        
+
         # 检查是否需要更新今天的数据
         need_update_today = self._should_update_today_data(today_latest_time, min_interval_minutes=10)
-        
+
         # 如果有缓存数据且今天不需要更新，则使用缓存
         if all_contents and not need_update_today:
             self.logger.info(f"✅ 使用文件缓存数据: {normalized_currency}")
@@ -539,9 +547,9 @@ class BOCExchangeService:
             latest_item = sorted_data[0]
             latest_rate = float(latest_item["现汇卖出价"])
             latest_time = latest_item["发布时间"]
-            
+
             text_reply = f"💰 {normalized_currency}中行牌价(现汇卖出价)\n📈 {latest_rate}\n🕐 {latest_time}\n💡 (文件缓存)"
-            
+
             # 异步生成图表
             self.workers.start(
                 f"chart-cache-{normalized_currency}-{time.time_ns()}",
@@ -555,11 +563,11 @@ class BOCExchangeService:
             if self._is_querying:
                 return "⏳ 汇率查询正在进行中，请稍后再试", None
             self._is_querying = True
-        
+
         try:
             # 计算缺失的日期范围
             missing_ranges = self._get_missing_date_ranges(start_date_str, end_date_str, cached_dates)
-            
+
             # 如果需要更新今天的数据，将今天加入到需要更新的范围（使用北京时间）
             today_str = self._get_beijing_today_str()
             if need_update_today and today_str not in [r[1] for r in missing_ranges]:
@@ -567,75 +575,75 @@ class BOCExchangeService:
                 if today_str in cached_dates:
                     self.logger.info(f"今天数据需要更新，添加到更新范围: {today_str}")
                     missing_ranges.append((today_str, today_str))
-            
+
             if missing_ranges:
                 self.logger.info(f"需要更新 {normalized_currency} 数据，先获取最新汇率")
-                
+
                 # 🚀 优化：先快速获取第一页最新数据，立即返回给用户
                 latest_data = self._get_latest_rate_sync(normalized_currency)
                 if not latest_data['success']:
                     return f"❌ {latest_data['error']}", None
-                
+
                 # 立即返回最新汇率
                 text_reply = f"💰 {normalized_currency}中行牌价(现汇卖出价)\n📈 {latest_data['latest_rate']}\n🕐 {latest_data['latest_time']}"
-                
+
                 # 🔑 关键修复：立即释放查询锁，让主线程可以立即返回
                 with self._query_lock:
                     self._is_querying = False
-                
+
                 # 🔄 后台完成完整数据更新并生成完整走势图
                 self.workers.start(
                     f"update-chart-{normalized_currency}-{time.time_ns()}",
                     self._background_complete_update_and_chart,
                     args=(normalized_currency, missing_ranges, all_contents, need_update_today, today_str, cached_dates, chat_name, latest_data),
                 )
-                
+
                 return text_reply, None
             else:
                 self.logger.info(f"所有日期都已缓存，无需增量更新")
-            
+
             # 如果仍然没有数据，尝试获取最新数据
             if not all_contents:
                 self.logger.info(f"缓存为空，获取最新汇率数据")
                 latest_data = self._get_latest_rate_sync(normalized_currency)
                 if not latest_data['success']:
                     return f"❌ {latest_data['error']}", None
-                
+
                 text_reply = f"💰 {normalized_currency}中行牌价(现汇卖出价)\n📈 {latest_data['latest_rate']}\n🕐 {latest_data['latest_time']}"
-                
+
                 # 启动后台完整数据获取
                 self.workers.start(
                     f"full-chart-{normalized_currency}-{time.time_ns()}",
                     self._generate_full_chart_background,
                     args=(normalized_currency, latest_data, chat_name),
                 )
-                
+
                 return text_reply, None
-            
+
             # 使用现有缓存数据生成回复和图表
             sorted_data = sorted(all_contents, key=lambda x: self._parse_publish_time(x["发布时间"]), reverse=True)
             latest_item = sorted_data[0]
             latest_rate = float(latest_item["现汇卖出价"])
             latest_time = latest_item["发布时间"]
-            
+
             text_reply = f"💰 {normalized_currency}中行牌价(现汇卖出价)\n📈 {latest_rate}\n🕐 {latest_time}"
-            
+
             # 更新内存缓存
             cache_data = {
                 'latest_rate': latest_rate, 'latest_time': latest_time,
                 'all_data': all_contents
             }
             self.memory_cache[f"exchange_rate_{normalized_currency}"] = {'data': cache_data, 'timestamp': self._get_beijing_now()}
-            
+
             # 异步生成图表
             self.workers.start(
                 f"chart-{normalized_currency}-{time.time_ns()}",
                 self._generate_chart_from_cache,
                 args=(all_contents, normalized_currency, chat_name),
             )
-            
+
             return text_reply, None
-            
+
         except Exception as e:
             self.logger.error(f"❌ 查询汇率异常: {e}")
             return "❌ 查询失败，请稍后重试", None
@@ -643,19 +651,19 @@ class BOCExchangeService:
             with self._query_lock:
                 self._is_querying = False
 
-    def _background_complete_update_and_chart(self, currency: str, missing_ranges: List[Tuple[str, str]], 
-                                            existing_contents: List[Dict], need_update_today: bool, 
+    def _background_complete_update_and_chart(self, currency: str, missing_ranges: List[Tuple[str, str]],
+                                            existing_contents: List[Dict], need_update_today: bool,
                                             today_str: str, cached_dates: set, chat_name: str, latest_data: Dict):
         """后台完成完整数据更新并生成发送完整走势图"""
         try:
             self.logger.info(f"🔄 开始后台完整更新 {currency} 数据")
-            
+
             # 获取缺失的数据
             new_data = self._fetch_missing_data_sync(currency, missing_ranges)
-            
+
             # 合并数据
             all_contents = existing_contents.copy()
-            
+
             if new_data:
                 # 如果包含今天的更新，需要先清除今天的旧缓存
                 if need_update_today and today_str in cached_dates:
@@ -669,7 +677,7 @@ class BOCExchangeService:
                             self.logger.warning(f"跳过无法解析的发布时间记录: {item.get('发布时间')}, error: {e}")
                     all_contents = filtered_contents
                     self.logger.info(f"清除今日旧缓存数据，剩余 {len(all_contents)} 条")
-                
+
                 # 保存新数据到缓存
                 self._save_data_to_cache(currency, new_data)
                 # 合并缓存数据和新数据
@@ -680,7 +688,7 @@ class BOCExchangeService:
                 # 如果没有新数据但有现有缓存，则使用现有缓存
                 if not all_contents and latest_data.get('first_page_data'):
                     all_contents = latest_data['first_page_data']
-            
+
             # 确保有数据用于生成图表
             if all_contents:
                 # 更新内存缓存
@@ -691,15 +699,15 @@ class BOCExchangeService:
                     'all_data': all_contents
                 }
                 self.memory_cache[f"exchange_rate_{currency}"] = {
-                    'data': cache_data, 
+                    'data': cache_data,
                     'timestamp': self._get_beijing_now()
                 }
-                
+
                 # 生成并发送完整走势图（基于完整历史数据）
                 self._generate_chart_from_cache(all_contents, currency, chat_name)
             else:
                 self.logger.warning(f"❌ 后台更新后仍无数据，无法生成 {currency} 走势图")
-                
+
         except Exception as e:
             self.logger.error(f"❌ 后台完整更新失败: {e}")
 
@@ -719,14 +727,14 @@ class BOCExchangeService:
         """同步获取最新汇率（仅第一页）"""
         beijing_now = self._get_beijing_now()
         end_date = beijing_now.strftime("%Y-%m-%d")
-        
+
         # 30 days history date for chart/background processing
         history_start_date = (beijing_now - timedelta(days=30)).strftime("%Y-%m-%d")
-        
+
         # Use TODAY as start_date for the query to ensure we get the latest rate
         # The API seems to return oldest data first if searched with a range
-        query_start_date = end_date 
-        
+        query_start_date = end_date
+
         try:
             # 快速回复只读取官网当前页；归档快照由后台更新流程再并发抓取。
             first_page_data = self._fetch_static_snapshots(
@@ -738,7 +746,7 @@ class BOCExchangeService:
             latest_item = sorted_data[0]
             return {
                 'success': True, 'latest_rate': float(latest_item["现汇卖出价"]), 'latest_time': latest_item["发布时间"],
-                'first_page_data': first_page_data, 
+                'first_page_data': first_page_data,
                 'start_date': history_start_date, # Return 30-day history start date for chart logic
                 'end_date': end_date
             }
@@ -760,17 +768,17 @@ class BOCExchangeService:
         """后台线程生成完整图表（仅在没有缓存时使用）"""
         try:
             self.logger.info(f"📊 开始后台生成{currency}完整走势图")
-            
+
             # 先检查是否有缓存数据，实现智能合并
             start_date_str = latest_data['start_date']
             end_date_str = latest_data['end_date']
             cached_data, cached_dates, today_latest_time = self._load_cached_data(currency, start_date_str, end_date_str)
-            
+
             if cached_data:
                 self.logger.info(f"发现现有缓存数据: {len(cached_data)} 条")
                 # 计算需要补充的日期范围
                 missing_ranges = self._get_missing_date_ranges(start_date_str, end_date_str, cached_dates)
-                
+
                 if missing_ranges:
                     # 只获取缺失的数据
                     new_data = self._fetch_missing_data_sync(currency, missing_ranges)
@@ -778,18 +786,18 @@ class BOCExchangeService:
                         self._save_data_to_cache(currency, new_data)
                         cached_data.extend(new_data)
                         self.logger.info(f"增量更新完成，总数据量: {len(cached_data)} 条")
-                    
+
                 all_contents = cached_data
             else:
                 # 没有缓存，获取完整数据
                 all_contents = self._fetch_complete_data_sync(currency, start_date_str, end_date_str, latest_data['first_page_data'])
                 if all_contents:
                     self._save_data_to_cache(currency, all_contents)
-            
+
             if not all_contents:
                 self.logger.error(f"❌ 未获取到完整数据，无法生成{currency}走势图")
                 return
-            
+
             chart_path = self._create_trend_chart(all_contents, currency)
             if chart_path:
                 sorted_data = sorted(all_contents, key=lambda x: self._parse_publish_time(x["发布时间"]), reverse=True)
@@ -799,33 +807,33 @@ class BOCExchangeService:
                 }
                 # 更新内存缓存
                 self.memory_cache[f"exchange_rate_{currency}"] = {'data': cache_data, 'timestamp': self._get_beijing_now()}
-                
+
                 self.logger.info(f"✅ {currency}完整走势图生成完成: {chart_path}")
                 # 注意：图表已经在前面发送过了，这里不重复发送
         except Exception as e:
             self.logger.error(f"❌ 后台生成{currency}图表失败: {e}")
-    
+
     def _fetch_complete_data_sync(self, currency: str, start_date: str, end_date: str, first_page_data: List[Dict]) -> List[Dict]:
         """同步获取完整数据（简化版）"""
         all_contents = first_page_data.copy()
         try:
             paramtk, record_count, first_page_content = self._fetch_first_page_with_retry(currency, start_date, end_date)
-            
+
             if first_page_content:
                 all_contents = first_page_content
 
             if record_count > 20 and paramtk != "history-complete":
                 total_pages = (record_count + 19) // 20
                 self.logger.info(f"📊 需要获取总计{total_pages}页数据")
-                
+
                 # 获取token和captcha_str用于翻页
                 ocr = self._get_ocr()
                 token = self._get_captcha_sync()
                 captcha_str = self._get_captcha_char_sync(ocr)
-                
+
                 for page in range(2, total_pages + 1):
                     time.sleep(1.5)
-                    
+
                     # --- 建议修改：为每页添加重试机制 ---
                     page_content, new_paramtk = None, None
                     for page_attempt in range(2): # 每页最多重试1次
@@ -838,7 +846,7 @@ class BOCExchangeService:
                             break # 遇到访问限制，跳出重试
                         time.sleep(3) # 其他错误，等待3秒后重试
                     # --- 结束修改 ---
-                    
+
                     if error:
                         self.logger.warning(f"⚠️ 第{page}页获取失败: {error}")
                         if "访问" in error or "频率" in error:
@@ -849,13 +857,13 @@ class BOCExchangeService:
                         if page_content: all_contents.extend(page_content)
                         if new_paramtk: paramtk = new_paramtk
                     if page % 3 == 0: time.sleep(3)
-            
+
             self.logger.info(f"✅ {currency}完整数据获取完成，共{len(all_contents)}条")
             return all_contents
         except Exception as e:
             self.logger.error(f"❌ 获取完整数据异常: {e}")
             return all_contents
-    
+
     def _get_captcha_sync(self) -> str:
         response = request_with_retry("get", self.captcha_url, logger=self.logger, timeout=10)
         response.raise_for_status()
@@ -863,7 +871,7 @@ class BOCExchangeService:
             f.write(base64.b64decode(response.content))
             self.temp_captcha_file = f.name
         return response.headers.get("token")
-    
+
     def _get_captcha_char_sync(self, ocr) -> str:
         with open(self.temp_captcha_file, "rb") as f:
             image = f.read()
@@ -872,53 +880,53 @@ class BOCExchangeService:
         except: pass
         self.logger.info(f"🔐 验证码识别: {result}")
         return result
-    
+
     def _query_data_sync(self, start_date, end_date, token, captcha_char, paramtk, page, is_first, currency):
         headers = {"User-Agent": self.user_agent, "Content-Type": "application/x-www-form-urlencoded"}
         if is_first:
             data = {
                 "searchDate": start_date,  # Updated from erectDate
                 # "nothing": end_date,      # Removed based on observation
-                "pjname": currency, 
-                "head": "head_620.js", 
+                "pjname": currency,
+                "head": "head_620.js",
                 "bottom": "bottom_591.js",
-                "first": 1, 
-                "token": token, 
+                "first": 1,
+                "token": token,
                 "captcha": captcha_char
             }
         else:
             data = {
                 "searchDate": start_date,  # Updated from erectDate
                 # "nothing": end_date,      # Removed
-                "page": page, 
-                "pjname": currency, 
-                "head": "head_620.js", 
+                "page": page,
+                "pjname": currency,
+                "head": "head_620.js",
                 "bottom": "bottom_591.js",
-                "paramtk": paramtk, 
+                "paramtk": paramtk,
                 "token": token
             }
-        
+
         response = request_with_retry("post", self.search_url, logger=self.logger, headers=headers, data=data, timeout=15)
         response.raise_for_status()
         html_content = response.text.replace("GBK", "UTF-8").replace("\n", "").replace("\r", "").replace("\t", "")
-        
+
         if "验证码错误" in html_content: return "验证码错误", None, 0, []
         if "验证码已过期" in html_content: return "验证码已过期", None, 0, []
-        
+
         # Use XPath to extract paramtk for better robustness
         try:
             tree = etree.HTML(html_content)
             new_paramtk = tree.xpath('//input[@name="paramtk"]/@value')[0]
         except Exception:
             new_paramtk = None
-        
+
         # if not new_paramtk:
         #    self.logger.warning(f"⚠️ paramtk not found in response")
 
         record_count = int((re.findall(r"m_nRecordCount\s*=\s*(\d+);", html_content) or [0])[0])
         content = self._parse_html(html_content)
         return None, new_paramtk, record_count, content
-    
+
     def _parse_html(self, html_content: str) -> List[Dict]:
         html = etree.HTML(html_content)
         data = []
@@ -943,7 +951,7 @@ class BOCExchangeService:
                 data.append(item)
             except IndexError: continue
         return data
-    
+
     def _create_trend_chart(self, all_contents: List[Dict], currency: str) -> Optional[str]:
         if not all_contents: return None
         dates, rates = [], []
@@ -952,46 +960,46 @@ class BOCExchangeService:
                 dates.append(self._parse_publish_time(item["发布时间"]))
                 rates.append(float(item["现汇卖出价"]))
             except: continue
-        
+
         if not dates: return None
-        
+
         try:
             # 确保在非主线程中使用 matplotlib 时的安全性
             plt.ioff()  # 关闭交互模式
-            
+
             sorted_data = sorted(zip(dates, rates))
             dates, rates = zip(*sorted_data)
-            
+
             min_rate, max_rate, avg_rate = min(rates), max(rates), sum(rates) / len(rates)
             rate_range = max_rate - min_rate
             min_idx, max_idx = rates.index(min_rate), rates.index(max_rate)
             min_time, max_time = dates[min_idx], dates[max_idx]
             latest_time, latest_rate = dates[-1], rates[-1]
-            
+
             plt.style.use('default')
             plt.rcParams.update({
                 'font.sans-serif': ['Microsoft YaHei', 'SimHei', 'Arial Unicode MS'], 'axes.unicode_minus': False,
                 'figure.facecolor': 'white', 'axes.facecolor': 'white', 'savefig.facecolor': 'white',
                 'savefig.edgecolor': 'none', 'font.size': 12, 'axes.linewidth': 1.2, 'grid.linewidth': 0.5, 'grid.alpha': 0.4
             })
-            
+
             fig, ax = plt.subplots(figsize=(20, 12), dpi=150)
             ax.plot(dates, rates, linewidth=2, alpha=0.9, color='#2E86AB', zorder=3, label='现汇卖出价')
             ax.fill_between(dates, rates, min_rate - rate_range * 0.02, alpha=0.15, color='#2E86AB', zorder=1)
             ax.axhline(y=avg_rate, color='#F18F01', linestyle='--', linewidth=2.5, alpha=0.8, zorder=2, label=f'平均值: {avg_rate:.2f}')
-            
+
             bbox_high = dict(boxstyle="round,pad=0.5", fc='#FFE5E5', ec='#E74C3C', lw=2, alpha=0.95)
-            ax.annotate(f'最高点\n{max_rate:.2f}\n{max_time:%m-%d %H:%M}', (max_time, max_rate), 
-                        xytext=(max_time, max_rate + rate_range * 0.1), ha='center', va='bottom', 
+            ax.annotate(f'最高点\n{max_rate:.2f}\n{max_time:%m-%d %H:%M}', (max_time, max_rate),
+                        xytext=(max_time, max_rate + rate_range * 0.1), ha='center', va='bottom',
                         fontsize=12, fontweight='bold', bbox=bbox_high, color='#C0392B',
                         arrowprops=dict(arrowstyle='->', color='#E74C3C', lw=2), zorder=5)
-            
+
             bbox_low = dict(boxstyle="round,pad=0.5", fc='#E8F5E8', ec='#27AE60', lw=2, alpha=0.95)
             ax.annotate(f'最低点\n{min_rate:.2f}\n{min_time:%m-%d %H:%M}', (min_time, min_rate),
                         xytext=(min_time, min_rate - rate_range * 0.1), ha='center', va='top',
                         fontsize=12, fontweight='bold', bbox=bbox_low, color='#1E8449',
                         arrowprops=dict(arrowstyle='->', color='#27AE60', lw=2), zorder=5)
-            
+
             # 最新点标注（放在数据点右边，箭头朝左指向数据点）
             bbox_latest = dict(boxstyle="round,pad=0.5", fc='#E8F0FE', ec='#1F6FEB', lw=2, alpha=0.95)
             # 计算标注位置：在数据点右边，水平偏移参考最高点最低点的距离设置
@@ -1002,20 +1010,20 @@ class BOCExchangeService:
                         xytext=(offset_time, latest_rate), ha='left', va='center',
                         fontsize=12, fontweight='bold', bbox=bbox_latest, color='#0B5ED7',
                         arrowprops=dict(arrowstyle='->', color='#1F6FEB', lw=2), zorder=5)
-            
+
             ax.set_xlabel('时间', fontsize=16, fontweight='bold', color='#2C3E50', labelpad=15)
             unit = "人民币/100日元" if currency == "日元" else f"人民币/100{currency}"
             ax.set_ylabel(f'现汇卖出价 ({unit})', fontsize=16, fontweight='bold', color='#2C3E50', labelpad=15)
-            
+
             ax.grid(True, linestyle='-', alpha=0.3, color='#BDC3C7', zorder=0)
             ax.set_axisbelow(True)
             ax.spines[['top', 'right']].set_visible(False)
             ax.spines[['left', 'bottom']].set_color('#7F8C8D')
             ax.spines[['left', 'bottom']].set_linewidth(1.5)
-            
+
             y_margin = rate_range * 0.12
             ax.set_ylim(min_rate - y_margin, max_rate + y_margin)
-            
+
             from matplotlib.dates import DateFormatter, DayLocator
             date_range_days = (max(dates) - min(dates)).days if dates else 0
             if date_range_days <= 7: locator, interval = DayLocator, 1
@@ -1023,28 +1031,28 @@ class BOCExchangeService:
             else: locator, interval = DayLocator, max(1, date_range_days//10)
             ax.xaxis.set_major_locator(locator(interval=interval))
             ax.xaxis.set_major_formatter(DateFormatter('%m-%d'))
-            
+
             plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=11)
             ax.tick_params(axis='y', labelsize=11)
-            
+
             plt.suptitle(f'{currency} 中行牌价(现汇卖出价走势图)', fontsize=24, fontweight='bold', color='#2C3E50', y=0.96)
             subtitle = f'数据时间: {dates[0]:%Y年%m月%d日} - {dates[-1]:%Y年%m月%d日} | 共{len(rates)}个数据点'
             plt.figtext(0.5, 0.92, subtitle, ha='center', va='top', fontsize=14, color='#7F8C8D', style='italic')
-            
+
             legend = ax.legend(loc='upper left', frameon=True, fancybox=True, shadow=True, framealpha=0.95, edgecolor='#BDC3C7', fontsize=12)
             legend.get_frame().set_facecolor('white')
-            
+
             ax.text(0.99, 0.01, '数据来源: 中国银行外汇牌价', transform=ax.transAxes, ha='right', va='bottom', fontsize=10, color='#95A5A6', style='italic')
-            
+
             plt.tight_layout(rect=[0.05, 0.1, 0.95, 0.9])
-            
+
             chart_filename = tempfile.mktemp(suffix=f'_{currency}_trend_{self._get_beijing_now():%Y%m%d_%H%M%S}.png')
             plt.savefig(chart_filename, dpi=200, bbox_inches='tight')
             plt.close()
-            
+
             self.logger.info(f"✅ 优化走势图已生成: {chart_filename}")
             return chart_filename
-            
+
         except Exception as e:
             self.logger.error(f"❌ 生成走势图失败: {e}")
             # 确保释放所有 matplotlib 资源
@@ -1060,13 +1068,13 @@ class BOCExchangeService:
                 plt.close('all')  # 关闭所有图形
             except:
                 pass
-    
+
     def _save_cache_index(self, cache_index: Dict):
         """保存缓存索引"""
         cache_index["last_updated"] = self._get_beijing_now().isoformat()
         with open(self.cache_index_file, 'w', encoding='utf-8') as f:
             json.dump(cache_index, f, ensure_ascii=False, indent=2)
-    
+
     def _load_cache_index(self):
         """加载缓存索引"""
         try:

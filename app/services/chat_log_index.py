@@ -49,6 +49,7 @@ class _Bucket:
     received: int = 0
     replies: int = 0
     chats: Set[str] = field(default_factory=set)
+    reply_senders: Dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -98,7 +99,7 @@ class ChatLogIndex:
         with self._lock:
             self._refresh_locked(moment)
             hourly = [
-                {"at": key, **_merge_buckets(state.hours.get(key) for state in self._files.values())}
+                {"at": key, **_merge_buckets((state.hours.get(key) for state in self._files.values()), include_reply_senders=True)}
                 for key in _hour_keys(moment, hours)
             ]
             daily = [
@@ -262,7 +263,7 @@ class ChatLogIndex:
                     chat_name = log_file.stem
                     sender = str(entry.get("sender") or "")
                     is_bot = entry.get("is_bot") is True or bool(bot_name and sender == bot_name)
-                    _bump(state.hours, hour_key, chat_name, is_bot)
+                    _bump(state.hours, hour_key, chat_name, is_bot, sender if entry.get("is_bot") is True else "")
                     _bump(state.minutes, minute_key, chat_name, is_bot)
                     _bump(state.days, day_key, chat_name, is_bot)
                     if day_key == today_key:
@@ -335,27 +336,63 @@ def _parse_entry(raw_line: bytes) -> Optional[Dict[str, Any]]:
     return entry if len(time_str) >= 16 else None
 
 
-def _bump(buckets: Dict[str, _Bucket], key: str, chat_name: str, is_bot: bool) -> None:
+def _bump(buckets: Dict[str, _Bucket], key: str, chat_name: str, is_bot: bool, reply_sender: str = "") -> None:
     bucket = buckets.get(key)
     if bucket is None:
         bucket = buckets[key] = _Bucket()
     if is_bot:
         bucket.replies += 1
+        if reply_sender:
+            bucket.reply_senders[reply_sender] = bucket.reply_senders.get(reply_sender, 0) + 1
     else:
         bucket.received += 1
     bucket.chats.add(chat_name)
 
 
-def _merge_buckets(buckets: Iterable[Optional[_Bucket]]) -> Dict[str, int]:
+def _merge_buckets(buckets: Iterable[Optional[_Bucket]], *, include_reply_senders: bool = False) -> Dict[str, Any]:
     received = replies = 0
     chats: Set[str] = set()
+    reply_senders: Dict[str, int] = {}
     for bucket in buckets:
         if bucket is None:
             continue
         received += bucket.received
         replies += bucket.replies
         chats |= bucket.chats
-    return {"received": received, "replies": replies, "chats": len(chats)}
+        if include_reply_senders:
+            for sender, count in bucket.reply_senders.items():
+                reply_senders[sender] = reply_senders.get(sender, 0) + count
+    result: Dict[str, Any] = {"received": received, "replies": replies, "chats": len(chats)}
+    if include_reply_senders:
+        result["reply_senders"] = reply_senders
+    return result
+
+
+def attach_plugin_replies(snapshot: Dict[str, Any], plugins: Dict[str, Any], *, bot_name: str = "") -> Dict[str, Any]:
+    """Resolve only explicitly logged bot sends with unique plugin display names.
+
+    The event-bus delivery proxy writes a plugin's display name after a successful
+    send. Listener activations, LLM completions, incoming names and silent sends
+    are not evidence of a delivered plugin reply. Ambiguous/unknown historical
+    names remain outside the breakdown; totals are unchanged.
+    """
+    senders: Dict[str, List[Tuple[str, str]]] = {}
+    for plugin_id, plugin in plugins.items():
+        if getattr(plugin, "kind", "plugin") != "plugin":
+            continue
+        config = getattr(plugin, "config", None) or {}
+        name = str(config.get("display_name") or config.get("name") or plugin_id.rsplit("/", 1)[-1])
+        if name and name != bot_name:
+            senders.setdefault(name, []).append((plugin_id, name))
+    for hour in snapshot.get("hourly", []):
+        rows = []
+        for sender, count in hour.pop("reply_senders", {}).items():
+            matches = senders.get(sender, [])
+            if count > 0 and len(matches) == 1:
+                plugin_id, name = matches[0]
+                rows.append({"plugin_id": plugin_id, "name": name, "count": count})
+        hour["plugin_replies"] = sorted(rows, key=lambda row: (-row["count"], row["plugin_id"]))
+    return snapshot
 
 
 def _hour_keys(moment: datetime, hours: int) -> List[str]:

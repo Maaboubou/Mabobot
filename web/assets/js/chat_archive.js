@@ -11,7 +11,7 @@
         }
         return response.json();
     };
-    const state = {userId: 0, view: 'messages', offset: 0, next: null, generation: 0, members: [], opening: 0};
+    const state = {userId: 0, view: 'messages', offset: 0, next: null, generation: 0, members: [], opening: 0, messages: new Map()};
     const endpoint = () => `/api/history/users/${state.userId}`;
     const time = value => /T.*(?:Z|\+\d\d:\d\d)$/.test(value || '') ? UI.formatDateTime(value, {timeZone: 'Asia/Shanghai'}) : value;
     function ensureModal() {
@@ -43,9 +43,12 @@
         $('archiveMore').addEventListener('click', () => load(state.next));
         $('archivePrevious').addEventListener('click', () => load(Math.max(0, state.offset - (state.view === 'coverage' ? 100 : 50))));
         $('archiveAddMember').addEventListener('click', () => editMember(null));
+        new ResizeObserver(syncFullTextButtons).observe($('archiveResults'));
+        $('chatArchiveModal').addEventListener('shown.bs.modal', syncFullTextButtons);
         $('archiveResults').addEventListener('click', event => {
             const button = event.target.closest('button');
             if (!button) return;
+            if (button.dataset.fulltext) fullText(button);
             if (button.dataset.message) detail(button.dataset.message, Number(button.dataset.offset || 0));
             if (button.dataset.member) editMember(state.members.find(row => row.id === button.dataset.member));
             if (button.dataset.deleteMember) deleteMember(state.members.find(row => row.id === button.dataset.deleteMember), button);
@@ -76,6 +79,8 @@
     const table = (headers, rows, cls = '') => `<div class="table-responsive"><table class="codex-compact-table ${cls}"><thead><tr>${headers.map(text => `<th>${text}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>`;
     async function load(offset = 0) {
         controls();
+        state.messages.clear();
+        const filtered = ['archiveQuery', 'archiveSender', 'archiveStart', 'archiveEnd'].some(id => $(id).value.trim());
         const generation = ++state.generation;
         state.offset = offset || 0; state.next = null;
         $('archiveMore').hidden = true; $('archivePrevious').hidden = true;
@@ -101,7 +106,8 @@
                 const summary = data.summary?.[0];
                 $('archiveSummary').textContent = summary ? `已保存 ${UI.formatNumber(summary.messages)} 条` : '暂无记录';
                 $('archiveSummary').title = data.coverage_notice || '';
-                html = table(['时间','发言人','内容',''], data.messages.map(row => `<tr class="archive-message-row"><td class="archive-time">${esc(time(row.time))}</td><td class="archive-sender"><strong>${esc(row.sender)}</strong>${row.is_bot ? '<small>机器人</small>' : ''}</td><td><div class="archive-excerpt">${esc(row.content)}${row.truncated ? '…' : ''}</div>${row.corrected ? '<span class="archive-note">含人工更正</span>' : ''}</td><td><button class="btn archive-text-button" data-message="${esc(row.id)}" aria-label="查看原文与上下文">展开</button></td></tr><tr class="archive-detail-row" id="archive-detail-${esc(row.id)}" hidden><td colspan="4"></td></tr>`).join(''), 'archive-message-table');
+                state.messages = new Map(data.messages.map(row => [String(row.id), {...row}]));
+                html = table(filtered ? ['时间','发言人','内容',''] : ['时间','发言人','内容'], data.messages.map(row => `<tr class="archive-message-row"><td class="archive-time">${esc(time(row.time))}</td><td class="archive-sender"><strong>${esc(row.sender)}</strong>${row.is_bot ? '<small>机器人</small>' : ''}</td><td><div class="archive-excerpt" id="archive-text-${esc(row.id)}">${esc(row.content)}${row.truncated ? '…' : ''}</div><button class="btn archive-text-button" data-fulltext="${esc(row.id)}" aria-expanded="false" aria-controls="archive-text-${esc(row.id)}" ${row.truncated ? '' : 'hidden'}>查看全文</button><span class="archive-note" data-fulltext-error role="status"></span>${row.corrected ? '<span class="archive-note">含人工更正</span>' : ''}</td>${filtered ? `<td><button class="btn archive-text-button" data-message="${esc(row.id)}" aria-expanded="false" aria-controls="archive-detail-${esc(row.id)}">查看上下文</button></td>` : ''}</tr>${filtered ? `<tr class="archive-detail-row" id="archive-detail-${esc(row.id)}" hidden><td colspan="4"></td></tr>` : ''}`).join(''), `archive-message-table${filtered ? ' has-context' : ''}`);
                 if (data.status === 'ambiguous_sender') html = '<div class="codex-empty">此别名对应多个成员，请在成员别名页查看后使用具体昵称。</div>';
             } else if (state.view === 'members') {
                 state.members = data.items; count = data.items.length;
@@ -116,16 +122,63 @@
             }
             $('archiveResults').innerHTML = count ? html : '<div class="codex-empty">没有匹配记录</div>';
             if (data.status === 'ambiguous_sender') $('archiveResults').innerHTML = html;
+            syncFullTextButtons();
             state.next = data.next_offset ?? null;
             $('archiveMore').hidden = state.next === null;
             $('archivePrevious').hidden = state.offset === 0;
             $('archivePageLabel').textContent = count ? `${state.offset+1}–${state.offset+count}` : '';
         } catch (error) { if (generation === state.generation) $('archiveResults').innerHTML = `<div class="codex-empty">${esc(error.message)}</div>`; }
     }
+    function syncFullTextButtons() {
+        $('archiveResults')?.querySelectorAll('[data-fulltext]').forEach(button => {
+            const row = state.messages.get(button.dataset.fulltext);
+            const text = button.previousElementSibling;
+            button.hidden = !row?.truncated && button.getAttribute('aria-expanded') !== 'true'
+                && text.scrollHeight <= text.clientHeight + 1;
+        });
+    }
+    async function fullText(button) {
+        const identity = button.dataset.fulltext, row = state.messages.get(identity);
+        if (!row || button.disabled) return;
+        const text = button.previousElementSibling, error = button.nextElementSibling;
+        const expanded = button.getAttribute('aria-expanded') === 'true';
+        if (expanded && row.next == null) {
+            text.textContent = row.content + (row.truncated ? '…' : '');
+            text.classList.remove('is-expanded');
+            button.setAttribute('aria-expanded', 'false');
+            button.textContent = '查看全文';
+            syncFullTextButtons();
+            return;
+        }
+        const generation = state.generation;
+        button.disabled = true; error.textContent = '';
+        try {
+            if (row.truncated && (row.full == null || row.next != null)) {
+                const data = await request(`${endpoint()}/messages/${encodeURIComponent(identity)}?offset=${row.next || 0}`);
+                if (generation !== state.generation || !button.isConnected) return;
+                const message = data.messages.find(item => String(item.id) === identity);
+                if (!message) throw new Error('未找到原文，请刷新后重试');
+                row.full = (row.next ? row.full : '') + message.content;
+                row.next = message.next_offset ?? null;
+            }
+            text.textContent = row.full ?? row.content;
+            text.classList.add('is-expanded');
+            button.setAttribute('aria-expanded', 'true');
+            button.textContent = row.next != null ? '继续读取' : '收起全文';
+        } catch (err) {
+            if (generation === state.generation && button.isConnected) error.textContent = err.message;
+        } finally { if (button.isConnected) button.disabled = false; }
+    }
     async function detail(identity, offset = 0) {
         const target = $('archive-detail-' + identity);
         if (!target) return;
-        if (!target.hidden && !offset) { target.hidden = true; return; }
+        const toggle = [...$('archiveResults').querySelectorAll('[data-message]')].find(button => button.dataset.message === identity && !button.dataset.offset);
+        if (!target.hidden && !offset) {
+            target.hidden = true;
+            if (toggle) { toggle.textContent = '查看上下文'; toggle.setAttribute('aria-expanded', 'false'); }
+            return;
+        }
+        if (toggle) { toggle.textContent = '收起上下文'; toggle.setAttribute('aria-expanded', 'true'); }
         const generation = state.generation, path = endpoint();
         target.hidden = false; target.firstElementChild.innerHTML = '<div class="codex-empty">正在读取原文…</div>';
         try {

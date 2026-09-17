@@ -6,8 +6,10 @@
 
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Text
 from sqlalchemy.orm import relationship
+import uuid
 from .base import Base
 from .chat_plugin_config import ChatPluginConfig
+from .codex_permission import CodexChatPermissionOverride, CodexPermissionReceipt
 
 
 def _assistant_chat_policy_model():
@@ -26,6 +28,7 @@ class WeChatUser(Base):
     remark = Column(String, nullable=True)
     is_group = Column(Boolean, default=False)
     listening_enabled = Column(Boolean, default=True, nullable=False)
+    attachment_content_review_enabled = Column(Boolean, default=True, server_default="1", nullable=False)
     # Monotonic revision for the aggregate chat policy document. Every write
     # through the unified policy API increments this value so concurrent admin
     # pages cannot silently overwrite one another.
@@ -33,6 +36,8 @@ class WeChatUser(Base):
     # Codex access is administrator-owned. New and unknown chats fail closed.
     # owner_full is valid only for an explicitly selected private chat.
     codex_access_mode = Column(String, default="isolated", nullable=False)
+    # Stable host-owned allocation; names and UI inputs never grant a scope.
+    codex_scope_key = Column(String, nullable=True, default=lambda: "chat-" + uuid.uuid4().hex)
     sender_blacklist = Column(Text, nullable=True)  # 当前群/私聊内全局 sender 黑名单（JSON array）
     # 群内 @ 名称与微信账号的全局显示名并不总是相同。手动值始终作为
     # 备用别名；自动值只从微信群详情的“我在本群的昵称”字段读取。
@@ -45,6 +50,8 @@ class WeChatUser(Base):
 
     permissions = relationship("UserPermission", back_populates="user", cascade="all, delete-orphan")
     plugin_configs = relationship(ChatPluginConfig, back_populates="user", cascade="all, delete-orphan")
+    codex_permissions = relationship(CodexChatPermissionOverride, back_populates="user", uselist=False, cascade="all, delete-orphan")
+    codex_permission_receipt = relationship(CodexPermissionReceipt, back_populates="user", uselist=False, cascade="all, delete-orphan")
     assistant_policy = relationship(
         _assistant_chat_policy_model,
         back_populates="user",

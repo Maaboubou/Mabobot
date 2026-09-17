@@ -14,6 +14,7 @@ from app.models.assistant_policy import AssistantChatPolicy
 from app.models.user_permission import WeChatUser
 from app.services.capability_service import CapabilityService
 from app.services.config_service import get_setting
+from app.services.assistant_prompt_service import prompt_revision
 from app.utils.bot_mentions import bot_names_for_user
 from app.utils.plugin_config import get_plugin_setting
 
@@ -78,6 +79,7 @@ class AssistantConsoleService:
         for role in self.db.query(ChatBotRole).order_by(ChatBotRole.id).all():
             item = {
                 "id": role.id,
+                "revision": prompt_revision(role),
                 "name": role.name,
                 "display_name": role.display_name,
                 "description": role.description or "",
@@ -103,6 +105,7 @@ class AssistantConsoleService:
         for judge in self.db.query(ChatBotJudge).order_by(ChatBotJudge.id).all():
             item = {
                 "id": judge.id,
+                "revision": prompt_revision(judge),
                 "name": judge.name,
                 "display_name": judge.display_name,
                 "description": judge.description or "",

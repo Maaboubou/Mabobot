@@ -58,6 +58,10 @@ def ensure_wechat_user_access_columns(bind=None):
     existing = {column["name"] for column in inspector.get_columns("wechat_users")}
     added = []
     quote = active_engine.dialect.identifier_preparer.quote
+    if "codex_scope_key" not in existing:
+        with active_engine.begin() as connection:
+            connection.execute(text("ALTER TABLE wechat_users ADD COLUMN codex_scope_key VARCHAR"))
+        added.append("codex_scope_key")
     if "codex_access_mode" not in existing:
         with active_engine.begin() as connection:
             connection.execute(
@@ -80,6 +84,12 @@ def ensure_wechat_user_access_columns(bind=None):
             )
         logger.info("已添加聊天策略版本字段: wechat_users.policy_version")
         added.append("policy_version")
+    if "attachment_content_review_enabled" not in existing:
+        with active_engine.begin() as connection:
+            connection.execute(text(
+                "ALTER TABLE wechat_users ADD COLUMN attachment_content_review_enabled BOOLEAN NOT NULL DEFAULT 1"
+            ))
+        added.append("attachment_content_review_enabled")
     return added
 
 
@@ -169,6 +179,8 @@ def create_tables():
     from . import chat_plugin_config
     from . import plugin_config_template
 
+    from . import codex_permission
+    existing_install = inspect(engine).has_table("wechat_users")
     Base.metadata.create_all(bind=engine)
     drop_legacy_memory_columns()
     drop_legacy_knowledge_base_columns(engine)
@@ -176,3 +188,5 @@ def create_tables():
     ensure_assistant_policy_columns(engine)
     migrate_legacy_current_codex_bindings(engine)
     assistant_policy.migrate_legacy_assistant_permissions(engine)
+    from app.services.codex_permission_service import migrate_permissions
+    migrate_permissions(engine, existing_install=existing_install)

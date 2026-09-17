@@ -14,7 +14,10 @@ const API = {
                 const message = typeof detail === 'object'
                     ? (detail.message || JSON.stringify(detail))
                     : detail;
-                throw new Error(message || `HTTP ${response.status}`);
+                const failure = new Error(message || `HTTP ${response.status}`);
+                failure.status = response.status;
+                failure.detail = detail;
+                throw failure;
             }
             return await response.json();
         } catch (error) {

@@ -57,6 +57,11 @@ logger = logging.getLogger(__name__)
 
 CODEX_APPROVAL_POLICY = "on-request"
 CODEX_APPROVALS_REVIEWER = "auto_review"
+ISOLATED_PROFILES = tuple(f"mabobot-isolated-{access}-{network}" for access in ("ro", "rw") for network in ("offline", "public"))
+
+
+def is_isolated_profile(profile: str) -> bool:
+    return profile == "mabobot-chat-isolated" or profile in ISOLATED_PROFILES
 _RUNNING_REQUESTS_LOCK = threading.Lock()
 _RUNNING_REQUESTS: Dict[str, Dict[str, Any]] = {}
 _ARTIFACT_CLEANUP_LOCK = threading.Lock()
@@ -130,7 +135,7 @@ def _permission_profile_config_args(
     if not normalized:
         return []
     args = ["-c", f'default_permissions="{normalized}"'] if select_default else []
-    if normalized != "mabobot-chat-isolated":
+    if not is_isolated_profile(normalized):
         return args
 
     # Root deny is intentional: :workspace alone permits broad reads. Missing
@@ -177,10 +182,15 @@ def _permission_profile_config_args(
         if normalized_path.startswith("/") and normalized_path not in existing_paths:
             filesystem_permissions.append((normalized_path, "read"))
             existing_paths.add(normalized_path)
+    # Temporary caches must not become a shared writable channel between chats.
+    filesystem_permissions = [(path, access) for path, access in filesystem_permissions if path not in {"/tmp/mabobot-clamav-tmp", "/tmp/mabobot-fontconfig-cache"}]
+    workspace_access = "read" if "-ro-" in normalized else "write"
     filesystem_config = ",".join(
         f"{json.dumps(path)}={json.dumps(access)}"
         for path, access in filesystem_permissions
     )
+    filesystem_config += ',":workspace_roots"={"."=' + json.dumps(workspace_access) + ',".codex"="read",".git"="read",".agents"="read"}'
+    public = normalized.endswith("-public")
     args.extend(
         [
             # The managed API provider reads its credential in the Codex
@@ -191,13 +201,18 @@ def _permission_profile_config_args(
             "-c",
             "shell_environment_policy.ignore_default_excludes=false",
             "-c",
-            'permissions.mabobot-chat-isolated.extends=":workspace"',
+            'shell_environment_policy.include_only=["PATH","HOME","USER","LANG","LC_ALL","TERM","TMPDIR","SYSTEMROOT","WINDIR"]',
             "-c",
-            f"permissions.mabobot-chat-isolated.filesystem={{{filesystem_config}}}",
+            'shell_environment_policy.set={}',
             "-c",
-            "permissions.mabobot-chat-isolated.network.enabled=false",
+            f'permissions.{normalized}.extends=":workspace"',
+            "-c", f"permissions.{normalized}.filesystem={{{filesystem_config}}}",
+            "-c", f"permissions.{normalized}.workspace_roots={{}}",
+            "-c", f"permissions.{normalized}.network=" + "{enabled=" + ("true" if public else "false") + ',allow_local_binding=false,allow_upstream_proxy=false,dangerously_allow_non_loopback_proxy=false,dangerously_allow_all_unix_sockets=false,enable_socks5=false,enable_socks5_udp=false,unix_sockets={},domains={' + ('"*"="allow"' if public else '') + '}}',
         ]
     )
+    if public:
+        args.extend(["-c", "features.network_proxy=true"])
     return args
 
 
@@ -1961,13 +1976,17 @@ class CodexCliClient:
             or extra_body.get("codex_permission_profile")
             or ""
         ).strip()
+        if permission_profile in ISOLATED_PROFILES and permission_profile.endswith("-public"):
+            raise CodexProxyError("公共互联网需要已验证的 App Server 网络代理，不能回退到 exec")
         approval_policy = str(
             request.get("codex_approval_policy")
             or extra_body.get("codex_approval_policy")
             or CODEX_APPROVAL_POLICY
         ).strip().lower()
         if approval_policy not in {"never", "on-request"}:
-            approval_policy = "never" if permission_profile == "mabobot-chat-isolated" else CODEX_APPROVAL_POLICY
+            approval_policy = "never" if is_isolated_profile(permission_profile) else CODEX_APPROVAL_POLICY
+        if permission_profile in ISOLATED_PROFILES and approval_policy == "on-request":
+            raise CodexProxyError("聊天自动审阅需要 App Server 传递宿主权限指令，不能回退到 exec")
         config_policy = str(
             request.get("codex_config_policy")
             or extra_body.get("codex_config_policy")
@@ -2029,7 +2048,7 @@ class CodexCliClient:
         request_dir, output_dir = _prepare_artifact_output_dir(
             artifact_root,
             request_id,
-            fail_closed=permission_profile == "mabobot-chat-isolated",
+            fail_closed=is_isolated_profile(permission_profile),
         )
         _cleanup_expired_artifacts(artifact_root)
         staged_input_files = _stage_input_files(
@@ -2099,7 +2118,7 @@ class CodexCliClient:
         elif allow_image_input:
             logger.debug("Codex proxy image input enabled but no image_url parts found in latest user message")
 
-        image_staging_dir = request_dir / "inputs" if permission_profile == "mabobot-chat-isolated" else None
+        image_staging_dir = request_dir / "inputs" if is_isolated_profile(permission_profile) else None
         for image_url in image_urls:
             image_path = _write_image_url_to_file(
                 image_url,

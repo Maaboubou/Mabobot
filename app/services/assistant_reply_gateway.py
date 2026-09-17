@@ -87,11 +87,13 @@ class CodexReplyGateway:
         model_resolver: Optional[Callable[[], str]] = None,
         runtime_resolver: Optional[Callable[[str], Any]] = None,
         telemetry_recorder: Optional[Callable[..., None]] = None,
+        file_reviewer: Optional[Callable[..., None]] = None,
     ) -> None:
         self._runtime = runtime
         self._model_resolver = model_resolver or _default_model
         self._runtime_resolver = runtime_resolver
         self._telemetry_recorder = telemetry_recorder
+        self._file_reviewer = file_reviewer
 
     @property
     def runtime(self) -> Any:
@@ -257,6 +259,24 @@ class CodexReplyGateway:
                 error="Codex assistant returned an empty response",
             )
             raise AssistantReplyError("Codex assistant returned an empty response")
+
+        if attachments:
+            from app.services.wechat_content_review import get_wechat_content_review
+            reviewer = self._file_reviewer or get_wechat_content_review().review_file
+            try:
+                for attachment in attachments:
+                    reviewer(attachment.get("path", ""), chat_name=chat_name)
+            except Exception as exc:
+                logger.exception(
+                    "WeChat attachment review failed: chat=%s path=%s reason=%s",
+                    chat_name, attachment.get("path", ""), exc,
+                )
+                self._record_telemetry(
+                    request=request, model=response_model, response=normalized_response,
+                    response_text="", response_time=duration, backend=backend,
+                    success=False, error="WeChat attachment content review blocked delivery",
+                )
+                raise AssistantReplyError("附件未通过微信内容审核，已拦截发送。") from exc
 
         self._record_telemetry(
             request=request,

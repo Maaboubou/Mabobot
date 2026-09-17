@@ -520,6 +520,30 @@ class LLMManager:
             }
             modified = True
 
+        if "content_review" not in assistant_mappings:
+            image_mapping = logger_mappings.get("image_understanding") or {}
+            candidates = [(assistant_mappings.get("judge") or {}).get("primary"), image_mapping.get("primary")]
+            candidate = None
+            for model_id in candidates:
+                model_config = self.config.get("models", {}).get(model_id) or {}
+                vision = any(model_config.get(key) for key in ("supports_vision", "vision", "image_input"))
+                try:
+                    vision = vision or bool(litellm.supports_vision(str(model_config.get("model") or model_id or "")))
+                except Exception:
+                    pass
+                if vision:
+                    candidate = model_id
+                    break
+            assistant_mappings["content_review"] = {
+                "primary": candidate or "gemini-flash",
+                "fallback": [],
+                "override_params": {
+                    "max_tokens": 400, "timeout": 60,
+                    "response_format": {"type": "json_object"},
+                },
+            }
+            modified = True
+
         if "summary_plus" in self.config.get("plugin_mappings", {}):
             summary_mappings = self.config["plugin_mappings"]["summary_plus"]
             if "bilibili_mindmap" not in summary_mappings:
@@ -3077,6 +3101,14 @@ class LLMManager:
             },
             "plugin_mappings": {
                 "assistant": {
+                    "content_review": {
+                        "primary": "gemini-flash",
+                        "fallback": [],
+                        "override_params": {
+                            "max_tokens": 400, "timeout": 60,
+                            "response_format": {"type": "json_object"},
+                        },
+                    },
                     "judge": {
                         "primary": "deepseek",
                     },

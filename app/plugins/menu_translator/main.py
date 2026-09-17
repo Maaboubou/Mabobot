@@ -24,6 +24,7 @@ import json
 from pydantic import BaseModel, Field
 
 from app.core.event_bus import Event, EventType, get_event_bus
+from app.services.plugin_config_context import ScopedConfigAttribute
 from app.utils.plugin_config import get_config
 from app.services.llm_manager import get_llm_manager
 from app.assistant.chat_log import ChatLogManager
@@ -57,6 +58,26 @@ class MenuData(BaseModel):
 
 class MenuTranslatorPlugin:
     """菜单翻译插件主类"""
+
+    @ScopedConfigAttribute
+    def trigger_keywords(self):
+        return get_config('trigger_keywords', plugin_name=PLUGIN_NAME) or ['翻译菜单', '菜单翻译', 'menu']
+
+    @ScopedConfigAttribute
+    def image_window_minutes(self):
+        return int(get_config('image_window_minutes', 5, plugin_name=PLUGIN_NAME))
+
+    @ScopedConfigAttribute
+    def idle_timeout_seconds(self):
+        return int(get_config('idle_timeout_seconds', 15, plugin_name=PLUGIN_NAME))
+
+    @ScopedConfigAttribute
+    def max_images(self):
+        return int(get_config('max_images', 6, plugin_name=PLUGIN_NAME))
+
+    @ScopedConfigAttribute
+    def translate_prompt(self):
+        return get_config('translate_prompt', plugin_name=PLUGIN_NAME) or self._default_prompt()
 
     def __init__(self, context=None):
         self.context = context

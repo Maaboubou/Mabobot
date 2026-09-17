@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "blocked_categories": ["pornography", "china_political_sensitive"],
+  "category_rules": {
+    "pornography": "色情、露骨性行为、以性刺激为目的的裸露、性交易招揽。正常医学、健康教育或非色情艺术不自动归为色情；不能确定时返回 uncertain。",
+    "china_political_sensitive": "涉及中国政治敏感事件、政治动员、领导人相关争议、侮辱攻击、未经证实的政治内幕或指控、未公开政务或涉密资料。正常公开的非争议性政务公告、财经信息不自动拦截；不能确定时返回 uncertain。"
+  },
+  "blocked_topics": [],
+  "allowed_download_domains": [],
+  "allowed_suffixes": [".jpg", ".jpeg", ".png", ".webp", ".gif", ".mp4", ".webm", ".mov", ".mp3", ".wav", ".m4a", ".txt", ".md", ".csv", ".json", ".pdf", ".docx", ".xlsx", ".pptx"],
+  "minimum_safe_confidence": 0.9,
+  "max_file_bytes": 268435456,
+  "max_text_chars": 32000,
+  "max_visuals": 60,
+  "max_video_duration_seconds": 120,
+  "video_sample_frames": 12
+}

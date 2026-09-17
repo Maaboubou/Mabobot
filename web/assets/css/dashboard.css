@@ -1,5 +1,4 @@
-/* Overview duty desk: one continuous surface split into bands —
-   status, attention, today's KPIs, 24-hour activity, quota/usage, timeline. */
+/* Overview: separate trends, usage/chat details, activity and timeline. */
 
 .custom-scrollbar::-webkit-scrollbar {
     width: 5px;
@@ -30,11 +29,22 @@
     max-width: 1500px;
     grid-template-columns: minmax(0, 1fr);
     margin: 0 auto;
+    gap: 16px;
 }
 
-.dashboard-shell > * + * {
+.dashboard-service-overview,
+.dashboard-kpi-band,
+.dashboard-shell > .dashboard-panel {
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    background: var(--bg-card);
+}
+
+.dashboard-service-overview > * + * {
     border-top: 1px solid var(--border-color);
 }
+
+.dashboard-service-overview { overflow: hidden; }
 
 .dashboard-band-head {
     display: flex;
@@ -255,6 +265,13 @@
     white-space: nowrap;
 }
 
+/* Reserve the empty-state width so live timestamps never move adjacent facts. */
+#dashboardLastMessageValue {
+    flex: 0 0 7em;
+    width: 7em;
+    font-variant-numeric: tabular-nums;
+}
+
 .dashboard-status-facts li.is-ok strong {
     color: var(--success);
 }
@@ -379,7 +396,7 @@
 
 .dashboard-kpi-band {
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 1px;
     background: var(--border-color);
 }
@@ -394,6 +411,9 @@
     color: inherit;
     text-decoration: none;
 }
+
+.dashboard-kpi:first-child { border-radius: var(--radius-lg) 0 0 var(--radius-lg); }
+.dashboard-kpi:last-child { border-radius: 0 var(--radius-lg) var(--radius-lg) 0; }
 
 .dashboard-kpi-label {
     display: flex;
@@ -433,33 +453,55 @@
     white-space: nowrap;
 }
 
-.dashboard-kpi-action {
+.dashboard-spark-chart {
     position: relative;
-    transition: var(--transition-base);
+    min-width: 0;
+    height: 28px;
+    cursor: crosshair;
 }
 
-.dashboard-kpi-action:hover {
-    background: var(--bg-soft);
+.dashboard-spark-chart:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+    border-radius: var(--radius-xs);
 }
 
-.dashboard-kpi-action.has-errors .dashboard-kpi-arrow {
-    color: var(--danger);
-    opacity: 1;
+.dashboard-spark-tip {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    z-index: 3;
+    display: grid;
+    gap: 2px;
+    width: max-content;
+    max-width: 100%;
+    padding: 6px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-card);
+    box-shadow: var(--shadow-md);
+    color: var(--text-secondary);
+    font-size: 11px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+    transform: translateX(-50%);
+    pointer-events: none;
 }
 
-/* 只给失败次数上色：整卡背景和总次数保持中性，避免一眼看上去像整块坏了。 */
-.dashboard-kpi-failure {
-    color: var(--danger);
+.dashboard-spark-tip strong {
+    color: var(--text-main);
     font-weight: 600;
 }
 
-.dashboard-kpi-arrow {
-    position: absolute;
-    right: 16px;
-    bottom: 12px;
-    color: var(--text-soft);
-    font-size: 14px;
-    opacity: 0.7;
+.dashboard-spark-active {
+    fill: var(--primary);
+    stroke: var(--bg-card);
+    stroke-width: 1.5;
+    vector-effect: non-scaling-stroke;
+}
+
+.dashboard-spark-active[hidden],
+.dashboard-spark-tip[hidden] {
+    display: none;
 }
 
 .dashboard-spark {
@@ -470,11 +512,6 @@
 
 .dashboard-spark.is-empty {
     visibility: hidden;
-}
-
-.dashboard-spark-area {
-    fill: var(--accent-soft);
-    stroke: none;
 }
 
 .dashboard-spark-line {
@@ -488,27 +525,44 @@
     fill: var(--primary);
 }
 
-/* ===== 主体双栏 ===== */
+/* ===== 独立详情面板与整行活动图 ===== */
 
-.dashboard-split {
+.dashboard-summary-grid {
     display: grid;
-    /* 左=额度与用量，右=聊天活动。2:3 不是随手取的：上方 5 个 KPI 格子的
-       分隔线落在 20/40/60/80%，左栏取 40% 正好让这条竖线接上第二条线。 */
-    grid-template-columns: minmax(280px, 2fr) minmax(0, 3fr);
-    /* 两列共用同一组行高（子网格），上下分栏的隔断线才能落在同一条线上。 */
-    grid-template-rows: auto auto;
-    align-items: stretch;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
 }
 
-.dashboard-split > .dashboard-panel {
-    display: grid;
-    grid-row: span 2;
-    grid-template-rows: subgrid;
+.dashboard-summary-grid > .dashboard-panel {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
 }
 
-.dashboard-activity-panel {
+.dashboard-summary-grid .dashboard-section-heading { min-height: 28px; }
+
+.dashboard-summary-grid .dashboard-side-body {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
     min-width: 0;
 }
+
+.dashboard-section-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 28px;
+    min-height: 28px;
+    color: var(--primary);
+    text-decoration: none;
+}
+
+.dashboard-section-link:hover { color: var(--primary-hover); }
+.dashboard-panel-foot a i { color: var(--primary); }
 
 .dashboard-hourly {
     position: relative;
@@ -528,8 +582,7 @@
     min-height: 120px;
 }
 
-/* 柱图随分栏行高一起伸缩：共享行高对齐隔断线后，图自己把这一格填满，
-   不会在分隔线上方留一条空白。 */
+/* 活动图独占整行，柱形区域保持统一高度。 */
 .dashboard-chart-section {
     display: flex;
     flex-direction: column;
@@ -544,6 +597,7 @@
 
 .dashboard-chart-section .dashboard-hourly-bars {
     flex: 1;
+    min-height: 210px;
 }
 
 .dashboard-hour {
@@ -556,34 +610,71 @@
     height: 100%;
 }
 
+.dashboard-chart-section .dashboard-section-heading {
+    flex-wrap: wrap;
+    gap: 4px 12px;
+}
+
+.dashboard-chart-legend {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    margin-bottom: 12px;
+    color: var(--text-secondary);
+    font-size: 11px;
+}
+
+.dashboard-chart-legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.dashboard-chart-legend i {
+    width: 8px;
+    height: 8px;
+    border-radius: var(--radius-xs);
+}
+
+.dashboard-chart-legend small {
+    font-size: 11px;
+}
+
+.dashboard-legend-received {
+    background: var(--text-soft);
+}
+
+.dashboard-legend-replies {
+    background: var(--primary);
+}
+
 .dashboard-hour-track {
     position: relative;
-    display: flex;
-    align-items: flex-end;
     height: 100%;
-    border-radius: var(--radius-xs);
-    background: color-mix(in srgb, var(--bg-soft) 70%, transparent);
 }
 
 .dashboard-hour-bar {
-    /* 回复段是柱身的一部分：绝对定位的 <i> 需要以柱子为参照，
-       否则高度百分比会相对整条轨道，小流量的柱子会画成满高。 */
-    position: relative;
+    position: absolute;
+    bottom: 0;
+    left: 0;
     display: block;
     width: 100%;
     height: 0;
-    border-radius: var(--radius-xs);
-    background: color-mix(in srgb, var(--primary) 45%, var(--bg-card));
+    border-radius: var(--radius-xs) var(--radius-xs) 0 0;
 }
 
-.dashboard-hour-bar i {
-    position: absolute;
-    right: 0;
-    bottom: 0;
-    left: 0;
-    height: 0;
-    border-radius: var(--radius-xs);
+.dashboard-hour-bar.is-received {
+    background: var(--text-soft);
+}
+
+.dashboard-hour-bar.is-replies {
     background: var(--primary);
+}
+
+.dashboard-hour-track.has-more-replies .is-received {
+    /* Keep the smaller received count visible when split replies exceed it. */
+    z-index: 1;
 }
 
 .dashboard-hour small {
@@ -613,10 +704,29 @@
     color: var(--text-secondary);
     font-size: 11px;
     line-height: 1.35;
-    white-space: nowrap;
+    max-width: calc(100% - 8px);
+    max-height: 280px;
+    overflow-y: auto;
+    overflow-wrap: anywhere;
     transform: translateX(-50%);
-    pointer-events: none;
+    pointer-events: auto;
 }
+
+.dashboard-hour-plugins {
+    display: grid;
+    gap: 4px;
+    border-top: 1px solid var(--border-soft);
+    margin-top: 4px;
+    padding-top: 6px;
+}
+
+.dashboard-hour-plugins > span {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.dashboard-hour-plugins b { white-space: nowrap; font-weight: 500; }
 
 .dashboard-hour-tip strong {
     color: var(--text-main);
@@ -635,16 +745,8 @@
     }
 }
 
-.dashboard-runtime-panel {
-    border-right: 1px solid var(--border-color);
-}
-
 .dashboard-panel-section {
     padding: 16px;
-}
-
-.dashboard-panel-section + .dashboard-panel-section {
-    border-top: 1px solid var(--border-color);
 }
 
 .dashboard-side-body {
@@ -655,8 +757,8 @@
 
 .dashboard-usage-grid {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px 12px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
 }
 
 .dashboard-usage-grid > div {
@@ -670,6 +772,7 @@
 }
 
 .dashboard-usage-grid strong {
+    font-variant-numeric: tabular-nums;
     font-size: 15px;
     font-weight: 600;
     color: var(--text-main);
@@ -679,123 +782,140 @@
     color: var(--danger);
 }
 
-.dashboard-model-mix {
+.dashboard-model-heading {
+    margin-top: 18px;
+    margin-bottom: 8px;
+    color: var(--text-secondary);
+    font-size: 11px;
+}
+
+.dashboard-model-matrix {
     display: grid;
-    gap: 6px;
-    margin-top: 12px;
 }
 
 .dashboard-model-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 64px auto;
+    grid-template-columns: minmax(0, 1fr) calc(8 * var(--dashboard-model-dot, 5px) + 7 * var(--dashboard-model-dot-gap, 3px)) 56px 44px;
+    column-gap: 10px;
     align-items: center;
-    gap: 8px;
+    padding: 5px 0;
+    min-width: 0;
+}
+
+.dashboard-model-row + .dashboard-model-row {
+    border-top: 1px solid var(--border-soft);
 }
 
 .dashboard-model-name {
     overflow: hidden;
-    font-size: 11px;
+    font-size: 11.5px;
     color: var(--text-secondary);
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-.dashboard-model-track,
-.dashboard-chat-track,
-.dashboard-resource-track {
-    display: block;
-    height: 4px;
-    border-radius: 999px;
-    background: var(--bg-soft);
+.dashboard-model-dots {
+    display: flex;
+    justify-content: flex-start;
+    gap: var(--dashboard-model-dot-gap, 3px);
 }
 
-.dashboard-model-track i,
-.dashboard-chat-track i,
-.dashboard-resource-track i {
-    display: block;
-    height: 100%;
-    border-radius: 999px;
+.dashboard-model-dots i {
+    width: var(--dashboard-model-dot, 5px);
+    height: 9px;
+    border-radius: 1.5px;
+    background: var(--border-soft);
+}
+
+.dashboard-model-dots i.is-on {
     background: var(--primary);
 }
 
 .dashboard-model-row em {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
     font-size: 11px;
     font-style: normal;
     color: var(--text-soft);
+}
+
+.dashboard-model-row b {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+    font-weight: 650;
+    color: var(--text-main);
 }
 
 /* 活跃聊天 */
 
-.dashboard-chat-list {
-    display: grid;
-    gap: 10px;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-}
-
-.dashboard-chat-list li {
-    display: grid;
-    grid-template-columns: 16px minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 4px 8px;
-}
-
-.dashboard-rank-index {
-    display: grid;
-    width: 16px;
-    height: 16px;
-    place-items: center;
-    border-radius: 50%;
-    background: var(--bg-soft);
-    color: var(--text-soft);
-    font-size: 10px;
-}
-
-.dashboard-chat-copy {
-    display: grid;
-    gap: 4px;
-    min-width: 0;
-}
-
-.dashboard-chat-copy strong {
-    overflow: hidden;
+.dashboard-chat-table {
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: collapse;
+    color: var(--text-body);
     font-size: 12px;
-    font-weight: 500;
-    color: var(--text-main);
+}
+
+.dashboard-chat-number {
+    width: 72px;
+}
+
+.dashboard-chat-table th,
+.dashboard-chat-table td {
+    padding: 8px 0;
+    text-align: right;
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+}
+
+.dashboard-chat-table th:first-child {
+    padding-right: 12px;
+    text-align: left;
+    overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-.dashboard-rank-count {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-main);
-}
-
-.dashboard-chat-list em {
-    grid-column: 2 / 4;
-    font-size: 10px;
-    font-style: normal;
-    color: var(--text-soft);
-}
-
-.dashboard-chat-list em.is-warning {
-    color: var(--warning);
-}
-
-/* Codex 额度 */
-
-.dashboard-codex-meta {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
+.dashboard-chat-table thead th {
+    color: var(--text-secondary);
     font-size: 11px;
 }
 
-.dashboard-codex-meta small {
-    color: var(--text-soft);
+.dashboard-chat-table tbody tr {
+    border-top: 1px solid var(--border-soft);
+}
+
+.dashboard-chat-table tbody th {
+    color: var(--text-main);
+    font-weight: 500;
+}
+
+/* Codex 额度：模型用量中的简要信息 */
+
+.dashboard-codex-compact {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 12px;
+    margin-top: 16px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-soft);
+}
+
+.dashboard-heading-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.dashboard-codex-compact > h6 { margin: 4px 0 0; font-size: 12px; color: var(--text-secondary); }
+#codexStatusOutput { min-width: 0; }
+
+#codexStatusOutput:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 3px;
+    border-radius: var(--radius-xs);
 }
 
 .dashboard-inline-state {
@@ -810,6 +930,10 @@
     font-size: 10px;
 }
 
+.dashboard-inline-state.is-muted {
+    color: var(--text-secondary);
+}
+
 .dashboard-inline-state.is-ok {
     color: var(--success);
 }
@@ -822,60 +946,64 @@
     color: var(--warning);
 }
 
-.dashboard-codex-identity {
+.dashboard-codex-limits {
     display: grid;
-    gap: 2px;
-    margin-top: 8px;
+    /* 两行：上排"标签 + 百分比 + 剩余"，下排右对齐重置时间；再窄也不会互相挤压。 */
+    gap: 8px;
 }
 
-.dashboard-codex-identity strong {
-    overflow: hidden;
-    font-family: var(--font-code);
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--text-main);
-    text-overflow: ellipsis;
+.dashboard-codex-limit {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 8px;
+    row-gap: 2px;
+}
+
+/* 仅标签列取固定宽度对齐两行；"剩余"是跟随文本，不能被撑开。 */
+.dashboard-codex-limit > small:not(.dashboard-codex-remaining) {
+    flex: 0 0 56px;
+}
+
+.dashboard-codex-limit > strong {
+    flex: 0 0 48px;
+}
+
+.dashboard-codex-remaining {
+    flex: 0 0 auto;
     white-space: nowrap;
 }
 
-.dashboard-codex-identity span {
+/* 空间不足时重置时间折到下一行（固定列，不与"剩余"抢空间）。 */
+.dashboard-codex-limit em {
+    flex: 0 0 auto;
+    margin-left: auto;
+    white-space: nowrap;
+    font-style: normal;
     font-size: 11px;
     color: var(--text-soft);
 }
 
-.dashboard-codex-limits {
-    display: grid;
-    gap: 12px;
-    margin-top: 12px;
+.dashboard-codex-limit strong {
+    font-size: 15px;
+    line-height: 1.2;
+    font-weight: 600;
+    color: var(--text-main);
+    font-variant-numeric: tabular-nums;
 }
 
-.dashboard-codex-limit > div {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 8px;
+.dashboard-codex-limit small {
+    margin: 0;
     font-size: 11px;
     color: var(--text-secondary);
 }
 
-.dashboard-codex-limit > div strong {
-    font-size: 13px;
-    color: var(--text-main);
+.dashboard-codex-limit.is-danger strong {
+    color: var(--danger);
 }
 
-.dashboard-codex-limit small {
-    display: block;
-    margin-top: 4px;
-    font-size: 10px;
-    color: var(--text-soft);
-}
-
-.dashboard-codex-limit.is-danger .dashboard-resource-track i {
-    background: var(--danger);
-}
-
-.dashboard-codex-limit.is-warning .dashboard-resource-track i {
-    background: var(--warning);
+.dashboard-codex-limit.is-warning strong {
+    color: var(--warning);
 }
 
 /* ===== 事件时间线 ===== */
@@ -1086,56 +1214,15 @@
 
 /* ===== 响应式 ===== */
 
-@media (max-width: 1199.98px) {
-    .dashboard-split {
-        grid-template-columns: minmax(0, 1fr);
-        grid-template-rows: none;
-    }
-
-    /* 窄屏两栏堆叠后，面板不再是子网格容器：否则面板里的 min-width 子元素
-       会把隐式列撑到内容宽度（24 小时柱图 520px），右侧半截被外壳裁掉。 */
-    .dashboard-split > .dashboard-panel {
-        display: block;
-        grid-row: auto;
-        grid-template-rows: none;
-    }
-
-    .dashboard-split > .dashboard-runtime-panel {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-    }
-
-    .dashboard-runtime-panel {
-        border-right: 0;
-    }
-
-    .dashboard-activity-panel {
-        border-top: 1px solid var(--border-color);
-    }
-
-    .dashboard-runtime-panel .dashboard-panel-section + .dashboard-panel-section {
-        border-top: 0;
-        border-left: 1px solid var(--border-color);
-    }
-}
-
 @media (max-width: 991.98px) {
     .dashboard-status-band {
         grid-template-columns: minmax(0, 1fr);
     }
 
-    .dashboard-kpi-band {
-        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    }
-
-    .dashboard-split > .dashboard-runtime-panel {
+    .dashboard-summary-grid {
         grid-template-columns: minmax(0, 1fr);
     }
 
-    .dashboard-runtime-panel .dashboard-panel-section + .dashboard-panel-section {
-        border-top: 1px solid var(--border-color);
-        border-left: 0;
-    }
 }
 
 @media (max-width: 767.98px) {
@@ -1170,13 +1257,13 @@
 
 @media (max-width: 575.98px) {
     .dashboard-kpi-band {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: minmax(0, 1fr);
     }
-
-    /* 5 格两列排布的最后一格独占整行，右侧不留空单元格。 */
-    .dashboard-kpi-band > :last-child {
-        grid-column: span 2;
-    }
+    .dashboard-kpi:first-child { border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
+    .dashboard-kpi:last-child { border-radius: 0 0 var(--radius-lg) var(--radius-lg); }
+    .dashboard-usage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    /* 窄屏收紧点阵，保证模型名与数字仍在一行内。 */
+    .dashboard-model-row { grid-template-columns: minmax(0, 1fr) calc(8 * 4px + 7 * 2px) 52px 40px; --dashboard-model-dot: 4px; --dashboard-model-dot-gap: 2px; }
 
     /* 手机上一行放不下"数值 + 说明"，让说明换到第二行，避免被省略号吃掉。 */
     .dashboard-kpi-value {

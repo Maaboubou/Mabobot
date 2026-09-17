@@ -1,6 +1,6 @@
 """Pydantic schemas for managed chats and plugin grants."""
 
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel
 
@@ -26,8 +26,9 @@ class WeChatUserBase(BaseModel):
     chat_name: str
     is_group: bool = False
     listening_enabled: bool = True
+    attachment_content_review_enabled: bool = True
     policy_version: int = 1
-    codex_access_mode: str = "isolated"
+    codex_access_mode: Literal["isolated", "owner_full"] = "isolated"
     sender_blacklist: Optional[str] = None
     bot_group_nickname: Optional[str] = None
     bot_group_nickname_auto_enabled: bool = True

@@ -18,7 +18,7 @@ from pathlib import Path
 from app.models.base import get_db
 from app.models.user_permission import WeChatUser
 from app.services.config_service import get_setting
-from app.services.chat_log_index import get_chat_log_index
+from app.services.chat_log_index import get_chat_log_index, attach_plugin_replies
 from app.utils.dashboard_events import (
     get_latest_dashboard_event,
     get_recent_dashboard_events,
@@ -591,6 +591,7 @@ async def get_latest_judge():
             for event in judge_events:
                 payload = event.get("payload", {}) or {}
                 history.append({
+                    "state": payload.get("state", "completed"),
                     "judge_output": {
                         "should_reply": payload.get("should_reply"),
                         "reason": payload.get("reason"),
@@ -609,6 +610,7 @@ async def get_latest_judge():
             reason = payload.get("reason")
             judge_name = payload.get("judge_name")
             return {
+                "state": payload.get("state", "completed"),
                 "judge_output": {
                     "should_reply": should_reply,
                     "reason": reason,
@@ -862,12 +864,16 @@ _INCIDENT_WINDOW_HOURS = 24
 
 @router.get("/timeseries")
 def get_dashboard_timeseries(
+    request: Request,
     hours: int = Query(24, ge=1, le=168),
     days: int = Query(7, ge=1, le=30),
 ):
     """按小时/天聚合的聊天活动趋势，供概览页的 KPI 与图表使用。"""
     try:
-        return get_chat_log_index().snapshot(hours=hours, days=days)
+        snapshot = get_chat_log_index().snapshot(hours=hours, days=days)
+        manager = getattr(request.app.state, "plugin_manager", None)
+        return attach_plugin_replies(snapshot, getattr(manager, "plugins", {}) or {},
+                                     bot_name=str(get_setting("WECHAT_BOT_NAME", "刘局") or ""))
     except Exception as exc:
         logger.warning("读取聊天趋势失败: %s", exc)
         return {

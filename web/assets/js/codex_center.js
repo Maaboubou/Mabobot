@@ -35,6 +35,7 @@ const CodexCenter = {
     async load({ quiet = false } = {}) {
         if (this.loading) return;
         this.loading = true;
+        if (!quiet) CodexPermissions.loadDefaults();
         try {
             const [jobsResponse, profiles] = await Promise.all([
                 API.codexJobs.list(),

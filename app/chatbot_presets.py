@@ -103,7 +103,7 @@ messages 里的每一项，都必须是刘局会直接发出去的微信短句�
 BUILTIN_CHATBOT_JUDGES = (
     {
         "name": "liuju_hls_judge",
-        "display_name": "刘局-和联胜 Judge",
+        "display_name": "刘局-和联胜接话判断",
         "description": "适用于 Liuju-HLS 游戏群电子老登人设的主动回复判断器",
         "prompt": """# Task: 刘局-新和联胜插话判定
 
@@ -175,7 +175,7 @@ should_reply 只在“刘局这会儿真想说一句”的时候才为 true。
   "atmosphere": "一句话概括当前气氛，带群友观察感，不煽情"
 }
 """.rstrip(),
-        "prompt_mode": "template",
+        "prompt_mode": "simple",
         "trigger_msg_threshold": 1,
         "trigger_interval_minutes": 10,
         "cooldown_msg_threshold": 1,
@@ -183,3 +183,11 @@ should_reply 只在“刘局这会儿真想说一句”的时候才为 true。
         "is_builtin": "false",
     },
 )
+
+
+# Keep starter examples free of input slots and transport boilerplate.
+from app.assistant.prompt_composer import normalize_legacy_prompt
+for _example in BUILTIN_CHATBOT_JUDGES:
+    _example["prompt"] = normalize_legacy_prompt(_example["prompt"], decision=True)
+for _example in BUILTIN_CHATBOT_ROLES:
+    _example["prompt"] = _example["prompt"].split("\n\n## 输出\n输出协议由系统统一处理。")[0].rstrip()

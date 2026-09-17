@@ -1,7 +1,7 @@
 """
 Weekly 周报插件
 - 每周定时读取开启 Weekly#push 的群过去 7 天聊天记录
-- 由 Codex 先做多页周报规划，再调用 Codex 原生子代理/批处理生成 4:3 图片
+- 由 Codex 先做多页周报规划，再由主线程逐页生成 4:3 图片
 - 将每页图片压缩合并为多页 PDF，并推送 PDF 文件
 """
 
@@ -602,16 +602,31 @@ async def _codex_chat_async(prompt: str, *, timeout: int) -> dict[str, Any]:
     return await asyncio.to_thread(_codex_chat, prompt, timeout=timeout)
 
 
-def _codex_chat(prompt: str, *, timeout: int) -> dict[str, Any]:
+def _codex_chat(
+    prompt: str, *, timeout: int, image_page_count: int | None = None
+) -> dict[str, Any]:
     runtime, profile = get_codex_runtime_registry().resolve()
     model = str((profile or {}).get("model") or "").strip()
     if not model:
         raise WeeklyGenerationError("默认 Codex Profile 未配置模型")
+    messages: list[dict[str, str]] = []
+    if image_page_count is not None:
+        messages.append({
+            "role": "developer",
+            "content": (
+                "Weekly 图片交付约束：必须由当前主 Codex 线程按页序直接调用原生 imagegen，"
+                "不要委派子代理生图。附件校验只认可当前请求主线程的成功生图事件。"
+                f"恰好生成 {image_page_count} 张最终图片；在最终交付协议的 _mabobot_files 中"
+                "按页序列出各次成功工具调用返回的原始 savedPath。"
+                "不要把图片复制到项目目录，也不要以子代理回复中的路径作为附件。"
+            ),
+        })
+    messages.append({"role": "user", "content": prompt})
     return runtime.run(
         {
             "model": model,
             "timeout": timeout,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
             "extra_body": {
                 "reasoning_effort": "high",
                 "web_search": True,
@@ -743,13 +758,13 @@ Prompt:
 请生成 exactly {len(pages)} 张横版 4:3 周报页面图片，并把最终图片作为本次调用的文件附件输出。
 
 执行方式：
-1. 请显式使用 Codex 子代理/并行代理工作流：按页拆分任务，尽量 one subagent per page；如果当前环境的子代理线程上限不足，就按线程上限分批处理。
-2. 每个子代理只负责一页图片，最终由主 Codex 等待所有页面完成后统一收齐。
+1. 必须由当前主 Codex 线程亲自调用原生图片生成工具，严格按 PAGE 01 到 PAGE {len(pages):02d} 的顺序逐页生成。不要使用子代理；子代理的生图结果无法通过本次请求的附件校验。
+2. 每页只保留一张最终图片。若需重做某页，只交付重做后的版本；最终交付列表必须严格按页序列出 {len(pages)} 个原生生图工具返回的 savedPath。
 3. 每张图必须是真实图像模型生成的高质量 raster image 文件；不要用 PIL/Canvas/SVG/HTML 截图等本地工具临时拼字排版来冒充成品。如果当前 Codex 环境没有可用的真实图片生成能力，必须明确失败，不要交付占位图或脚本生成图。
 4. 严禁复制、重命名、复用项目目录、历史 run、tmp 或 mabowx文件下载中的任何既有图片、微信截图、聊天截图或上次失败产物。
-5. 最终附件必须保存为这些精确文件名：{", ".join(f"page_{int(page.get('page_no') or 0):02d}.png" for page in pages)}。
+5. PAGE 与交付列表按顺序一一对应，周报插件会将图片保存为这些文件名：{", ".join(f"page_{int(page.get('page_no') or 0):02d}.png" for page in pages)}。不要自行复制或重命名原生图片。
 6. 不要额外生成封面、索引、说明图、草稿图或中间图。
-7. 如果某一页生成失败，请在本次调用内重试该页；最终回复前必须确认所有 page_XX.png 都存在。
+7. 如果某一页生成失败，请在本次调用内重试该页；最终回复前必须确认每页都有一个成功工具调用返回的 savedPath。
 8. 每页保持横版 4:3；中文要尽量清晰，字号大、对比高、不要密密麻麻的小字。
 9. 不要添加二维码、水印、无关话题。
 10. 只能使用下面每页 prompt 指定的内容，不要自行补充不存在的聊天记录。
@@ -768,7 +783,7 @@ Prompt:
 
 {chr(10).join(page_blocks)}
 
-完成后只用一句话说明已生成，不要列文件路径。
+正常回复部分只用一句话说明已生成；文件路径只放在最终交付协议的 _mabobot_files 列表中。
 """.strip()
 
 
@@ -808,27 +823,31 @@ def _map_batch_attachments_to_pages(image_attachments: list[dict[str, Any]], pag
     return results
 
 
-def _generate_pages_with_codex_subagents(plan: dict[str, Any], run_dir: Path) -> list[Path]:
+def _generate_pages_with_codex(plan: dict[str, Any], run_dir: Path) -> list[Path]:
     pages = sorted(plan["pages"], key=lambda item: int(item.get("page_no") or 0))
     prompt = _build_batch_image_prompt(plan)
     (run_dir / "batch_image_prompt.txt").write_text(prompt, encoding="utf-8")
     timeout = _cfg_int("WEEKLY_IMAGE_BATCH_TIMEOUT_SECONDS", 3600, minimum=300)
     logger.info(
-        "🗞️ Weekly: 启动 Codex 子代理批量生图 pages=%s prompt_chars=%s timeout=%ss",
+        "🗞️ Weekly: 启动 Codex 主线程逐页生图 pages=%s prompt_chars=%s timeout=%ss",
         len(pages),
         len(prompt),
         timeout,
     )
-    response = _codex_chat(prompt, timeout=timeout)
+    response = _codex_chat(prompt, timeout=timeout, image_page_count=len(pages))
     text = response["choices"][0]["message"].get("content") or ""
     (run_dir / "batch_image_response.txt").write_text(text, encoding="utf-8")
     image_attachments = _extract_image_attachments(response)
     logger.info("🗞️ Weekly: Codex 批量生图返回附件 count=%s", len(image_attachments))
+    if len(image_attachments) != len(pages):
+        raise WeeklyGenerationError(
+            f"Codex 生图附件数量不匹配: got={len(image_attachments)} expected={len(pages)}"
+        )
     results = _map_batch_attachments_to_pages(image_attachments, pages, run_dir)
 
     missing_pages = [int(page["page_no"]) for page in pages if int(page["page_no"]) not in results]
     if missing_pages:
-        raise WeeklyGenerationError(f"Codex 子代理批量生图缺页: missing={missing_pages}")
+        raise WeeklyGenerationError(f"Codex 生图缺页: missing={missing_pages}")
 
     return [results[int(page["page_no"])] for page in pages]
 
@@ -851,8 +870,8 @@ def _validate_generated_pages(image_paths: list[Path], expected_count: int) -> N
 
 def _generate_pages(plan: dict[str, Any], run_dir: Path) -> list[Path]:
     pages = sorted(plan["pages"], key=lambda item: int(item.get("page_no") or 0))
-    logger.info("🗞️ Weekly: 使用 Codex 子代理批量生图模式")
-    image_paths = _generate_pages_with_codex_subagents(plan, run_dir)
+    logger.info("🗞️ Weekly: 使用 Codex 主线程逐页生图模式")
+    image_paths = _generate_pages_with_codex(plan, run_dir)
     _validate_generated_pages(image_paths, len(pages))
     return image_paths
 
@@ -1008,7 +1027,7 @@ def _failure_stage_label(stage: str) -> str:
         "prepare": "准备任务",
         "extract_logs": "读取聊天记录",
         "plan": "生成页计划",
-        "image_batch": "Codex 子代理批量生图",
+        "image_batch": "Codex 主线程逐页生图",
         "pdf": "生成 PDF",
         "send": "发送 PDF",
         "admin_retry": "手动重试",
@@ -1170,13 +1189,18 @@ def _start_admin_retry(chat_name: str, wx: Any, active_plugin: WeeklyPlugin) -> 
                 _send_text(wx, _admin_chat_name(), "当前已有 Weekly 任务锁，无法开始重试。")
                 return
             _send_text(wx, _admin_chat_name(), f"已开始重试 Weekly：{chat_name}")
-            succeeded = _execute_one_chat_task(
-                chat_name,
-                wx,
-                active_plugin,
-                triggered_by="admin_retry",
-                notify_admin=True,
-            )
+            from app.services.plugin_config_context import chat_config_scope
+
+            with chat_config_scope(chat_name):
+                if chat_name not in _get_push_enabled_chats():
+                    raise WeeklyGenerationError("目标聊天已关闭周报推送")
+                succeeded = _execute_one_chat_task(
+                    chat_name,
+                    wx,
+                    active_plugin,
+                    triggered_by="admin_retry",
+                    notify_admin=True,
+                )
             if not succeeded:
                 raise WeeklyGenerationError(f"{chat_name} 周报重试失败")
             operation.progress(100, "周报重试完成")
@@ -1245,7 +1269,7 @@ def _handle_admin_text(event: Event) -> bool:
     return False
 
 
-def _execute_weekly_task(event_bus) -> None:
+def _execute_weekly_task(event_bus, target_chat=None) -> None:
     active_plugin = plugin
     if not active_plugin:
         return
@@ -1255,6 +1279,8 @@ def _execute_weekly_task(event_bus) -> None:
     logger.info("🗞️ Weekly: 开始执行每周推送任务")
     try:
         enabled_chats = _get_push_enabled_chats()
+        if target_chat is not None:
+            enabled_chats &= {target_chat}
         if not enabled_chats:
             logger.info("🗞️ Weekly: 没有群组开启此功能，跳过")
             return
@@ -1278,99 +1304,17 @@ def _execute_weekly_task(event_bus) -> None:
         _release_task_file_lock(task_lock_path)
 
 
-def _start_weekly_scheduler(event_bus, context) -> None:
-    def _runner():
-        while _scheduler_started and not context.workers.stop_event.is_set():
-            try:
-                weekday = _parse_weekday(_cfg_str("WEEKLY_PUSH_WEEKDAY", "MON"))
-                hh, mm = _parse_hhmm(_cfg_str("WEEKLY_PUSH_TIME", "09:00"))
-                schedule = (weekday, hh, mm)
-                target = _next_beijing_weekly_run(weekday, hh, mm)
-                now_bj = datetime.now(pytz.timezone("Asia/Shanghai"))
-                missed_target = now_bj.replace(hour=hh, minute=mm, second=0, microsecond=0)
-                missed_run_key = (missed_target.strftime("%Y-%m-%d"), weekday, hh, mm)
-                missed_seconds = (now_bj - missed_target).total_seconds()
-                if (
-                    now_bj.weekday() == weekday
-                    and 0 < missed_seconds <= 300
-                    and plugin is not None
-                    and not _has_scheduler_run(plugin.state_path, missed_run_key)
-                ):
-                    target = now_bj
-                    logger.info(
-                        "🗞️ Weekly: 配置时间刚错过 %.1fs，按测试友好策略立即执行一次 run_key=%s",
-                        missed_seconds,
-                        missed_run_key,
-                    )
-                wait = (target - now_bj).total_seconds()
-                logger.info(
-                    "🗞️ Weekly: 下一次执行时间 target=%s weekday=%s %02d:%02d wait=%.1fs",
-                    target.strftime("%Y-%m-%d %H:%M:%S"),
-                    weekday + 1,
-                    hh,
-                    mm,
-                    wait,
-                )
-
-                while _scheduler_started:
-                    new_weekday = _parse_weekday(_cfg_str("WEEKLY_PUSH_WEEKDAY", "MON"))
-                    new_hh, new_mm = _parse_hhmm(_cfg_str("WEEKLY_PUSH_TIME", "09:00"))
-                    new_schedule = (new_weekday, new_hh, new_mm)
-                    if new_schedule != schedule:
-                        logger.info(
-                            "🗞️ Weekly: 检测到定时配置变化 old=%s new=%s，重新计算下一次执行时间",
-                            schedule,
-                            new_schedule,
-                        )
-                        break
-
-                    now_bj = datetime.now(pytz.timezone("Asia/Shanghai"))
-                    remaining = (target - now_bj).total_seconds()
-                    if remaining <= 0:
-                        break
-                    sleep_time = min(30.0, max(1.0, remaining))
-                    time.sleep(sleep_time)
-
-                if not _scheduler_started:
-                    break
-                if new_schedule != schedule:
-                    continue
-                execution_run_key = (target.strftime("%Y-%m-%d"), weekday, hh, mm)
-                active_plugin = plugin
-                if active_plugin is None:
-                    continue
-                if not _claim_scheduler_run(active_plugin.state_path, execution_run_key):
-                    logger.info("🗞️ Weekly: 本次调度已登记，跳过重复提交 run_key=%s", execution_run_key)
-                    continue
-
-                def _managed_push(operation):
-                    if not _execution_lock.acquire(blocking=False):
-                        logger.warning("🗞️ Weekly: 已有任务执行，跳过重复的托管调度 run_key=%s", execution_run_key)
-                        return {"run_key": execution_run_key[0], "skipped": True}
-                    try:
-                        operation.progress(5, "读取周报推送范围")
-                        _execute_weekly_task(event_bus)
-                        operation.progress(100, "每周周报推送完成")
-                        return {"run_key": execution_run_key[0]}
-                    finally:
-                        _execution_lock.release()
-
-                active_plugin.context.tasks.submit(
-                    "weekly_push",
-                    "Weekly · 每周周报推送",
-                    _managed_push,
-                    details={"run_key": execution_run_key[0]},
-                )
-            except Exception as e:
-                logger.warning("🗞️ Weekly: 定时任务循环异常: %s", e, exc_info=True)
-
+def _start_weekly_scheduler(event_bus, context):
     global _scheduler_started, _scheduler_thread
+    from app.services.plugin_chat_schedule import start_chat_schedule
+
     if not _scheduler_started:
-        with _scheduler_lock:
-            if not _scheduler_started:
-                _scheduler_started = True
-                _scheduler_thread = context.workers.start("weekly-scheduler", _runner)
-                logger.info("🗞️ Weekly: scheduler thread started")
+        _scheduler_started = True
+        _scheduler_thread = start_chat_schedule(
+            context, event_bus, time_key="WEEKLY_PUSH_TIME", weekday_key="WEEKLY_PUSH_WEEKDAY", weekday_parser=_parse_weekday,
+            execution_lock=_execution_lock,
+            callback=lambda chat_name, operation: _execute_weekly_task(event_bus, target_chat=chat_name),
+        )
 
 
 def register(event_bus, subscribe, context):

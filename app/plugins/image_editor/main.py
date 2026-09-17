@@ -12,6 +12,7 @@ from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 
 from app.core.event_bus import Event, EventType
+from app.services.plugin_config_context import ScopedConfigAttribute
 from app.utils.plugin_config import get_config
 from app.services.codex_profile_service import (
     CodexProfileError, get_codex_profile_service, _managed_profile_permission_roots,
@@ -113,6 +114,26 @@ class ImageEditorPlugin:
 
         # 如果不匹配，则返回 None
         return 0, None, None, None
+
+    @ScopedConfigAttribute
+    def trigger_keyword(self):
+        return get_config('trigger_keyword', 'P图', plugin_name='image_editor')
+
+    @ScopedConfigAttribute
+    def collect_timeout(self):
+        return int(get_config('collect_timeout', 120, plugin_name='image_editor'))
+
+    @ScopedConfigAttribute
+    def max_images(self):
+        return int(get_config('max_images', 5, plugin_name='image_editor'))
+
+    @ScopedConfigAttribute
+    def processing_timeout(self):
+        return max(1, int(get_config('processing_timeout', 300, plugin_name='image_editor')))
+
+    @ScopedConfigAttribute
+    def target_images(self):
+        return max(1, int(get_config('target_images', 1, plugin_name='image_editor')))
 
     def __init__(self, context=None):
         self.context = context

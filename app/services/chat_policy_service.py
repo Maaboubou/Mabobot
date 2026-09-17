@@ -13,11 +13,10 @@ from app.models.chatbot_role import UserChatBotRole
 from app.models.user_permission import UserPermission, WeChatUser
 from app.services.assistant_console_service import AssistantConsoleService, _json_list
 from app.services.plugin_chat_config_service import PluginChatConfigError, PluginChatConfigService
+from app.services.codex_permission_service import CodexPermissionService, PermissionError, audit
+from app.schemas.codex_permission import ChatPermissionPatch
 from app.services.codex_access_service import (
-    ISOLATED_ACCESS,
-    OWNER_FULL_ACCESS,
     CodexAccessService,
-    normalize_codex_access_mode,
 )
 
 
@@ -87,6 +86,7 @@ class ChatPolicyService:
             active = []
         active_names = set(active.keys() if isinstance(active, dict) else active or [])
         codex = CodexAccessService().for_user(user, ensure=False).public()
+        codex.update(CodexPermissionService(self.db).describe(user))
         grants = [
             {
                 "plugin_name": permission.plugin_name,
@@ -102,6 +102,7 @@ class ChatPolicyService:
                 "chat_name": user.chat_name,
                 "is_group": bool(user.is_group),
                 "listening_enabled": bool(user.listening_enabled),
+                "attachment_content_review_enabled": user.attachment_content_review_enabled is not False,
                 "listening_active": user.chat_name in active_names,
                 "sender_blacklist": _json_list(user.sender_blacklist),
                 "bot_group_nickname": user.bot_group_nickname or "",
@@ -147,6 +148,8 @@ class ChatPolicyService:
             user = self._user(user_id)
 
             chat_changes = _fields(request.chat)
+            if "attachment_content_review_enabled" in chat_changes:
+                user.attachment_content_review_enabled = bool(chat_changes["attachment_content_review_enabled"])
             if "is_group" in chat_changes:
                 requested_group = bool(chat_changes["is_group"])
                 if bool(user.is_group) != requested_group:
@@ -155,8 +158,6 @@ class ChatPolicyService:
                     # Private and group chats resolve to different Codex scopes,
                     # even while both use the isolated access mode.
                     codex_changed = True
-                    if requested_group and normalize_codex_access_mode(user.codex_access_mode) == OWNER_FULL_ACCESS:
-                        user.codex_access_mode = ISOLATED_ACCESS
             if "listening_enabled" in chat_changes:
                 requested_listening = bool(chat_changes["listening_enabled"])
                 if bool(user.listening_enabled) != requested_listening:
@@ -182,14 +183,12 @@ class ChatPolicyService:
                     self.db,
                 ).update_chat(user.id, assistant_changes, commit=False)
 
-            codex_changes = _fields(request.codex)
-            if "mode" in codex_changes and codex_changes["mode"] is not None:
-                mode = normalize_codex_access_mode(codex_changes["mode"])
-                if user.is_group and mode == OWNER_FULL_ACCESS:
-                    raise ChatPolicyError("群聊成员共享隔离空间，不能授予本机最大权限")
-                if normalize_codex_access_mode(user.codex_access_mode) != mode:
-                    user.codex_access_mode = mode
-                    codex_changed = True
+            if request.codex is not None or chat_type_changed:
+                try:
+                    CodexPermissionService(self.db).apply_chat(user, request.codex or ChatPermissionPatch())
+                except PermissionError as exc:
+                    raise ChatPolicyError(str(exc)) from exc
+                codex_changed = True
 
             if request.plugin_grants is not None:
                 grants: Dict[str, bool] = {}
@@ -246,6 +245,7 @@ class ChatPolicyService:
             except Exception:
                 side_effect_errors.append("微信监听状态将在重连后自动同步")
         if codex_changed:
+            audit("chat_updated", chat_id=user.id, policy_version=current_version + 1)
             try:
                 from app.services.agent_runtime import get_agent_runtime
                 from app.services.codex_profile_service import get_codex_runtime_registry

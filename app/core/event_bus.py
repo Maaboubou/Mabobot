@@ -723,7 +723,12 @@ class EventBus:
                         proxy_installed = False
 
                 try:
-                    with usage_context(usage_metadata):
+                    from app.services.plugin_config_context import plugin_config_scope
+
+                    with usage_context(usage_metadata), plugin_config_scope(
+                        chat_id=event.context.get("chat_id"),
+                        session_factory=self.db_session_factory,
+                    ):
                         result = listener.handler(event)
                 finally:
                     if proxy_installed:

@@ -16,7 +16,6 @@
         "order": 10
       }
     },
-    "settings_notice": "图片内容补充属于聊天记录能力：开启后会在后台更新原始图片记录，不会额外生成一条机器人消息。",
     "settings_groups": {
       "logging": {
         "title": "记录范围",
@@ -46,20 +45,23 @@
       "type": "integer",
       "group": "logging",
       "description": "兼容日志缓存大小（长期原文档案按分片保存）",
-      "default": 100
+      "default": 100,
+      "scope": "global"
     },
     "max_log_days": {
       "type": "integer",
       "group": "logging",
       "description": "兼容日志缓存保留天数（长期原文档案不受此项影响）",
-      "default": 7
+      "default": 7,
+      "scope": "global"
     },
     "image_enrichment_enabled": {
       "type": "boolean",
       "group": "image",
       "title": "启用图片内容补充",
-      "description": "后台理解聊天中的图片，并把结果更新到原始图片记录；关闭后只记录“[图片]”",
-      "default": false
+      "description": "调用大模型对每张收到的图片进行内容识别，补回聊天记录文件中",
+      "default": false,
+      "scope": "global_and_chat"
     },
     "image_understanding_prompt": {
       "type": "textarea",
@@ -79,6 +81,7 @@
     ],
     "max_log_size_mb": 100,
     "max_log_days": 7,
-    "image_enrichment_enabled": false
+    "image_enrichment_enabled": false,
+    "image_understanding_prompt": "你是聊天记录的图片内容补充工具。\n请客观描述图片中的主要场景、对象、界面和可见文字，不要推测看不见的信息。\n如果图片包含文字，尽量准确抄录；如果没有可辨认文字，也要描述视觉内容。\n输出纯文本，先写“内容描述：”，需要时再写“可见文字：”。总长度控制在 500 字以内。"
   }
 }

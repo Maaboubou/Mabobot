@@ -11,6 +11,7 @@ from datetime import datetime
 from app.core.event_bus import Event, EventType
 from app.assistant.chat_log import ChatLogManager
 from app.plugins.builtin_chat_logger.image_understanding import understand_image
+from app.services.plugin_config_context import ScopedConfigAttribute
 from app.utils.plugin_config import get_config
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,18 @@ class ChatLoggerPlugin:
             **self._archive_fields(event))
         return False
 
+    @ScopedConfigAttribute
+    def log_message_types(self):
+        return get_config('log_message_types', plugin_name='builtin_chat_logger')
+
+    @ScopedConfigAttribute
+    def max_log_size_mb(self):
+        return get_config('max_log_size_mb', plugin_name='builtin_chat_logger')
+
+    @ScopedConfigAttribute
+    def max_log_days(self):
+        return get_config('max_log_days', plugin_name='builtin_chat_logger')
+
     def __init__(self, context):
         self.context = context
         self.chat_log_manager = ChatLogManager()
@@ -57,20 +70,29 @@ class ChatLoggerPlugin:
         self._cleanup_thread_started = False
         self._cleanup_thread = None
 
-    def is_image_enrichment_enabled(self) -> bool:
-        """图片内容补充属于聊天记录能力，配置变更后即时生效。"""
-        value = get_config(
-            "image_enrichment_enabled",
-            True,
-            plugin_name="builtin_chat_logger",
-        )
+    def is_image_enrichment_enabled(self, *, chat_id=None) -> bool:
+        """Resolve fresh chat overrides, falling back to defaults for unscoped callers."""
+        if chat_id is not None:
+            from app.services.plugin_chat_config_service import PluginChatConfigError
+
+            try:
+                value = self.context.config.resolve(chat_id=chat_id)["image_enrichment_enabled"]
+            except (PluginChatConfigError, OSError, ValueError, KeyError) as exc:
+                logger.warning("无法读取聊天 %s 的图片识别设置，跳过识别：%s", chat_id, exc)
+                return False
+        else:
+            value = get_config(
+                "image_enrichment_enabled",
+                True,
+                plugin_name="builtin_chat_logger",
+            )
         if isinstance(value, str):
             return value.strip().lower() in {"1", "true", "yes", "on"}
         return bool(value)
 
-    def describe_image_for_chat(self, image_base64: str):
+    def describe_image_for_chat(self, image_base64: str, *, chat_id=None):
         """为不支持视觉输入的聊天模型复用聊天记录图片补充能力。"""
-        if not self.is_image_enrichment_enabled():
+        if not self.is_image_enrichment_enabled(chat_id=chat_id):
             return None
         return understand_image(image_base64)
 
@@ -162,7 +184,8 @@ class ChatLoggerPlugin:
                 logger.debug(f"📝 跳过无效图片消息: chat={chat_name}, sender={sender}")
                 return False
 
-            enrichment_enabled = self.is_image_enrichment_enabled()
+            chat_id = (event.context or {}).get("chat_id")
+            enrichment_enabled = self.is_image_enrichment_enabled(chat_id=chat_id)
             message_id = event.data.get("message_id", "")
 
             # 先记录原始图片消息，再由后台任务原位补充其内容。这样不会制造
@@ -185,7 +208,7 @@ class ChatLoggerPlugin:
                 self.context.workers.start(
                     f"image-enrichment-{chat_name}-{message_id or time.time_ns()}",
                     self._process_image_enrichment,
-                    args=(data, wx_manager, row_id),
+                    args=(data, wx_manager, row_id, chat_id),
                 )
 
             return False
@@ -193,12 +216,15 @@ class ChatLoggerPlugin:
             logger.error(f"📝 记录图片消息失败: {e}")
             return False
 
-    def _process_image_enrichment(self, data, wx_manager, row_id: str) -> None:
+    def _process_image_enrichment(self, data, wx_manager, row_id: str, chat_id=None) -> None:
         """后台下载并理解图片，然后更新原始聊天记录行。"""
         chat_name = str(data.get("chat_name") or "")
         file_path = str(data.get("file_path") or "")
         message_id = data.get("message_id")
         try:
+            if not self.is_image_enrichment_enabled(chat_id=chat_id):
+                self.chat_log_manager.update_image_enrichment(chat_name, row_id, status="disabled")
+                return
             if (not file_path or not os.path.exists(file_path)) and wx_manager and message_id:
                 file_path = wx_manager.download_image_message(chat_name, message_id) or ""
 
@@ -345,18 +371,18 @@ def get_chat_logger_plugin():
     return chat_logger_plugin
 
 
-def describe_image_for_chat(image_base64: str):
+def describe_image_for_chat(image_base64: str, *, chat_id=None):
     """供聊天机器人在主模型不支持视觉时复用图片内容补充。"""
     if chat_logger_plugin:
-        return chat_logger_plugin.describe_image_for_chat(image_base64)
-    enabled = get_config(
-        "image_enrichment_enabled",
-        True,
-        plugin_name="builtin_chat_logger",
-    )
-    if isinstance(enabled, str):
-        enabled = enabled.strip().lower() in {"1", "true", "yes", "on"}
-    if not enabled:
+        return chat_logger_plugin.describe_image_for_chat(image_base64, chat_id=chat_id)
+    from pathlib import Path
+    from types import SimpleNamespace
+    from app.services.plugin_chat_config_service import ChatConfigFacade
+
+    resolver = ChatConfigFacade("builtin_chat_logger", Path(__file__).parent)
+    instance = ChatLoggerPlugin.__new__(ChatLoggerPlugin)
+    instance.context = SimpleNamespace(config=resolver)
+    if not instance.is_image_enrichment_enabled(chat_id=chat_id):
         return None
     return understand_image(image_base64)
 

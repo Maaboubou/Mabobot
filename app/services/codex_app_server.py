@@ -57,6 +57,8 @@ from app.services.codex_proxy.client import (
     _is_link_like,
     _materialize_codex_generated_image,
     _permission_profile_config_args,
+    is_isolated_profile,
+    ISOLATED_PROFILES,
     _prepare_artifact_output_dir,
     _cleanup_expired_artifacts,
     _content_to_text,
@@ -771,6 +773,8 @@ class CodexAppServerManager:
         experimental_api: bool = False,
         permission_read_roots: Optional[Iterable[str]] = None,
         browser_tool: Optional[CodexBrowserToolService] = None,
+        managed_profile_id: str = "",
+        model_supports_web_search: Optional[bool] = None,
     ) -> None:
         configured_bin = codex_bin or os.getenv("CODEX_PROXY_BIN")
         self.codex_bin = configured_bin or shutil.which("codex") or "codex"
@@ -813,6 +817,8 @@ class CodexAppServerManager:
         from app.history.tools import dynamic_tool_specs as history_specs
         self.dynamic_tool_specs += history_specs()
         self.dynamic_tool_signature = self.browser_tool.tool_signature() + ":history-v4-local-files"
+        self.managed_profile_id = managed_profile_id
+        self.model_supports_web_search = model_supports_web_search
 
         self._lifecycle_lock = threading.RLock()
         self._write_lock = threading.Lock()
@@ -837,6 +843,8 @@ class CodexAppServerManager:
         self._initialize_result: Dict[str, Any] = {}
         self._stderr_tail: List[str] = []
         self._last_error = ""
+        self.permission_worker_id = uuid.uuid4().hex
+        self.permission_support: Dict[str, Any] = {}
 
     def _command(self) -> List[str]:
         executable = self.codex_bin
@@ -858,6 +866,9 @@ class CodexAppServerManager:
                 runtime_read_roots=permission_read_roots,
             )
         )
+        for profile in ISOLATED_PROFILES:
+            args.extend(_permission_profile_config_args(profile, runtime_uid=(runtime_capabilities or {}).get("uid"),
+                runtime_read_roots=permission_read_roots, select_default=False))
         args.extend(["-c", "features.memories=false", "-c", "features.external_agent_memory_import=false"])
         return build_codex_runtime_command(
             args,
@@ -1170,6 +1181,8 @@ class CodexAppServerManager:
                     self._proc = None
                 raise
             self._generation += 1
+            from app.services.codex_permission_runtime import probe_worker
+            self.permission_support = probe_worker(self)
             logger.info(
                 "Codex App Server started: pid=%s generation=%s user_agent=%s",
                 proc.pid,
@@ -1179,6 +1192,8 @@ class CodexAppServerManager:
             return True
 
     def stop(self) -> None:
+        from app.services.codex_permission_runtime import remove_support
+        remove_support(self.permission_worker_id)
         with self._lifecycle_lock:
             self._stopping = True
             proc = self._proc
@@ -1240,6 +1255,9 @@ class CodexAppServerManager:
                 logger.exception("Codex App Server stdout reader failed")
         finally:
             if self._proc is proc:
+                from app.services.codex_permission_runtime import remove_support
+                remove_support(self.permission_worker_id)
+                self.permission_support = {}
                 self._proc = None
                 if not self._stopping:
                     logger.warning("Codex App Server exited unexpectedly with code %s", proc.poll())
@@ -1304,6 +1322,8 @@ class CodexAppServerManager:
         # client or human decision, so keep the fallback fail-closed instead of
         # turning Auto-review into unconditional approval.
         if method.endswith("/requestApproval") or "approval" in method.lower():
+            from app.services.codex_permission_service import audit
+            audit("client_approval_declined", review_result="decline", reason_code="residual_approval", tool_id=method)
             logger.warning(
                 "Codex approval request reached the client after Auto-review; declining: %s",
                 method,
@@ -2139,6 +2159,7 @@ class CodexAppServerManager:
         approval_policy: str = CODEX_APPROVAL_POLICY,
         runtime_workspace_roots: Optional[List[Path]] = None,
         developer_instructions: str = "",
+        online_research: bool = True,
     ) -> str:
         runtime_workdir = _as_runtime_path(Path(workdir or self.workdir), self.use_wsl)
         thread_config = self._thread_config(
@@ -2165,7 +2186,7 @@ class CodexAppServerManager:
                 "ephemeral": bool(ephemeral),
                 "config": thread_config,
                 "developerInstructions": developer_instructions,
-                **({"dynamicTools": self.dynamic_tool_specs} if self.dynamic_tool_specs else {}),
+                **({"dynamicTools": self._permission_tool_specs(online_research)} if self.dynamic_tool_specs else {}),
                 **execution_policy,
             },
             timeout=min(timeout, 120),
@@ -2174,6 +2195,7 @@ class CodexAppServerManager:
         thread_id = str(thread.get("id") or "") if isinstance(thread, dict) else ""
         if not thread_id:
             raise CodexAppServerError("Codex App Server thread/start returned no thread id")
+        self._verify_thread_permissions(result, permission_profile, approval_policy, runtime_workspace_roots, sandbox=sandbox)
         self._loaded_threads[thread_id] = self._runtime_config_signature(
             thread_config,
             workdir=Path(workdir or self.workdir),
@@ -2182,6 +2204,28 @@ class CodexAppServerManager:
             developer_instructions=developer_instructions,
         )
         return thread_id
+
+    def _permission_tool_specs(self, online_research: bool):
+        return [spec for spec in self.dynamic_tool_specs if online_research or spec.get("name") != "wx_browser"]
+
+    def _verify_thread_permissions(self, result, profile, approval, roots, *, sandbox=None):
+        if profile == ":danger-full-access" or not profile and sandbox == "danger-full-access":
+            if ((result.get("sandbox") or {}).get("type") != "dangerFullAccess"
+                    or result.get("approvalPolicy") != approval
+                    or approval == "on-request" and result.get("approvalsReviewer") != "auto_review"):
+                raise CodexAppServerError("Codex 运行时未确认管理员权限，已拒绝运行")
+            return
+        if profile not in ISOLATED_PROFILES:
+            return
+        actual = result.get("activePermissionProfile") or {}
+        actual_roots = result.get("runtimeWorkspaceRoots") or []
+        expected_roots = [_as_runtime_path(Path(p), self.use_wsl) for p in roots or []]
+        if (actual.get("id") != profile or result.get("approvalPolicy") != approval
+                or sorted(actual_roots) != sorted(expected_roots)
+                or approval == "on-request" and result.get("approvalsReviewer") != "auto_review"):
+            raise CodexAppServerError("Codex 运行时未确认当前聊天的权限边界，已拒绝运行")
+        if profile.endswith("-public") and not self.permission_support.get("network_proxy"):
+            raise CodexAppServerError("Codex 公网代理未通过运行时验证，已拒绝运行")
 
     def _resume_thread(
         self,
@@ -2244,6 +2288,7 @@ class CodexAppServerManager:
         resumed_id = str(thread.get("id") or "") if isinstance(thread, dict) else ""
         if resumed_id != thread_id:
             raise _ResumeThreadError("Codex App Server resumed an unexpected thread")
+        self._verify_thread_permissions(result, permission_profile, approval_policy, runtime_workspace_roots, sandbox=sandbox)
         self._loaded_threads[thread_id] = config_signature
 
     def _start_tracked_turn(
@@ -2338,14 +2383,20 @@ class CodexAppServerManager:
         if not chat_id:
             raise CodexAppServerError("chat_id is required for persistent Codex threads")
         with self._chat_lock(chat_id):
-            return self._chat_locked(
-                request,
-                chat_id=chat_id,
-                role_name=role_name,
-                retry=retry,
-                max_turns=max(0, int(max_turns or 0)),
-                ephemeral=bool(request.get("mabobot_fresh_context")),
-            )
+            try:
+                return self._chat_locked(
+                    request,
+                    chat_id=chat_id,
+                    role_name=role_name,
+                    retry=retry,
+                    max_turns=max(0, int(max_turns or 0)),
+                    ephemeral=bool(request.get("mabobot_fresh_context")),
+                )
+            except Exception:
+                from app.services.codex_permission_service import record_receipt
+                record_receipt(request.get("codex_chat_user_id"), request.get("codex_permission_signature"),
+                    status="failed", reason_code="runtime_application_failed", runtime_instance=self.permission_worker_id)
+                raise
 
     def run(self, request: Dict[str, Any], *, profile_name: str = "batch") -> Dict[str, Any]:
         """Run one isolated turn on this long-lived process."""
@@ -2421,6 +2472,12 @@ class CodexAppServerManager:
         ephemeral: bool,
     ) -> Dict[str, Any]:
         self.start()
+        # Resolve after worker startup so this turn uses verified capabilities.
+        # The caller supplied a database identity; the model cannot select one.
+        if request.get("codex_chat_user_id"):
+            from app.services.codex_access_service import codex_access_service
+            request.update(codex_access_service.for_id(int(request["codex_chat_user_id"]),
+                support=self.permission_support).apply(request))
         model = str(request.get("model") or os.getenv("CODEX_PROXY_MODEL") or "gpt-5.6-sol")
         extra_body = request.get("extra_body") if isinstance(request.get("extra_body"), dict) else {}
         reasoning_effort = str(
@@ -2512,6 +2569,10 @@ class CodexAppServerManager:
             if message.get("role") in {"system", "developer"}
             if (text := _content_to_text(message.get("content")))
         )
+        if request.get("codex_chat_user_id"):
+            # This field was rebuilt from the database at the start of this turn.
+            # Keep host authority separate from chat text and persona prompts.
+            developer_instructions += "\n\n" + request["codex_permission_instructions"]
         migrating_instructions = bool(
             state and state.get("instruction_transport_version") != 1
         )
@@ -2643,6 +2704,11 @@ class CodexAppServerManager:
         )
 
         if not thread_id:
+            if delta.rotation_reason == "access_policy_changed":
+                from app.services.codex_permission_service import audit
+                audit("thread_rotated", chat_id=request.get("codex_chat_user_id"),
+                      policy_signature=request.get("codex_permission_signature"),
+                      reason_code="access_policy_changed")
             thread_id = self._start_thread(
                 model=model,
                 reasoning_effort=reasoning_effort,
@@ -2656,6 +2722,7 @@ class CodexAppServerManager:
                 approval_policy=approval_policy,
                 runtime_workspace_roots=runtime_workspace_roots,
                 developer_instructions=developer_instructions,
+                online_research=bool(request.get("codex_online_research", True)),
             )
             logger.info(
                 "Codex persistent thread started: chat=%s thread=%s reason=%s",
@@ -2678,7 +2745,7 @@ class CodexAppServerManager:
         request_dir, output_dir = _prepare_artifact_output_dir(
             artifact_root,
             request_id,
-            fail_closed=permission_profile == "mabobot-chat-isolated",
+            fail_closed=is_isolated_profile(permission_profile),
         )
         _cleanup_expired_artifacts(artifact_root)
         staged_input_files = _stage_input_files(
@@ -2707,6 +2774,11 @@ class CodexAppServerManager:
                 runtime_request_dir=_as_runtime_path(request_dir, self.use_wsl),
                 runtime_output_dir=runtime_output_dir,
                 use_wsl=self.use_wsl,
+                online_research_allowed=bool(request.get("codex_online_research", True)),
+                reviewed_download_allowed=bool(request.get("codex_reviewed_download", True)),
+                workspace_access=str(request.get("codex_workspace_access") or "read_write"),
+                permission_chat_id=request.get("codex_chat_user_id"),
+                policy_signature=str(request.get("codex_permission_signature") or ""),
             )
 
         image_urls = extract_image_urls(delta.messages, allow_image_input=allow_image_input)
@@ -2717,7 +2789,7 @@ class CodexAppServerManager:
         runtime_image_paths: List[str] = []
         image_staging_dir = (
             request_dir / "inputs"
-            if permission_profile == "mabobot-chat-isolated"
+            if is_isolated_profile(permission_profile)
             else None
         )
         for image_url in image_urls:
@@ -2754,6 +2826,17 @@ class CodexAppServerManager:
             for path in runtime_image_paths
         )
 
+        from app.services.assistant_prompt_service import record_snapshot
+        record_snapshot(str(request.get("codex_source_chat_name") or chat_id), "reply", {
+            "request_id": request_id, "thread_id": thread_id,
+            "resumed": delta.resume, "rotation_reason": delta.rotation_reason,
+            "developer_instructions": developer_instructions,
+            "instruction_fingerprint": hashlib.sha256(developer_instructions.encode()).hexdigest(),
+            "turn_input": turn_input, "output_schema": output_schema,
+            "tools": self._permission_tool_specs(bool(request.get("codex_online_research", True))),
+            "model": model, "role": role_name,
+            "notice": "仅含本系统可观测输入；复用线程只展示本轮新增资料，旧工具结果及供应商内置指令不在此快照内。",
+        })
         started_at = time.time()
         codex_job_manager.register(
             request_id,
@@ -2854,6 +2937,8 @@ class CodexAppServerManager:
                 timeout=timeout,
             )
             turn_ids.append(turn_id)
+            from app.services.codex_permission_service import record_receipt
+            record_receipt(request.get("codex_chat_user_id"), request.get("codex_permission_signature"), runtime_instance=self.permission_worker_id)
             turn_trackers.append(tracker)
 
             response_messages = tracker.final_messages or tracker.unclassified_messages

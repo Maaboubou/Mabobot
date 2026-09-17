@@ -39,7 +39,7 @@ from .core.plugin_manager import PluginManager
 from .core.wechat_manager import WeChatManager
 from .models.base import create_tables, SessionLocal
 from .api.endpoints import assistant, assistant_judges, assistant_roles, automation, backups, capabilities, chat_policies, codex_profiles, operations, system, settings, plugins, wechat, permissions, dashboard
-from .api.endpoints import codex_skills, email_notifications
+from .api.endpoints import codex_skills, codex_permissions, email_notifications
 from .api import internal as internal_api
 from .api import codex_proxy
 from .api import codex_jobs
@@ -135,6 +135,8 @@ def ensure_initial_settings(db: SessionLocal):
     _ensure_default_assistant_roles(db)
     # 创建默认的ChatBot Judge，并迁移绑定
     default_judge = _ensure_default_assistant_judges(db)
+    from app.services.assistant_prompt_service import migrate_prompts
+    migrate_prompts(db)
     migration_flag_key = "CHATBOT_DEFAULT_JUDGE_BIND_MIGRATION_V1"
     migration_flag = db.query(models_setting.Setting).filter(models_setting.Setting.key == migration_flag_key).first()
     if default_judge and not migration_flag:
@@ -346,35 +348,8 @@ def _ensure_default_assistant_roles(db: SessionLocal):
 
 
 def _get_system_default_judge_prompt() -> str:
-    """新安装的示例 Judge 提示词（template 模式）"""
-    return """## Role
-你是一个高情商的聊天群组观察员，你的名字是刘局(GG)。
-
-## Context Background
-以下是最近约 30 条对话历史，用于你理解当前的聊天主题、语气和氛围。
-[对话开始]
-{chat_text}
-[对话结束]
-
-## Task
-请重点分析【对话结束】前的最后几条消息。
-
-## Rules for Intervention (介入准则)
-1. **不介入**：如果最后几条消息是：
-   - 礼貌性结束语
-   - 纯表情包或无意义的复读。
-   - 无法判断当前主题。
-2. **介入**：如果：
-   - 用户表现出明显的困惑或在寻找答案。
-   - 话题出现冷场，且你有一个非常幽默的梗可以接（适合闲聊场景）。
-   - 有人提到了你的名字或暗示需要 AI 帮助。
-
-## Output (Strict JSON)
-{
-  "atmosphere": "简述当前氛围（如：技术讨论、轻松闲聊、争论等）",
-  "should_reply": true/false,
-  "reason": "为什么判断需要或不需要回复"
-}"""
+    """Plain-language starter rules; context and protocol are host-managed."""
+    return "群友有明确问题、需要帮助，或你有值得补充的内容时接话。礼貌性结束、纯表情、复读、话题不明或答案已充分给出时不接话。"
 
 
 def _ensure_default_assistant_judges(db: SessionLocal):
@@ -393,10 +368,10 @@ def _ensure_default_assistant_judges(db: SessionLocal):
 
             default_judge = ChatBotJudge(
                 name="default_judge",
-                display_name="默认 Judge",
+                display_name="默认接话判断",
                 description="默认主动回复判断器（由旧 proactive_judge_prompt 迁移）",
                 prompt=prompt_text,
-                prompt_mode="template",
+                prompt_mode="simple",
                 trigger_msg_threshold=int(get_plugin_setting("assistant", "proactive_msg_threshold", 5) or 0),
                 trigger_interval_minutes=int(get_plugin_setting("assistant", "proactive_interval_minutes", 1) or 1),
                 cooldown_msg_threshold=int(get_plugin_setting("assistant", "proactive_msg_threshold", 5) or 0),
@@ -737,6 +712,7 @@ app.include_router(automation.router, prefix="/api/automation", tags=["automatio
 app.include_router(assistant.router, prefix="/api/assistant", tags=["assistant"])
 app.include_router(chat_policies.router, prefix="/api/chats", tags=["chat-policies"])
 app.include_router(codex_profiles.router, prefix="/api/codex/profiles", tags=["codex-profiles"])
+app.include_router(codex_permissions.router, prefix="/api/codex/permissions", tags=["codex-permissions"])
 app.include_router(codex_skills.router, prefix="/api/codex/profiles", tags=["codex-skills"])
 app.include_router(wechat.router, prefix="/api/wechat", tags=["wechat"])
 app.include_router(internal_api.router, prefix="/api/internal", tags=["internal"])
@@ -745,6 +721,8 @@ app.include_router(codex_jobs.router)
 app.include_router(permissions.router, prefix="/api/permissions", tags=["permissions"])
 from .api.endpoints import history
 app.include_router(history.router, prefix="/api/history", tags=["history"])
+from .api.endpoints import assistant_prompts
+app.include_router(assistant_prompts.router, prefix="/api/assistant/prompts", tags=["assistant_prompts"])
 app.include_router(assistant_roles.router, prefix="/api/assistant/roles", tags=["assistant_roles"])
 app.include_router(assistant_judges.router, prefix="/api/assistant/judges", tags=["assistant_judges"])
 app.include_router(dashboard.router, prefix="/api/dashboard", tags=["dashboard"])

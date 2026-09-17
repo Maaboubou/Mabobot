@@ -27,7 +27,9 @@ const Dashboard = {
         pulseInFlight: false,
         pulseFailed: false,
         lastActivityAt: null,
+        sparklines: {},
         hourlyData: [],
+        hourlyGeneratedAt: null,
         hourlyIndex: null,
         hourlyPinned: false,
         hourlyBound: false,
@@ -533,72 +535,53 @@ const Dashboard = {
                 element.removeAttribute('data-stale');
             }
         };
-        if (!timeseries) this.markStale(['statTodayMessages', 'statAiReplies', 'statActiveUsers', 'sparkMessages']);
-        if (!usageToday) this.markStale(['dashboardCost', 'dashboardCalls']);
+        if (!timeseries) this.markStale(['statTodayMessages', 'statAiReplies', 'sparkMessages']);
+        if (!usageToday) this.markStale(['dashboardCost']);
 
         setText('statTodayMessages', today ? UI.formatNumber(today.received) : '—');
         setText('statAiReplies', today ? UI.formatNumber(today.replies) : '—');
-        setText('statActiveUsers', today ? UI.formatNumber(today.chats) : '—');
         setText('statActiveUsersPill', today ? UI.formatNumber(today.chats) : '—');
 
-        const deltaText = (current, previous, unit = '') => {
-            if (!previous) return '';
-            const diff = Number(current || 0) - Number(previous || 0);
-            if (!diff) return '与昨日持平';
-            const ratio = Math.round((diff / previous) * 100);
-            return `较昨日 ${diff > 0 ? '+' : ''}${UI.formatNumber(diff)}${unit}（${ratio > 0 ? '+' : ''}${ratio}%）`;
-        };
-
         setText('statTodayMessagesMeta', today
-            ? (deltaText(today.received, yesterday?.received) || '较昨日无对比数据')
+            ? (yesterday ? `昨日全天 ${UI.formatNumber(yesterday.received)}` : '昨日数据暂不可用')
             : '暂不可用');
         setText('statAiRepliesMeta', today
-            ? `回复率 ${(Number(today.reply_rate || 0) * 100).toFixed(0)}%`
+            ? (yesterday ? `昨日全天 ${UI.formatNumber(yesterday.replies)}` : '')
             : '暂不可用');
-        setText('statActiveChatsMeta', today && yesterday
-            ? (deltaText(today.chats, yesterday.chats, ' 个') || '与昨日持平')
-            : '暂不可用');
-
-        const failures = Number(metrics.failures || 0);
-        const calls = Number(metrics.calls || 0);
-        setText('dashboardCalls', UI.formatNumber(calls));
-        const callsMeta = document.getElementById('dashboardCallsMeta');
-        if (callsMeta) {
-            // 只有失败次数标红，总次数和整块卡片保持中性色。
-            callsMeta.innerHTML = calls
-                ? (failures
-                    ? `失败 <span class="dashboard-kpi-failure">${UI.formatNumber(failures)}</span> 次（${(failures / calls * 100).toFixed(1)}%）`
-                    : '全部成功')
-                : '今日暂无调用';
-            callsMeta.title = failures
-                ? `今日 ${UI.formatNumber(calls)} 次调用中有 ${UI.formatNumber(failures)} 次失败`
-                : callsMeta.textContent;
-            callsMeta.removeAttribute('data-stale');
-        }
-        const callsCard = document.getElementById('dashboardCallsCard');
-        if (callsCard) {
-            callsCard.classList.toggle('has-errors', failures > 0);
-            callsCard.title = failures ? `查看 ${UI.formatNumber(failures)} 次失败调用` : '查看调用记录';
-        }
 
         const costText = this.formatCosts(metrics.costs);
         const averageCost = this.averageDailyCost(series);
         setText('dashboardCost', costText);
-        setText('dashboardCostMeta', metrics.tokens
-            ? `${this.formatTokens(metrics.tokens)} Token · ${UI.formatNumber(calls)} 次调用${averageCost ? ` · 7 日均 ${averageCost}` : ''}`
-            : '今日暂无用量');
+        setText('dashboardCostMeta', !usageToday ? '暂不可用'
+            : averageCost ? `7 日均 ${averageCost}` : '今日暂无用量');
 
-        this.renderSparkline('sparkMessages', daily.map(day => day.received));
-        this.renderSparkline('sparkReplies', daily.map(day => day.replies));
-        this.renderSparkline('sparkChats', daily.map(day => day.chats));
-        this.renderSparkline('sparkCost', series.map(day => this.costTotal(day.costs)));
+        const currentDate = String(timeseries?.generated_at || '').slice(0, 10)
+            || new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
+        this.renderSparkline('sparkMessages', daily.map(day => ({
+            date: day.date, value: day.received, text: `收到消息 ${UI.formatNumber(day.received)} 条`,
+        })), currentDate);
+        this.renderSparkline('sparkReplies', daily.map(day => ({
+            date: day.date, value: day.replies, text: `AI 回复 ${UI.formatNumber(day.replies)} 条`,
+        })), currentDate);
+        this.renderSparkline('sparkCost', series.map(day => ({
+            date: day.date, value: this.costTotal(day.costs),
+            text: `成本 ${Object.entries(day.costs || {}).map(([code, amount]) =>
+                `${code} ${UI.formatNumber(amount, { maximumFractionDigits: 8 })}`).join(' + ') || '0'}`,
+        })), currentDate);
     },
 
-    renderSparkline(elementId, values) {
+    renderSparkline(elementId, data, currentDate) {
         const svg = document.getElementById(elementId);
         if (!svg) return;
-        const series = (values || []).map(value => Number(value) || 0);
-        if (!series.length || series.every(value => value === 0)) {
+        const container = svg.closest('.dashboard-spark-chart');
+        if (!container) return;
+        this.hideSparkTip(elementId);
+        const chart = this.state.sparklines[elementId] ||= {};
+        Object.assign(chart, { data: data || [], currentDate, index: null, pinned: false });
+        this.bindSparkline(elementId, container);
+        const series = chart.data.map(day => Math.max(0, Number(day.value) || 0));
+        container.tabIndex = series.length ? 0 : -1;
+        if (!series.length) {
             svg.innerHTML = '';
             svg.classList.add('is-empty');
             return;
@@ -614,14 +597,98 @@ const Dashboard = {
             const y = height - pad - (max ? (value / max) * (height - pad * 2) : 0);
             return [Math.round(x * 10) / 10, Math.round(y * 10) / 10];
         });
+        chart.points = points;
         const line = points.map(point => point.join(',')).join(' ');
-        const area = `M ${pad},${height - pad} L ${points.map(point => point.join(' ')).join(' L ')} L ${width - pad},${height - pad} Z`;
         const last = points[points.length - 1];
         svg.innerHTML = `
-            <path class="dashboard-spark-area" d="${area}"></path>
             <polyline class="dashboard-spark-line" points="${line}"></polyline>
             <circle class="dashboard-spark-dot" cx="${last[0]}" cy="${last[1]}" r="2"></circle>
+            <circle class="dashboard-spark-active" cx="${last[0]}" cy="${last[1]}" r="2.5" hidden></circle>
         `;
+    },
+
+    bindSparkline(elementId, container) {
+        if (container.dataset.readoutBound) return;
+        container.dataset.readoutBound = 'true';
+        const indexAt = event => {
+            const total = this.state.sparklines[elementId]?.data.length || 0;
+            const rect = container.getBoundingClientRect();
+            if (!total || !rect.width) return null;
+            // Match the SVG's 3px padding and snap across the whole chart area.
+            const ratio = ((event.clientX - rect.left) / rect.width * 120 - 3) / 114;
+            return Math.max(0, Math.min(total - 1, Math.round(ratio * (total - 1))));
+        };
+        container.addEventListener('mousemove', event => {
+            if (this.state.sparklines[elementId]?.pinned) return;
+            const index = indexAt(event);
+            if (index !== null) this.showSparkTip(elementId, index);
+        });
+        container.addEventListener('mouseleave', () => {
+            if (!this.state.sparklines[elementId]?.pinned) this.hideSparkTip(elementId);
+        });
+        container.addEventListener('click', event => {
+            const index = indexAt(event);
+            if (index === null) return;
+            const chart = this.state.sparklines[elementId];
+            if (chart.pinned && chart.index === index) this.hideSparkTip(elementId);
+            else this.showSparkTip(elementId, index, true);
+        });
+        container.addEventListener('focus', () => {
+            const total = this.state.sparklines[elementId]?.data.length || 0;
+            if (total) this.showSparkTip(elementId, total - 1);
+        });
+        container.addEventListener('blur', () => this.hideSparkTip(elementId));
+        container.addEventListener('keydown', event => {
+            const chart = this.state.sparklines[elementId];
+            const total = chart?.data.length || 0;
+            if (!total) return;
+            if (event.key === 'Escape') {
+                this.hideSparkTip(elementId);
+                return;
+            }
+            let index = chart.index ?? total - 1;
+            if (event.key === 'ArrowLeft') index--;
+            else if (event.key === 'ArrowRight') index++;
+            else if (event.key === 'Home') index = 0;
+            else if (event.key === 'End') index = total - 1;
+            else return;
+            event.preventDefault();
+            this.showSparkTip(elementId, Math.max(0, Math.min(total - 1, index)), true);
+        });
+        document.addEventListener('click', event => {
+            if (!container.contains(event.target)) this.hideSparkTip(elementId);
+        });
+    },
+
+    showSparkTip(elementId, index, pinned = false) {
+        const chart = this.state.sparklines[elementId];
+        const day = chart?.data[index];
+        const svg = document.getElementById(elementId);
+        const container = svg?.closest('.dashboard-spark-chart');
+        const tip = document.getElementById(`${elementId}Tip`);
+        const point = chart?.points?.[index];
+        if (!day || !container || !tip || !point) return;
+        Object.keys(this.state.sparklines).filter(id => id !== elementId)
+            .forEach(id => this.hideSparkTip(id));
+        tip.innerHTML = `<strong>${UI.escapeHtml(day.date || '日期未知')}</strong>
+            <span>${UI.escapeHtml(day.text)}</span>${day.date === chart.currentDate ? '<span>截至当前</span>' : ''}`;
+        tip.hidden = false;
+        const half = tip.offsetWidth / 2;
+        const center = point[0] / 120 * container.clientWidth;
+        tip.style.left = `${Math.max(half, Math.min(center, container.clientWidth - half))}px`;
+        const dot = svg.querySelector('.dashboard-spark-active');
+        dot.setAttribute('cx', point[0]);
+        dot.setAttribute('cy', point[1]);
+        dot.removeAttribute('hidden');
+        Object.assign(chart, { index, pinned });
+    },
+
+    hideSparkTip(elementId) {
+        const tip = document.getElementById(`${elementId}Tip`);
+        if (tip) tip.hidden = true;
+        document.getElementById(elementId)?.querySelector('.dashboard-spark-active')?.setAttribute('hidden', '');
+        const chart = this.state.sparklines[elementId];
+        if (chart) Object.assign(chart, { index: null, pinned: false });
     },
 
     formatCosts(costs) {
@@ -670,26 +737,29 @@ const Dashboard = {
         if (!container) return;
         const hourly = timeseries?.hourly || [];
         this.state.hourlyData = hourly;
+        this.state.hourlyGeneratedAt = timeseries?.generated_at || null;
         this.state.hourlyIndex = null;
         this.state.hourlyPinned = false;
         if (!hourly.length) {
             container.dataset.stale = 'true';
             container.innerHTML = '<div class="dashboard-empty">最近 24 小时的聊天记录暂不可用。</div>';
+            const summary = document.getElementById('dashboardHourlySummary');
+            if (summary) summary.textContent = '';
             return;
         }
-        const max = Math.max(1, ...hourly.map(hour => Number(hour.received) || 0));
+        const max = Math.max(1, ...hourly.flatMap(hour => [Number(hour.received) || 0, Number(hour.replies) || 0]));
         container.innerHTML = `
             <div class="dashboard-hourly-bars" id="dashboardHourlyBars">${hourly.map((hour, index) => {
-                const received = Number(hour.received) || 0;
-                const replies = Math.min(Number(hour.replies) || 0, received);
-                const receivedHeight = Math.round((received / max) * 100);
-                // 回复段是柱子的其中一段（百分比相对柱身），不是相对整条轨道：
-                // 相对轨道会让"只收到 1 条"的小时也长出接近满高的深色柱。
-                const repliesHeight = received ? Math.round((replies / received) * 100) : 0;
+                const received = Math.max(0, Number(hour.received) || 0);
+                const replies = Math.max(0, Number(hour.replies) || 0);
+                // Independent counts share one scale; split replies can exceed received messages.
+                const receivedHeight = received / max * 100;
+                const repliesHeight = replies / max * 100;
                 const label = index % 3 === 0 ? `${hour.at.slice(11)}:00` : '';
                 return `<div class="dashboard-hour" data-hour-index="${index}">
-                    <div class="dashboard-hour-track">
-                        <span class="dashboard-hour-bar" style="height:${receivedHeight}%"><i style="height:${repliesHeight}%"></i></span>
+                    <div class="dashboard-hour-track${replies > received ? ' has-more-replies' : ''}">
+                        <span class="dashboard-hour-bar is-received" style="height:${receivedHeight}%"></span>
+                        <span class="dashboard-hour-bar is-replies" style="height:${repliesHeight}%"></span>
                     </div>
                     <small>${label}</small>
                 </div>`;
@@ -706,8 +776,8 @@ const Dashboard = {
                 (best, hour) => (Number(hour.received) || 0) > (Number(best.received) || 0) ? hour : best,
                 hourly[0],
             );
-            summary.textContent = total
-                ? `${UI.formatNumber(total)} 收到 · ${UI.formatNumber(replies)} 回复 · 峰值 ${busiest.at.slice(11)}:00`
+            summary.textContent = total || replies
+                ? `收到 ${UI.formatNumber(total)} · AI 回复 ${UI.formatNumber(replies)}${total ? ` · 消息峰值 ${busiest.at.slice(11)}:00` : ''}`
                 : '最近 24 小时没有消息';
         }
         container.removeAttribute('data-stale');
@@ -732,6 +802,7 @@ const Dashboard = {
         };
 
         container.addEventListener('mousemove', event => {
+            if (event.target.closest('#dashboardHourlyTip')) return;
             if (this.state.hourlyPinned) return;
             const index = indexAt(event);
             if (index !== null && index !== this.state.hourlyIndex) this.showHourTip(index);
@@ -742,6 +813,7 @@ const Dashboard = {
         // 手指点按落点误差远大于一根柱子（手机上一根约 10px），
         // 所以用横向位置判定最近的一小时，而不是要求点中柱子本身。
         container.addEventListener('click', event => {
+            if (event.target.closest('#dashboardHourlyTip')) return;
             const index = indexAt(event);
             if (index === null) return;
             if (this.state.hourlyPinned && index === this.state.hourlyIndex) this.hideHourTip();
@@ -777,15 +849,21 @@ const Dashboard = {
         const tip = document.getElementById('dashboardHourlyTip');
         const cell = container?.querySelector(`.dashboard-hour[data-hour-index="${index}"]`);
         if (!hour || !tip || !cell || !container) return;
-        const received = Number(hour.received) || 0;
-        const replies = Math.min(Number(hour.replies) || 0, received);
-        const unanswered = Math.max(0, received - replies);
-        const start = hour.at.slice(11);
-        const end = `${String((Number(start.slice(0, 2)) + 1) % 24).padStart(2, '0')}:00`;
+        const received = Math.max(0, Number(hour.received) || 0);
+        const replies = Math.max(0, Number(hour.replies) || 0);
+        // Hour buckets are server-local China time, independent of the browser's timezone.
+        const start = new Date(`${hour.at}:00:00+08:00`);
+        const end = new Date(start.getTime() + 60 * 60 * 1000);
+        const partial = String(this.state.hourlyGeneratedAt || '').slice(0, 13) === hour.at;
+        const plugins = (Array.isArray(hour.plugin_replies) ? hour.plugin_replies : [])
+            .filter(plugin => Number(plugin.count) > 0)
+            .sort((a, b) => Number(b.count) - Number(a.count));
+        const pluginReadout = plugins.length ? `<div class="dashboard-hour-plugins"><small>已记录的插件回复</small>${plugins.map(plugin =>
+            `<span>${UI.escapeHtml(plugin.name || plugin.plugin_id)}<b>${UI.formatNumber(plugin.count)} 条</b></span>`).join('')}</div>` : '';
         tip.innerHTML = `
-            <strong>${UI.escapeHtml(`${start}:00 – ${end}`)}</strong>
-            <span>收到 ${UI.formatNumber(received)} · 回复 ${UI.formatNumber(replies)}${unanswered ? ` · 未回复 ${UI.formatNumber(unanswered)}` : ''}</span>
-            <span>${UI.formatNumber(Number(hour.chats) || 0)} 个聊天</span>`;
+            <strong>${UI.escapeHtml(`${UI.formatShortDateTime(start)} – ${UI.formatShortDateTime(end)}`)}</strong>
+            <span>收到消息 ${UI.formatNumber(received)} · AI 回复 ${UI.formatNumber(replies)}</span>
+            <span>活跃聊天 ${UI.formatNumber(Number(hour.chats) || 0)} 个${partial ? ' · 截至当前' : ''}</span>${pluginReadout}`;
         tip.hidden = false;
         const half = tip.offsetWidth / 2 + 4;
         const center = cell.offsetLeft + cell.offsetWidth / 2;
@@ -826,8 +904,8 @@ const Dashboard = {
         const averageDuration = durationCalls ? Number(metrics.duration_total || 0) / durationCalls : 0;
         const models = Object.entries(metrics.models || {})
             .sort((a, b) => Number(b[1]) - Number(a[1]))
-            .slice(0, 3);
-        const modelTotal = models.reduce((sum, [, count]) => sum + Number(count || 0), 0) || 1;
+            .slice(0, 5);
+        const modelTotal = models.reduce((sum, [, count]) => sum + (Number(count) || 0), 0);
 
         container.innerHTML = `
             <div class="dashboard-usage-grid">
@@ -836,12 +914,17 @@ const Dashboard = {
                 <div><span>失败</span><strong class="${failures ? 'is-error' : ''}">${UI.formatNumber(failures)}</strong></div>
                 <div><span>平均耗时</span><strong>${averageDuration ? `${averageDuration.toFixed(1)}s` : '—'}</strong></div>
             </div>
-            ${models.length ? `<div class="dashboard-model-mix">${models.map(([model, count]) => `
-                <div class="dashboard-model-row">
-                    <span class="dashboard-model-name" title="${UI.escapeHtml(model)}">${UI.escapeHtml(model)}</span>
-                    <span class="dashboard-model-track"><i style="width:${Math.round(Number(count || 0) / modelTotal * 100)}%"></i></span>
+            ${models.length ? `<div class="dashboard-model-heading">调用最多的模型</div><div class="dashboard-model-matrix">${models.map(([model, count]) => {
+                const share = modelTotal ? (Number(count) || 0) / modelTotal : 0;
+                return `
+                <div class="dashboard-model-row" title="${UI.escapeHtml(model)} · ${UI.formatNumber(count)} 次调用">
+                    <span class="dashboard-model-name">${UI.escapeHtml(model)}</span>
+                    <span class="dashboard-model-dots" aria-hidden="true">${Array.from({ length: 8 }, (_, index) =>
+                        `<i${index < Math.round(share * 8) ? ' class="is-on"' : ''}></i>`).join('')}</span>
                     <em>${UI.formatNumber(count)}</em>
-                </div>`).join('')}</div>` : ''}
+                    <b>${Math.round(share * 100)}%</b>
+                </div>`;
+            }).join('')}</div>` : ''}
         `;
         container.removeAttribute('data-stale');
     },
@@ -859,27 +942,17 @@ const Dashboard = {
             container.innerHTML = '<div class="dashboard-empty">今天还没有聊天活动。</div>';
             return;
         }
-        const max = Math.max(1, ...chats.map(chat => Number(chat.received) || 0));
         container.innerHTML = `
-            <ol class="dashboard-chat-list">
-                ${chats.map((chat, index) => {
-                    const received = Number(chat.received) || 0;
-                    const replies = Number(chat.replies) || 0;
-                    const unanswered = Math.max(0, received - replies);
-                    return `<li>
-                        <span class="dashboard-rank-index">${index + 1}</span>
-                        <div class="dashboard-chat-copy">
-                            <strong title="${UI.escapeHtml(chat.chat_name || '')}">${UI.escapeHtml(chat.chat_name || '未知聊天')}</strong>
-                            <span class="dashboard-chat-track"><i style="width:${Math.round(received / max * 100)}%"></i></span>
-                        </div>
-                        <span class="dashboard-rank-count">${UI.formatNumber(received)}</span>
-                        <em class="${unanswered ? 'is-warning' : ''}" title="收到 ${received} · 回复 ${replies}">${unanswered ? `${UI.formatNumber(unanswered)} 未回复` : '已全部回复'}</em>
-                    </li>`;
-                }).join('')}
-            </ol>
-            <div class="dashboard-panel-foot">
-                <a href="/chats" onclick="event.preventDefault(); Dashboard.navigate({ tab: 'users', path: '/chats' })">查看聊天管理<i class="bi bi-arrow-right" aria-hidden="true"></i></a>
-            </div>
+            <table class="dashboard-chat-table">
+                <caption class="visually-hidden">今日活跃聊天的收到消息与 AI 回复数量</caption>
+                <colgroup><col><col class="dashboard-chat-number"><col class="dashboard-chat-number"></colgroup>
+                <thead><tr><th scope="col">聊天</th><th scope="col">收到消息</th><th scope="col">AI 回复</th></tr></thead>
+                <tbody>${chats.map(chat => `<tr>
+                    <th scope="row" title="${UI.escapeHtml(chat.chat_name || '')}">${UI.escapeHtml(chat.chat_name || '未知聊天')}</th>
+                    <td>${UI.formatNumber(Number(chat.received) || 0)}</td>
+                    <td>${UI.formatNumber(Number(chat.replies) || 0)}</td>
+                </tr>`).join('')}</tbody>
+            </table>
         `;
         container.removeAttribute('data-stale');
     },
@@ -1021,42 +1094,34 @@ const Dashboard = {
         const configured = !!data?.profile_available;
         const quotaSupported = !!data?.quota_supported;
         const quotaAvailable = quotaSupported && !!data?.quota_available;
-        const statusClass = configured ? 'is-ok' : 'is-danger';
+        const snapshot = !!data?.served_from_snapshot;
+        const statusClass = !configured || data?.status === 'error' ? 'is-danger'
+            : data?.status === 'warning' ? 'is-warning'
+            : snapshot || !quotaAvailable ? 'is-muted' : 'is-ok';
         const statusText = data?.status === 'error' ? '状态暂不可用'
             : !configured ? (data?.profile_id ? '配置待检查' : '未配置')
             : !quotaSupported ? (data?.status === 'warning' ? '配置待检查' : '已配置 · 额度未接入')
             : data?.status === 'warning' ? '额度暂不可用'
-            : quotaAvailable ? (data?.served_from_snapshot ? '最近账户额度' : '账户额度') : '额度待刷新';
-        const model = data?.model || '未配置模型';
-        const authMode = data?.auth_mode === 'chatgpt' ? 'ChatGPT 登录'
-            : data?.auth_mode === 'api_key' ? 'API Key' : '认证待配置';
-        const provider = data?.model_provider || '提供方未配置';
-        const planType = data?.plan_type ? ` / ${data.plan_type}` : '';
-        const updatedAt = data?.rate_limit_updated_at ? UI.formatRelativeTime(data.rate_limit_updated_at) : '';
+            : quotaAvailable ? (snapshot ? '账户额度快照' : '账户额度') : '额度待刷新';
+        const updatedAt = data?.rate_limit_updated_at ? UI.formatShortDateTime(data.rate_limit_updated_at) : '';
+        container.title = updatedAt ? `额度读取于 ${updatedAt}` : '尚无额度读取时间';
+        container.tabIndex = 0;
+        container.setAttribute('aria-label', container.title);
         const quotaMessage = this.localizeCodexQuotaMessage(data?.quota_message || '配置状态暂不可用。');
-        const primaryLimit = quotaAvailable ? this.renderCodexLimit(data?.rate_limits?.primary, '主要限额') : '';
-        const secondaryLimit = quotaAvailable ? this.renderCodexLimit(data?.rate_limits?.secondary, '次要限额') : '';
+        const bothLimits = data?.rate_limits?.primary && data?.rate_limits?.secondary;
+        const primaryLimit = quotaAvailable ? this.renderCodexLimit(data?.rate_limits?.primary, bothLimits ? '主要限额' : '', snapshot) : '';
+        const secondaryLimit = quotaAvailable ? this.renderCodexLimit(data?.rate_limits?.secondary, bothLimits ? '次要限额' : '', snapshot) : '';
 
+        const limits = primaryLimit || secondaryLimit;
+        const abnormal = data?.status === 'error' || data?.status === 'warning';
         container.innerHTML = `
-            <div class="dashboard-codex-meta">
-                <span class="dashboard-inline-state ${statusClass}" title="${UI.escapeHtml(quotaMessage)}">
-                    <i class="bi bi-circle-fill" aria-hidden="true"></i>${statusText}
-                </span>
-                ${updatedAt ? `<small>${UI.escapeHtml(updatedAt)}</small>` : ''}
-            </div>
-            <div class="dashboard-codex-identity" title="${UI.escapeHtml([data?.profile_id, authMode + planType].filter(Boolean).join(' · '))}">
-                <strong>${UI.escapeHtml(model)}</strong>
-                <span>${UI.escapeHtml(provider + planType)}</span>
-            </div>
-            ${primaryLimit || secondaryLimit ? `<div class="dashboard-codex-limits">${primaryLimit}${secondaryLimit}</div>` : ''}
-            <div class="dashboard-panel-foot">
-                <a href="/codex" onclick="event.preventDefault(); Dashboard.navigate({ tab: 'codex', path: '/codex' })">打开 Codex 运行中心<i class="bi bi-arrow-right" aria-hidden="true"></i></a>
-            </div>
+            ${limits ? `<div class="dashboard-codex-limits">${primaryLimit}${secondaryLimit}</div>` : ''}
+            ${!limits || abnormal ? `<span class="dashboard-inline-state ${statusClass}" title="${UI.escapeHtml(quotaMessage)}">${UI.escapeHtml(statusText)}</span>` : ''}
         `;
         container.removeAttribute('data-stale');
     },
 
-    renderCodexLimit(limit, label) {
+    renderCodexLimit(limit, label, snapshot = false) {
         if (!limit || typeof limit.used_percent !== 'number') return '';
 
         const used = Math.max(0, Math.min(100, limit.used_percent));
@@ -1064,26 +1129,18 @@ const Dashboard = {
         const remaining = Math.max(0, Math.min(100, rawRemaining));
         const tone = remaining <= 10 ? 'is-danger' : remaining <= 30 ? 'is-warning' : 'is-ok';
         const resetTime = limit.resets_at ? new Date(limit.resets_at * 1000) : null;
-        const resetText = resetTime && !Number.isNaN(resetTime.getTime()) ? UI.formatShortDateTime(resetTime) : '-';
-        const windowText = limit.window_minutes ? this.formatMinutes(limit.window_minutes) : '-';
+        // 已经过期的重置时间不再展示：旧读数会同时误导"额度"和"重置"两件事。
+        const resetText = resetTime && !Number.isNaN(resetTime.getTime()) && resetTime.getTime() > Date.now()
+            ? `${UI.formatShortDateTime(resetTime)} 重置` : '';
 
         return `
             <article class="dashboard-codex-limit ${tone}">
-                <div>
-                    <span>${UI.escapeHtml(label)}</span>
-                    <strong>${remaining.toFixed(remaining % 1 === 0 ? 0 : 1)}%</strong>
-                </div>
-                <span class="dashboard-resource-track"><i style="width: ${remaining}%"></i></span>
-                <small>${UI.escapeHtml(windowText)} 窗口 · ${UI.escapeHtml(resetText)} 重置 · 已用 ${used.toFixed(used % 1 === 0 ? 0 : 1)}%</small>
+                ${label ? `<small>${UI.escapeHtml(label)}</small>` : '<small></small>'}
+                <strong>${remaining.toFixed(remaining % 1 === 0 ? 0 : 1)}%</strong>
+                <small class="dashboard-codex-remaining">${snapshot ? '上次读取剩余' : '剩余'}</small>
+                <em>${resetText ? UI.escapeHtml(resetText) : ''}</em>
             </article>
         `;
-    },
-
-    formatMinutes(minutes) {
-        if (!minutes) return '-';
-        if (minutes % 1440 === 0) return `${minutes / 1440}天`;
-        if (minutes % 60 === 0) return `${minutes / 60}小时`;
-        return `${minutes}分钟`;
     },
 
     async refreshCodexUsage() {

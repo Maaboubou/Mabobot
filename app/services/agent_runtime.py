@@ -482,7 +482,11 @@ class CodexAgentRuntime:
         workdir: Optional[str] = None,
         codex_bin: Optional[str] = None,
         permission_read_roots: Optional[Iterable[str]] = None,
+        managed_profile_id: str = "",
+        model_supports_web_search: Optional[bool] = None,
     ) -> None:
+        self.managed_profile_id = managed_profile_id
+        self.model_supports_web_search = model_supports_web_search
         self.workdir = str(Path(workdir or os.getenv("CODEX_PROXY_WORKDIR") or Path.cwd()).resolve())
         self.probe = CodexCompatibilityProbe(codex_bin=codex_bin, workdir=self.workdir)
         self.permission_read_roots = tuple(
@@ -522,6 +526,8 @@ class CodexAgentRuntime:
             # stable. The compatibility probe above guarantees the field exists.
             experimental_api=True,
             permission_read_roots=self.permission_read_roots,
+            managed_profile_id=self.managed_profile_id,
+            model_supports_web_search=self.model_supports_web_search,
         )
 
     def _build_pools(self, identity: CodexBinaryIdentity) -> Dict[str, CodexProcessPool]:
@@ -573,6 +579,12 @@ class CodexAgentRuntime:
                 signature = self.probe.quick_signature()
                 if self._quick_signature != signature or not self._pools_healthy():
                     self.refresh(force=True)
+                from app.services.codex_permission_runtime import publish_support
+                with self._lock:
+                    managers = [m for pool in self._pools.values() for m in pool.managers]
+                for manager in managers:
+                    if manager.is_running():
+                        publish_support(manager.permission_worker_id, manager.managed_profile_id, manager.permission_support)
             except Exception as exc:
                 self._last_refresh_error = str(exc)
                 logger.warning("Codex runtime discovery failed: %s", exc)
@@ -1016,6 +1028,9 @@ class CodexAgentRuntime:
     ) -> Dict[str, Any]:
         profile = self._profile(profile_name)
         request = self._prepare_payload(payload, profile)
+        source_chat = str(request.get("codex_source_chat_name") or "").strip()
+        if source_chat:
+            request = codex_access_service.for_chat(source_chat, ensure=True).apply(request)
         fallback = profile.allow_exec_fallback if allow_exec_fallback is None else allow_exec_fallback
         pool = self._pool(profile.pool)
         if pool is None:

@@ -48,6 +48,15 @@ class JudgeManager:
 
     def get_judge(self, judge_name: str) -> Optional[Dict[str, Any]]:
         """获取指定 Judge 配置"""
+        try:
+            from app.models.base import SessionLocal
+            from app.models.chatbot_judge import ChatBotJudge
+            with SessionLocal() as db:
+                row = db.query(ChatBotJudge).filter(ChatBotJudge.name == judge_name).first()
+                if row is not None:
+                    return {column.name: getattr(row, column.name) for column in ChatBotJudge.__table__.columns}
+        except Exception:
+            logger.debug("接话规则实时读取不可用，使用已加载配置", exc_info=True)
         if judge_name in self.judges:
             return self.judges[judge_name]
         return self.judges.get("default_judge")
@@ -87,22 +96,3 @@ class JudgeManager:
         self.judges.clear()
         self._load_judges()
         logger.info(f"✅ Judge 配置重新加载完成，当前有 {len(self.judges)} 个")
-
-    def _get_default_judge_template(self) -> str:
-        return """## Role
-你是一个高情商的聊天群组观察员。
-
-## Context Background
-[对话开始]
-{chat_text}
-[对话结束]
-
-## Task
-请重点分析【对话结束】前的最后几条消息，判断是否需要主动回复。
-
-## Output (Strict JSON)
-{
-  "atmosphere": "简述当前氛围（如：技术讨论、轻松闲聊、争论等）",
-  "should_reply": true/false,
-  "reason": "为什么判断需要或不需要回复"
-}"""

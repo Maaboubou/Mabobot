@@ -24,12 +24,12 @@ class SessionStore(Generic[T]):
         self.clock = clock
         self._items: dict[tuple[str, str], PendingChoice[T]] = {}
 
-    def put(self, chat_name: str, sender_key: str, choices: tuple[T, ...]) -> PendingChoice[T]:
+    def put(self, chat_name: str, sender_key: str, choices: tuple[T, ...], *, ttl_seconds=None, max_choices=None) -> PendingChoice[T]:
         item = PendingChoice(
             chat_name=chat_name,
             sender_key=sender_key,
-            choices=tuple(choices[: self.max_choices]),
-            expires_at=self.clock() + self.ttl_seconds,
+            choices=tuple(choices[: self.max_choices if max_choices is None else max_choices]),
+            expires_at=self.clock() + (self.ttl_seconds if ttl_seconds is None else ttl_seconds),
         )
         self._items[(chat_name, sender_key)] = item
         return item

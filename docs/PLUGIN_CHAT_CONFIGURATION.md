@@ -1,171 +1,104 @@
-# 每聊天插件配置开发指南
+# 插件默认配置与聊天配置
 
-本指南描述已实现的平台契约，供新增插件和改造全局配置插件使用。基础目录、Manifest、权限与生命周期遵循 [插件开发规范](../app/plugins/README.md)；翻译语言、提示词变量和具体界面见 [翻译配置说明](TRANSLATION_CHAT_CONFIG_UPGRADE.md)。
+这是所有插件的统一平台能力。基础目录、权限与生命周期遵循 [插件开发规范](../app/plugins/README.md)。
 
-## 1. 配置归属与字段声明
+## 配置与界面
 
-| 内容 | 存储与读取方式 |
-|---|---|
-| 字段内置默认 | `config_schema.<key>.default` |
-| 插件全局值 | 插件 `config.json` 的 `config`；全局专用字段继续用 `get_config()` |
-| 聊天覆盖 | 主数据库 `chat_plugin_configs`；插件用 `context.config.resolve(chat_id=...)` |
-| 可复用模板 | 主数据库 `plugin_config_templates`；保存完整可覆盖字段快照 |
-| 插件授权、推送授权、群聊 @ 条件 | 统一聊天策略与权限记录，不能塞进配置模板 |
-| 模型连接与凭据 | 现有模型配置与凭据入口，不随聊天配置复制 |
+- 功能插件页的「默认配置」决定没有覆盖的字段值。
+- 聊天管理中的「聊天配置」直接显示有效值。编辑立即呈现「已自定义」状态；点「保存」直接生效，不需要再保存聊天页。
+- 只覆盖改动的字段，其他字段继续跟随默认配置。界面只有一个「恢复默认」，没有来源下拉框或自定义模式开关。
+- 「恢复默认」将编辑器恢复为默认值，保存时清除覆盖；恢复后仍可继续编辑。
+- 配置保存独立于插件授权。未启用的插件也可预先配置，配置本身不会授予执行或推送权限。
+- 高级设置默认折叠，长内容在模块内滚动。保存期间锁定编辑器；保存失败保留草稿。
 
-只有 `scope: "global_and_chat"` 且未被敏感字段规则排除的字段可覆盖。未声明 `scope` 的既有插件保持全局读取方式。敏感性由 `sensitive` 声明和现有字段名识别规则判断；密钥类字段应显式标记 `sensitive: true`，不要通过声明非敏感来绕过隔离。
+有效值按「字段内置默认 → 插件默认配置 → 当前聊天覆盖」计算。数组、对象整体替换，不做深层合并。配置值存放在 `config.json` 的 `config` 中；兼容读取旧的顶层同名键，顶层值优先，新插件不要重复定义。
 
-下面是合并到示例插件中的配置片段，`reply_text` 支持独立设置，触发关键词仍为全局值：
+## 新插件默认支持
 
-```json
-{
-  "config_schema": {
-    "trigger_keywords": {
-      "type": "array",
-      "title": "触发关键词",
-      "group": "trigger",
-      "default": ["示例"]
-    },
-    "reply_text": {
-      "type": "string",
-      "title": "回复内容",
-      "group": "reply",
-      "scope": "global_and_chat",
-      "default": "已处理"
-    }
-  },
-  "config": {
-    "trigger_keywords": ["示例"],
-    "reply_text": "已处理"
-  }
-}
-```
-
-有效值按内置默认 → 全局值 → 聊天覆盖计算；数组、对象均整体替换，不做深层合并。为兼容现有配置文件，解析器优先读取顶层同名全局键，再读取 `config` 中的值；新代码统一采用 `config`，不要在两处重复定义。
-
-聊天只保存显式覆盖。覆盖值即使恰好等于全局值，仍属于聊天配置；API 不自动消除它。要继续跟随全局，必须清除对应覆盖，不能提交空字符串或 `null` 代替重置。
-
-此处的字段 `scope` 与 Manifest 中固定为 `global` 的监听器 `scope.level` 是两套声明。执行顺序仍由中央顺序表管理，新增配置层不会自动改变触发逻辑。
-
-## 2. 运行时接入
-
-Runtime API 版本仍为 2。以下代码配合上面的字段，以及主规范中声明 `handle_text` 的 Manifest 使用：
+`config_schema` 中可编辑的业务字段自动支持两层配置，无需声明 `scope: "global_and_chat"`。该旧声明仍兼容。提供合法的 `default`，在消息处理时用统一的 `get_config()` 读取即可：
 
 ```python
-import logging
-
 from app.core.event_bus import EventType
 from app.utils.plugin_config import get_config
-
-logger = logging.getLogger(__name__)
 
 
 def register(event_bus, subscribe, context):
     def handle_text(event):
-        message = str(event.data.get("message") or "")
-        keywords = get_config(
-            "trigger_keywords", ["示例"], plugin_name=context.plugin_id
-        ) or []
-        if not any(word in message for word in keywords):
+        keywords = get_config("trigger_keywords", ["示例"], plugin_name=context.plugin_id)
+        if not any(word in str(event.data.get("message") or "") for word in keywords):
             return False
+        reply = get_config("reply_text", "已处理", plugin_name=context.plugin_id)
         wx = event.context.get("wx")
-        chat_name = event.data.get("chat_name")
-        if not wx or not chat_name:
-            return False
-        try:
-            settings = context.config.resolve(
-                chat_id=event.context.get("chat_id")
-            )
-        except Exception:
-            logger.exception("插件 %s 读取聊天配置失败", context.plugin_id)
-            return False
-        return bool(wx.send_message(chat_name, settings["reply_text"]))
+        return bool(wx and wx.send_message(event.data["chat_name"], reply))
 
     subscribe(EventType.TEXT_MESSAGE_RECEIVED, handle_text)
-
-
-def unregister():
-    pass
 ```
 
-`resolve()` 返回**当前插件可覆盖字段的有效值字典**，不包含全局专用字段，也不包含 `effective`、`sources` 等管理元数据。每次调用重新读取磁盘默认值，并打开、关闭独立数据库会话；不会返回 ORM 对象。每次业务处理读取一次，把快照显式传入模型请求或托管任务，避免处理中途反复读取导致前后规则不一致。
+EventBus 从数据库取得可信的聊天 ID，建立配置上下文。`get_config()` / `get_plugin_setting()` 自动读当前聊天的有效值；无聊天上下文时读默认配置。不要直接读取 JSON 文件实现业务配置，也不要在 `register()` / `__init__()` 中缓存业务设置。
 
-不要在 `register()` 中缓存某个聊天的解析结果，不要修改共享提示词、全局 `get_config()` 缓存或 `config.json` 来实现聊天切换。保存聊天配置无需重载插件，下一次解析即可读到新值；已经开始的任务继续使用其原快照。
+每次执行首次读取时取得快照，后续读取及托管后台任务沿用它。保存配置后，下一次执行读取新值，已运行的任务不在中途切换参数。返回的可变值是副本。两个聊天同时调用同一个插件实例也不会修改彼此的配置。
 
-`chat_id` 必须是有效的整数 `WeChatUser.id`。入站消息使用 EventBus 注入的 `event.context["chat_id"]`；缺少 ID、聊天不存在、配置损坏或校验失败时停止本次处理并记录错误，不回退到其他聊天或吞掉错误使用全局默认。
+既有插件的启动缓存通过 `ScopedConfigAttribute` 适配：上下文内按快照计算属性，上下文外保留启动值。新插件优先在执行时调用 `get_config()`，避免再增加缓存适配。
 
-`resolve()` **只解析配置，不检查授权**。入站消息由 EventBus 检查插件权限；后台任务应自行取得目标聊天的数据库 ID，并按 [推送权限规范](../app/plugins/README.md) 查询 `#push` 授权，发送前再次检查。不能因为某聊天有独立配置就向其推送。
+`context.config.resolve(chat_id=...)` 仍返回当前插件可覆盖字段的有效字典；匹配当前聊天时复用执行快照，否则独立查询。不包含管理元数据或仅限默认配置的字段。它只解析配置，不检查授权。
 
-## 3. 管理接口与并发保存
+## 后台任务和定时推送
 
-`{plugin}` 使用插件管理器的完整插件 ID，包含多级目录时不得擅自截成末级名称；`{id}` 是数据库聊天 ID。
+`context.tasks.submit()`、`context.workers.start()`、`start_timer()` 自动继承配置上下文。不要自行启动裸线程；自行使用线程池时，每次提交要通过独立的 `copy_context().run` 传递上下文。
+
+脱离入站消息的任务必须先选择目标聊天。按 ID 使用 `plugin_config_scope(chat_id=..., session_factory=...)`；重放历史消息、管理员代某聊天重试可使用 `chat_config_scope(chat_name, session_factory)`。处理多个聊天时，每个目标单独建立上下文，禁止用发起人或上一聊天的配置处理所有目标。
+
+日／周／月推送使用 [ChatSchedule](../app/services/plugin_chat_schedule.py)：逐个读取 `#push` 授权聊天的时间设置，按聊天和时间持久化去重，发送任务开始前重新校验授权。回调只处理传入的目标聊天。共享的任务执行锁用于限制资源并发，不合并不同聊天的业务配置。
+
+持久化业务队列在消费时，按消息所属聊天建立上下文。任务中依赖配置的服务对象、报表数据源、待选会话超时等也必须按目标聊天读取；不能仅改界面。
+
+## 字段边界与凭据
+
+- `scope: "global"` 只用于实际共享的进程资源，如浏览器端口、后台线程数量、总存储配额和清理周期。这些字段只出现在默认配置中。不要将提示词、触发词、开关或推送时间声明为全局。
+- `level: "hidden"`、`readOnly: true` 和旧目标名单等兼容字段不进入聊天编辑器。
+- 密钥等敏感字段也可按聊天设置。管理接口不回显值，只返回 `configured` 和来源；留空保持原值。「恢复默认」可清除聊天凭据覆盖。运行时读取真实有效值。
+- 模板只保存全部非敏感、可覆盖字段，不含凭据、授权或进程资源。导入是复制，不建立联动。
+- 模型连接和系统共享浏览器仍由各自的系统入口管理，不通过插件配置复制。
+
+Manifest 的监听器 `scope.level: "global"` 描述监听范围，与配置字段是否支持聊天覆盖无关。无需修改 Runtime API v2 版本。
+
+## 接口与并发
 
 | 接口 | 用途 |
 |---|---|
-| `GET /api/capabilities/settings/{plugin}` | 全局设置描述 |
-| `GET /api/capabilities/settings/{plugin}?user_id={id}` | 仅返回可覆盖字段，带有效值、来源和 `chat_config` |
-| `PUT /api/capabilities/settings/{plugin}` | 以 `{"values": {...}}` 部分更新全局值；不是聊天保存接口 |
-| `GET /api/chats/{id}/policy` | 获取聊天 `version` 和 `plugin_configs` |
-| `PATCH /api/chats/{id}/policy` | 使用聊天版本原子保存独立配置，可与其他聊天策略一起提交 |
+| `GET /api/capabilities/settings/{plugin}` | 默认配置描述 |
+| `GET /api/capabilities/settings/{plugin}?user_id={id}` | 聊天配置描述与有效值 |
+| `PUT /api/capabilities/settings/{plugin}` | 部分更新默认配置 |
+| `GET /api/chats/{id}/policy` | 聊天版本及配置状态 |
+| `PATCH /api/chats/{id}/policy` | 直接保存聊天覆盖 |
 
-配置描述包含 `schema_version`、`overrides`、`defaults`、`effective`、`sources` 和 `defaults_revision`。`sources` 只有 `chat` 与 `global` 两种值，内置默认兜底也归为 `global`。`defaults_revision` 是默认值内容指纹，**不是**写入时的并发锁版本。
-
-只更新当前插件的请求示例；`expected_version` 应来自刚读取的聊天策略 `version`：
+聊天保存示例：
 
 ```json
-{
-  "expected_version": 16,
-  "plugin_configs": {
-    "my_plugin": {
-      "set": {"reply_text": "收到，我来处理"}
-    }
-  }
-}
+{"expected_version": 16, "plugin_configs": {"my_plugin": {"set": {"reply_text": "收到"}}}}
 ```
 
-- 省略插件或字段表示保留；`plugin_configs: {}` 不清除已有配置。
-- `set` 修改指定覆盖，`reset_fields: ["reply_text"]` 清除指定覆盖，`reset_all: true` 清除该插件全部覆盖。
-- 同一字段不能同时出现在 `set` 与 `reset_fields`；`reset_all` 不能和非空的设置或重置字段混用。
-- 插件配置与同次提交的其他策略字段在一个事务中保存，共用聊天 `policy_version`；过期版本返回 409，非法配置返回 422，失败整笔回滚。
-- 只保存插件配置时不要附带未改动的 `plugin_grants`；省略授权表示保留，显式空列表会移除授权。
+省略字段表示保留。`reset_fields` 清除指定覆盖；`reset_all: true` 清除全部覆盖，不得和设置字段混用。配置与同次提交的策略字段原子保存，共用 `policy_version`；过期版本返回 409，非法配置返回 422。失败不覆盖线上值，界面保留草稿。独立保存成功同步父表单版本与插件状态，保留其他未保存编辑。不要附带未编辑的 `plugin_grants`。
 
-前端独立保存成功后必须同步聊天策略版本、配置状态，并清除该插件旧草稿，保留其他未保存表单内容。409 时重新获取策略并让用户处理冲突，不能无提示覆盖。
+描述包含 `schema_version`、`overrides`、`defaults`、`effective`、`sources`、`configured` 和 `defaults_revision`。来源只有 `chat` 与 `global`。默认值指纹不是并发写入版本。敏感值在上述字典中均为 `null`，不得直接将公开描述作为完整运行时配置。
 
-当前翻译编辑器已采用「保存并生效」直接 PATCH，并按改动字段生成覆盖。其他插件仍使用通用编辑器的「应用到聊天」草稿，再由聊天页保存。新增插件不能假设声明 `scope` 就会自动获得翻译专用的直接保存、双语／三语或试译界面。
+模板接口 `/api/capabilities/config-templates/{plugin}` 支持 GET、POST、DELETE。模板修改与删除使用自己的 `expected_version`，与聊天版本独立。更新模板不会改动已经导入的聊天。
 
-## 4. 模板是可复用副本
+## 校验、存储与验收
 
-模板按插件隔离，名称在同一插件内唯一。`values` 必须恰好包含该插件**所有可覆盖字段**，不能只传 `overrides`，也不能混入全局专用字段。创建时可采用当前完整有效值；名称去除首尾空白后为 1～80 个字符，不含控制字符。
-
-| 接口 | 请求与响应 |
-|---|---|
-| `GET /api/capabilities/config-templates/{plugin}` | 返回 `{"templates": [...]}` |
-| `POST /api/capabilities/config-templates/{plugin}` | 创建传 `name`、`values`；更新或改名另传 `template_id`、`expected_version`；返回模板对象 |
-| `DELETE /api/capabilities/config-templates/{plugin}` | 请求体传 `template_id`、`expected_version`；成功返回 `{"deleted": true}` |
-
-模板对象包含 `id`、`plugin_name`、`name`、`schema_version`、`version`、`values`。更新和删除比较模板自身 `version`，冲突返回 409；它与聊天策略版本无关。
-
-导入是把模板值复制到编辑器，再走聊天保存协议，没有模板绑定或自动应用端点。模板保存立即持久化，但不会隐式保存当前聊天；修改、重命名或删除模板均不联动已导入的聊天。全局默认变化也不会改写已保存模板。
-
-## 5. 校验、存储与升级
-
-共享入口是 [plugin_chat_config_service.py](../app/services/plugin_chat_config_service.py) 的 `chat_fields()`、`validate_effective()` 和两个配置服务。通用校验覆盖字段白名单、基础类型、数值上下限和枚举；它不是完整 JSON Schema 校验器，不会仅凭 `items`、`minItems`、字符串长度等声明就执行全部业务约束。
-
-翻译插件通过 `validate_effective()` 中的专用分支补充语言数量、唯一性、提示词变量等规则。目前没有可自动发现的插件自定义校验钩子；其他插件需要跨字段或嵌套约束时，应扩展统一校验入口并覆盖聊天保存、全局默认保存、模板保存及运行时解析，不能只在前端校验。全局保存也会校验新默认与已有聊天覆盖的组合，避免默认变更让独立配置失效。
-
-`chat_plugin_configs` 以 `(user_id, plugin_name)` 唯一，`overrides_json` 只存覆盖；`plugin_config_templates` 以 `(plugin_name, name)` 唯一，`config_json` 存完整快照。两者当前 `schema_version` 均为 1，在数据库初始化时创建，随主数据库备份。配置不挂在可替换的权限行上：撤销、重建授权保留配置，删除聊天时通过 ORM 关系级联清理聊天覆盖。
-
-不要为单个插件再建按聊天名称索引的配置文件或全局目标名单。增删字段、重命名插件 ID、收回字段的聊天覆盖权限时，必须检查已有覆盖与模板并显式迁移；未知字段或未知格式版本会被拒绝，而非自动丢弃。聊天损坏覆盖可通过 `reset_all` 显式清除；插件暂不可用时策略接口返回 `unavailable` 与错误信息，保留原记录。
+[plugin_chat_config_service.py](../app/services/plugin_chat_config_service.py) 统一处理字段白名单、基础类型、数值范围与枚举。它不是完整 JSON Schema 实现；跨字段、嵌套等业务约束应扩展统一校验并覆盖默认保存、聊天保存、模板和运行时。翻译已有专用语言及提示词校验。保存默认配置时还会验证它与现有聊天覆盖的组合。
 
 插件配置迁移应先备份，保持可重复执行，不自动新增聊天授权；翻译助手旧提示词需由用户在新的全局默认或聊天设置中重新录入，公开版不包含本机专用迁移脚本。
 
-## 6. 接入验收
+`chat_plugin_configs` 按 `(user_id, plugin_name)` 存储覆盖，独立于可替换的权限行。撤销授权保留配置，删除聊天清理覆盖。新字段自动继承默认值；字段重命名、移除及收回覆盖能力时需要检查旧覆盖与模板并迁移。配置损坏不静默回退到其他聊天。
 
-- 两个聊天分别覆盖，运行时互不串配置；无覆盖时读取当前全局默认，数组整体替换。
-- 部分修改保留其他继承关系，单字段重置和全部重置正确，授权撤销不删除配置。
-- 聊天与模板版本冲突正确报错，非法配置使同次策略修改全部回滚。
-- 模板完整快照可导入多个聊天，更新、删除模板不改动聊天；未知、敏感和全局专用字段拒绝覆盖。
-- 全局变更与现有覆盖组合通过业务校验；未知聊天、损坏配置和缺少授权不会误发送。
-- 前端按实际保存模式验收，并验证版本同步和其他未保存编辑的保留。
+回归入口：
+
+- `tests/test_plugin_config_context.py`：新插件自动接入、运行时隔离、快照、敏感值、定时去重和授权撤销。
+- `tests/test_plugin_chat_config.py`：覆盖、恢复、并发版本、模板及 API。
+- `tests/browser/plugin_chat_config.py`：普通插件直接保存、失败草稿、JSON、手机与主题。
+- `tests/browser/translation_chat_config.py`：翻译控件、模板、预览和统一保存。
 
 维护工作区的回归用例覆盖平台配置、翻译业务和浏览器交互；公开源码不分发测试目录。新增插件需补充自己的业务约束和处理器测试，不以翻译测试通过代替自身接入验证。
+
+每个插件还应验证自己的处理器和异步路径，不能以通用配置接口通过测试代替业务生效验证。

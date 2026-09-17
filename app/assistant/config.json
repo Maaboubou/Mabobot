@@ -3,7 +3,7 @@
   "component_kind": "core",
   "display_name": "AI 助手",
   "version": "2.0.0",
-  "description": "由 Codex 驱动的核心 AI 助手，支持角色、Judge 与原始聊天档案",
+  "description": "由 Codex 驱动的核心 AI 助手，支持角色、接话判断与原始聊天档案",
   "author": "Project Contributors",
   "category": "ai",
   "requires": [
@@ -28,16 +28,22 @@
         "routable": false
       },
       "judge": {
-        "label": "主动回复判断",
+        "label": "主动接话判断",
         "description": "判断 AI 是否应该主动参与当前群聊",
         "category": "对话",
         "order": 20
       },
       "followup_judge": {
-        "label": "连续对话判断",
+        "label": "连续追问判断",
         "description": "判断未再次 @ 的跟进消息是否应继续回复",
         "category": "对话",
         "order": 30
+      },
+      "content_review": {
+        "label": "微信附件内容审核",
+        "description": "审核下载文件和最终附件，拦截色情及管理员定义的政治敏感内容；需要支持图片的模型",
+        "category": "内容审核",
+        "order": 40
       }
     },
     "settings_notice": "这里是 AI 助手的全局默认值。聊天卡片上的“继承全局”会自动跟随这里；聊天配置只负责少量必要的单独覆盖。",
@@ -189,7 +195,7 @@
     },
     "proactive_judge_prompt": {
       "type": "string",
-      "description": "主动回复裁判的系统提示词（支持{chat_text}占位符）",
+      "description": "旧版接话规则，仅用于首次迁移；请在接话判断中编辑",
       "default": "## Role\n你是一个谨慎的聊天群组观察员，负责判断 AI 助手是否应该参与当前对话。\n\n## Context\n以下是最近的聊天记录：\n[对话开始]\n{chat_text}\n[对话结束]\n\n## Rules\n- 明确提到机器人、请求帮助或提出适合 AI 回答的问题时，可以回复。\n- 纯表情、复读、礼貌收尾或参与会打扰正常交流时，不回复。\n- 不确定时优先不主动介入。\n\n## Output\n仅输出 JSON：\n{\n  \"atmosphere\": \"当前聊天氛围\",\n  \"should_reply\": true,\n  \"reason\": \"简短说明判断理由\"\n}"
     }
   },

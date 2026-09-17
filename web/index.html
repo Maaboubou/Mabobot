@@ -42,8 +42,8 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
 
     <!-- App CSS -->
-    <link href="/static/assets/css/style.css?v=20260912-usage-row-unified" rel="stylesheet">
-    <link href="/static/assets/css/dashboard.css?v=20260912-mobile-activity-1" rel="stylesheet">
+    <link href="/static/assets/css/style.css?v=20260917-role-management" rel="stylesheet">
+    <link href="/static/assets/css/dashboard.css?v=20260917-status-width" rel="stylesheet">
     <link rel="stylesheet" href="/notification-assets/email_notifications.css?v=2">
 </head>
 
@@ -98,7 +98,7 @@
                 <li class="nav-item">
                     <a href="/assistant" class="nav-link" data-tab="roles">
                         <i class="bi bi-stars"></i>
-                        <span>Bot 设定</span>
+                        <span>角色管理</span>
                     </a>
                 </li>
                 <li class="nav-item">
@@ -137,7 +137,7 @@
             </div>
 
             <div class="sidebar-footer p-3 border-top border-secondary border-opacity-25">
-                <small class="text-muted d-block mb-1">版本：3.4.0</small>
+                <small class="text-muted d-block mb-1">版本：3.5.0</small>
                 <div class="d-flex align-items-center text-muted gap-2">
                     <button id="themeToggle" type="button" class="sidebar-theme-toggle"
                         aria-label="切换到暗色模式" aria-pressed="false" title="切换到暗色模式">
@@ -200,7 +200,8 @@
 
             <!-- Tab: Dashboard -->
             <div id="dashboard" class="tab-content workspace-page">
-                <div class="dashboard-shell workspace-surface fade-in">
+                <div class="dashboard-shell fade-in">
+                    <div class="dashboard-service-overview">
                     <!-- 状态带：一屏回答"还在跑吗" -->
                     <section class="dashboard-status-band" aria-label="运行状态">
                         <div class="dashboard-verdict" id="dashboardVerdict" data-tone="checking">
@@ -234,79 +235,84 @@
                         <ul class="dashboard-attention-list" id="dashboardAttentionList" hidden></ul>
                     </section>
 
+                    </div>
+
                     <!-- 今日 KPI：统一"今天"口径 -->
                     <section class="dashboard-kpi-band" aria-label="今日指标">
                         <article class="dashboard-kpi">
                             <span class="dashboard-kpi-label"><i class="bi bi-chat-left-text" aria-hidden="true"></i>今日消息</span>
                             <div class="dashboard-kpi-value"><strong id="statTodayMessages">-</strong><em id="statTodayMessagesMeta"></em></div>
-                            <svg class="dashboard-spark" id="sparkMessages" viewBox="0 0 120 28" preserveAspectRatio="none" aria-hidden="true"></svg>
+                            <div class="dashboard-spark-chart" tabindex="0" role="group" aria-label="近 7 日收到消息，方向键切换日期" aria-describedby="sparkMessagesTip">
+                                <svg class="dashboard-spark" id="sparkMessages" viewBox="0 0 120 28" preserveAspectRatio="none" aria-hidden="true"></svg>
+                                <div class="dashboard-spark-tip" id="sparkMessagesTip" role="status" hidden></div>
+                            </div>
                         </article>
                         <article class="dashboard-kpi">
                             <span class="dashboard-kpi-label"><i class="bi bi-robot" aria-hidden="true"></i>AI 回复</span>
                             <div class="dashboard-kpi-value"><strong id="statAiReplies">-</strong><em id="statAiRepliesMeta"></em></div>
-                            <svg class="dashboard-spark" id="sparkReplies" viewBox="0 0 120 28" preserveAspectRatio="none" aria-hidden="true"></svg>
-                        </article>
-                        <article class="dashboard-kpi">
-                            <span class="dashboard-kpi-label"><i class="bi bi-people" aria-hidden="true"></i>活跃聊天</span>
-                            <div class="dashboard-kpi-value"><strong id="statActiveUsers">-</strong><em id="statActiveChatsMeta"></em></div>
-                            <svg class="dashboard-spark" id="sparkChats" viewBox="0 0 120 28" preserveAspectRatio="none" aria-hidden="true"></svg>
+                            <div class="dashboard-spark-chart" tabindex="0" role="group" aria-label="近 7 日AI 回复，方向键切换日期" aria-describedby="sparkRepliesTip">
+                                <svg class="dashboard-spark" id="sparkReplies" viewBox="0 0 120 28" preserveAspectRatio="none" aria-hidden="true"></svg>
+                                <div class="dashboard-spark-tip" id="sparkRepliesTip" role="status" hidden></div>
+                            </div>
                         </article>
                         <article class="dashboard-kpi">
                             <span class="dashboard-kpi-label"><i class="bi bi-cash-coin" aria-hidden="true"></i>今日成本</span>
                             <div class="dashboard-kpi-value"><strong id="dashboardCost">-</strong><em id="dashboardCostMeta"></em></div>
-                            <svg class="dashboard-spark" id="sparkCost" viewBox="0 0 120 28" preserveAspectRatio="none" aria-hidden="true"></svg>
+                            <div class="dashboard-spark-chart" tabindex="0" role="group" aria-label="近 7 日成本，方向键切换日期" aria-describedby="sparkCostTip">
+                                <svg class="dashboard-spark" id="sparkCost" viewBox="0 0 120 28" preserveAspectRatio="none" aria-hidden="true"></svg>
+                                <div class="dashboard-spark-tip" id="sparkCostTip" role="status" hidden></div>
+                            </div>
                         </article>
-                        <a class="dashboard-kpi dashboard-kpi-action" href="/usage/calls" id="dashboardCallsCard"
-                            onclick="event.preventDefault(); Dashboard.openCallHistory()">
-                            <span class="dashboard-kpi-label"><i class="bi bi-lightning-charge" aria-hidden="true"></i>模型调用</span>
-                            <div class="dashboard-kpi-value"><strong id="dashboardCalls">-</strong><em id="dashboardCallsMeta"></em></div>
-                            <i class="bi bi-arrow-up-right dashboard-kpi-arrow" aria-hidden="true"></i>
-                        </a>
                     </section>
 
-                    <!-- 主体双栏：左=额度与用量，右=聊天活动 -->
-                    <div class="dashboard-split">
-                        <aside class="dashboard-panel dashboard-runtime-panel" aria-label="额度与用量">
-                            <section class="dashboard-panel-section">
-                                <div class="dashboard-section-heading">
-                                    <h6>Codex 额度</h6>
+                    <!-- 独立详情面板，与三项趋势指标分层 -->
+                    <div class="dashboard-summary-grid">
+                        <section class="dashboard-panel dashboard-panel-section" aria-label="模型用量">
+                            <div class="dashboard-section-heading">
+                                <h6>模型用量</h6>
+                                <a class="dashboard-section-link" href="/usage/calls" onclick="event.preventDefault(); Dashboard.openCallHistory()" aria-label="查看模型调用记录" title="查看模型调用记录"><i class="bi bi-arrow-up-right" aria-hidden="true"></i></a>
+                            </div>
+                            <div class="dashboard-side-body" id="dashboardUsageSummary">
+                                <div class="loading-wrapper small">正在读取用量…</div>
+                            </div>
+                            <section class="dashboard-codex-compact" aria-label="Codex 额度">
+                                <h6>Codex 额度</h6>
+                                <div id="codexStatusOutput"><span class="text-muted small">正在读取额度…</span></div>
+                                <div class="dashboard-heading-actions">
                                     <button type="button" class="dashboard-icon-button" id="refreshCodexUsageBtn"
-                                        onclick="Dashboard.refreshCodexUsage()" title="刷新 Codex 用量" aria-label="刷新 Codex 用量">
+                                        onclick="Dashboard.refreshCodexUsage()" title="刷新 Codex 额度" aria-label="刷新 Codex 额度">
                                         <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
                                     </button>
-                                </div>
-                                <div class="dashboard-side-body" id="codexStatusOutput">
-                                    <div class="loading-wrapper small">正在读取额度…</div>
-                                </div>
-                            </section>
-                            <section class="dashboard-panel-section">
-                                <div class="dashboard-section-heading"><h6>模型用量</h6><small>今日</small></div>
-                                <div class="dashboard-side-body" id="dashboardUsageSummary">
-                                    <div class="loading-wrapper small">正在读取用量…</div>
-                                </div>
-                            </section>
-                        </aside>
-
-                        <section class="dashboard-panel dashboard-activity-panel" aria-label="聊天活动">
-                            <section class="dashboard-panel-section dashboard-chart-section">
-                                <div class="dashboard-section-heading">
-                                    <h6>24 小时活动</h6>
-                                    <small id="dashboardHourlySummary"></small>
-                                </div>
-                                <div class="dashboard-hourly" id="dashboardHourlyChart" tabindex="0" role="group"
-                                    aria-label="24 小时聊天活动分布，方向键逐小时查看">
-                                    <div class="loading-wrapper small">正在加载活动…</div>
-                                </div>
-                            </section>
-                            <section class="dashboard-panel-section">
-                                <div class="dashboard-section-heading"><h6>今日活跃聊天</h6>
-                                    <span class="dashboard-count-pill" id="statActiveUsersPill">-</span></div>
-                                <div class="dashboard-side-body" id="dashboardTopChats">
-                                    <div class="loading-wrapper small">正在加载聊天…</div>
+                                    <a class="dashboard-section-link" href="/codex" onclick="event.preventDefault(); Dashboard.navigate({ tab: 'codex', path: '/codex' })" aria-label="打开 Codex 运行中心" title="打开 Codex 运行中心"><i class="bi bi-arrow-up-right" aria-hidden="true"></i></a>
                                 </div>
                             </section>
                         </section>
+                        <section class="dashboard-panel dashboard-panel-section" aria-label="今日活跃聊天">
+                            <div class="dashboard-section-heading">
+                                <h6>今日活跃聊天 <span class="dashboard-count-pill" id="statActiveUsersPill">-</span></h6>
+                                <a class="dashboard-section-link" href="/chats" onclick="event.preventDefault(); Dashboard.navigate({ tab: 'users', path: '/chats' })" aria-label="查看聊天管理" title="查看聊天管理"><i class="bi bi-arrow-up-right" aria-hidden="true"></i></a>
+                            </div>
+                            <div class="dashboard-side-body" id="dashboardTopChats">
+                                <div class="loading-wrapper small">正在加载聊天…</div>
+                            </div>
+                        </section>
                     </div>
+                    <section class="dashboard-panel dashboard-panel-section dashboard-chart-section" aria-label="最近 24 小时活动">
+                        <div class="dashboard-section-heading">
+                            <h6>最近 24 小时活动</h6>
+                            <small id="dashboardHourlySummary"></small>
+                        </div>
+                        <div class="dashboard-chart-legend" aria-label="柱状图图例">
+                            <span><i class="dashboard-legend-received" aria-hidden="true"></i>收到消息</span>
+                            <span><i class="dashboard-legend-replies" aria-hidden="true"></i>AI 回复</span>
+                            <small>按整点统计，含当前小时</small>
+                        </div>
+                        <div class="dashboard-hourly" id="dashboardHourlyChart" tabindex="0" role="group"
+                            aria-label="最近 24 小时收到消息与 AI 回复数量，方向键逐小时查看">
+                            <div class="loading-wrapper small">正在加载活动…</div>
+                        </div>
+                    </section>
+
 
                     <!-- 事件时间线：系统级事件，不是聊天流水 -->
                     <section class="dashboard-panel dashboard-timeline-panel" aria-label="事件时间线">
@@ -338,6 +344,17 @@
                         <div id="codexProfilesGrid" class="codex-profile-grid">
                             <div class="loading-wrapper small">正在读取 Profile…</div>
                         </div>
+                    </section>
+
+                    <section class="codex-profile-section modern-card codex-permission-section" aria-labelledby="codexPermissionsTitle">
+                        <details class="codex-permission-fold" id="codexPermissionDefaults">
+                            <summary class="codex-permission-fold-head">
+                                <h2 id="codexPermissionsTitle">权限配置</h2>
+                            </summary>
+                            <div class="codex-permission-fold-body" id="codexPermissionDefaultsBody">
+                                <div class="loading-wrapper small">正在读取权限配置…</div>
+                            </div>
+                        </details>
                     </section>
 
                     <div id="codexJobsList" class="codex-jobs-root" aria-live="polite">
@@ -590,6 +607,7 @@
             <div id="users" class="tab-content d-none workspace-page">
                 <section class="chat-workspace workspace-surface">
                     <header class="chat-workspace-toolbar">
+                        <div class="chat-workspace-selection">
                         <details class="chat-picker" id="chatPicker">
                             <summary class="chat-picker-toggle" aria-label="选择聊天">
                                 <span class="chat-picker-avatar" id="selectedChatAvatar"><i class="bi bi-chat-square-text"></i></span>
@@ -615,13 +633,15 @@
                                 <div class="chat-picker-list custom-scrollbar" id="usersList"><!-- Users --></div>
                             </div>
                         </details>
-                        <div class="chat-workspace-actions">
                             <button type="button" class="btn btn-surface" onclick="App.showAddUserModal()">
                                 <i class="bi bi-plus-lg me-1"></i>添加聊天
                             </button>
-                            <button type="button" class="btn btn-surface chat-toolbar-icon" id="chatArchiveButton"
-                                onclick="App.openSelectedChatArchive()" title="打开当前聊天档案" aria-label="打开当前聊天档案" disabled>
-                                <i class="bi bi-database-gear"></i>
+                        </div>
+                        <div class="chat-workspace-actions">
+                            <span class="chat-policy-dirty-note" id="chatPolicyDirtyNote" role="status" hidden>有未保存更改</span>
+                            <button type="button" class="btn btn-surface" id="chatArchiveButton"
+                                onclick="App.openSelectedChatArchive()" title="查看当前聊天记录" aria-label="查看当前聊天记录" disabled>
+                                <i class="bi bi-database me-1"></i>查看聊天记录
                             </button>
                             <button type="button" class="btn btn-surface chat-toolbar-icon text-danger" id="chatDeleteButton"
                                 onclick="App.deleteSelectedManagedChat()" title="删除当前聊天" aria-label="删除当前聊天" disabled>
@@ -694,96 +714,39 @@
             <!-- Tab: Roles -->
             <div id="roles" class="tab-content d-none workspace-page">
                 <div class="assistant-section-nav workspace-subnav fade-in">
-                    <div class="assistant-section-tabs" role="tablist" aria-label="AI 助手配置分区">
-                        <button type="button" class="assistant-section-tab active" data-assistant-section="overview"
-                            onclick="App.setAssistantSection('overview')">
-                            <i class="bi bi-grid-1x2"></i><span>概览</span>
-                        </button>
-                        <button type="button" class="assistant-section-tab" data-assistant-section="chats"
-                            onclick="App.setAssistantSection('chats')">
-                            <i class="bi bi-chat-square-text"></i><span>聊天配置</span>
-                        </button>
-                        <button type="button" class="assistant-section-tab" data-assistant-section="roles"
-                            onclick="App.setAssistantSection('roles')">
-                            <i class="bi bi-person-badge"></i><span>角色与 Judge</span>
-                        </button>
+                    <div class="assistant-section-tabs" role="tablist" aria-label="角色管理分区">
+                        <button type="button" class="assistant-section-tab active" role="tab" data-assistant-section="roles" onclick="App.setAssistantSection('roles')"><i class="bi bi-person-badge"></i><span>角色</span></button>
+                        <button type="button" class="assistant-section-tab" role="tab" data-assistant-section="judges" onclick="App.setAssistantSection('judges')"><i class="bi bi-shield-check"></i><span>接话判断</span></button>
                     </div>
                     <div class="assistant-command-actions">
-                        <button type="button" class="btn btn-light border" onclick="App.openChatArchiveHub()">
-                            <i class="bi bi-database-gear me-1"></i>聊天档案
-                        </button>
-                        <button type="button" class="btn btn-primary" onclick="App.showAssistantGlobalSettings()">
+                        <button type="button" class="btn btn-light border" onclick="PromptWorkbench.systemRules()">系统规则</button>
+
+                        <button type="button" class="btn btn-surface" onclick="App.showAssistantGlobalSettings()">
                             <i class="bi bi-sliders me-1"></i>全局设置
                         </button>
                     </div>
                 </div>
 
-                <section id="assistantOverviewSection" class="assistant-section-panel fade-in">
-                    <div class="assistant-overview-surface workspace-surface">
-                        <div id="assistantOverviewStats" class="assistant-metric-grid">
-                            <div class="assistant-loading-card">正在读取助手状态…</div>
-                        </div>
-                        <div class="assistant-overview-grid">
-                        <section class="assistant-overview-block">
-                            <div class="assistant-panel-header">
-                                <div>
-                                    <h5><i class="bi bi-toggles2 me-2"></i>全局行为</h5>
-                                </div>
-                                <button class="btn btn-sm btn-outline-primary" onclick="App.showAssistantGlobalSettings()">编辑</button>
-                            </div>
-                            <div id="assistantGlobalSummary" class="assistant-summary-list"></div>
-                        </section>
-                        <section class="assistant-overview-block">
-                            <div class="assistant-panel-header">
-                                <div>
-                                    <h5><i class="bi bi-cpu me-2"></i>模型路由</h5>
-                                </div>
-                                <button class="btn btn-sm btn-outline-primary" onclick="UI.switchTab('llm')">管理模型配置</button>
-                            </div>
-                            <div id="assistantModelSummary" class="assistant-summary-list"></div>
-                        </section>
-                        </div>
-                    </div>
-                </section>
-
-                <section id="assistantChatsSection" class="assistant-section-panel d-none">
-                    <div class="assistant-toolbar workspace-toolbar">
-                        <div class="roles-search-wrapper">
-                            <i class="bi bi-search"></i>
-                            <input type="search" class="roles-search-input" id="assistantChatsSearch"
-                                placeholder="搜索聊天名称…">
-                        </div>
-                        <select class="form-select form-select-sm assistant-filter-select" id="assistantChatsFilter">
-                            <option value="all">全部聊天</option>
-                            <option value="enabled">已启用 AI 助手</option>
-                            <option value="proactive">已启用主动回复</option>
-                            <option value="disabled">未启用 AI 助手</option>
-                        </select>
-                    </div>
-                    <div id="assistantChatsGrid" class="assistant-chat-grid"></div>
-                </section>
-
-                <section id="assistantRolesSection" class="assistant-section-panel d-none">
                     <div class="roles-top-bar workspace-toolbar roles-toolbar">
-                        <h5>角色</h5>
                         <div class="roles-search-wrapper">
-                            <i class="bi bi-search"></i>
-                            <input type="search" class="roles-search-input" id="rolesSearchInput"
-                                placeholder="搜索角色、Judge 或提示词…">
+                            <i class="bi bi-search" aria-hidden="true"></i>
+                            <input type="search" class="form-control" id="rolesSearchInput"
+                                aria-label="搜索角色" placeholder="搜索角色名称、用途或提示词…">
                         </div>
-                        <div class="roles-stats-container">
-                            <span class="roles-stat-badge primary"><i class="bi bi-person-badge"></i> 角色：<strong id="statsTotalRoles">0</strong></span>
-                            <span class="roles-stat-badge success"><i class="bi bi-shield-check"></i> Judge：<strong id="statsTotalJudges">0</strong></span>
-                        </div>
-                        <button class="btn btn-sm btn-primary" onclick="App.showCreateRoleModal()"><i class="bi bi-plus-lg me-1"></i>新建角色</button>
+                        <button type="button" class="btn btn-primary" id="assistantCreateButton" onclick="App.createAssistantEntry()"><i class="bi bi-plus-lg me-1" aria-hidden="true"></i><span>新建角色</span></button>
                     </div>
-                    <section class="assistant-collection-section mb-3">
+                <section id="assistantRolesSection" class="assistant-section-panel">
+                    <section class="assistant-collection-section roles-collection" aria-labelledby="rolesCollectionTitle">
+                        <div class="roles-collection-heading">
+                            <h5 id="rolesCollectionTitle">角色 <span class="roles-collection-count" id="statsTotalRoles">0</span></h5>
+                        </div>
                         <div id="rolesGrid" class="roles-grid"></div>
                     </section>
-                    <section class="assistant-collection-section">
-                        <div class="assistant-content-heading">
-                            <div><h5>Judge</h5></div>
-                            <button class="btn btn-sm btn-primary" onclick="App.showCreateJudgeModal()"><i class="bi bi-plus-lg me-1"></i>新建 Judge</button>
+                </section>
+                <section id="assistantJudgesSection" class="assistant-section-panel d-none">
+                    <section class="assistant-collection-section roles-collection" aria-labelledby="judgesCollectionTitle">
+                        <div class="roles-collection-heading">
+                            <h5 id="judgesCollectionTitle">接话判断 <span class="roles-collection-count" id="statsTotalJudges">0</span></h5>
                         </div>
                         <div id="judgesGrid" class="roles-grid"></div>
                     </section>
@@ -894,8 +857,7 @@
                     <div class="tab-pane fade show active workspace-section" id="llm-models">
                         <div class="llm-model-toolbar workspace-toolbar">
                             <div class="llm-model-heading">
-                                <h5><i class="bi bi-boxes me-2"></i>模型连接</h5>
-                                <p>选择供应商与模型，密钥可直接保存为本机共享凭据；保存后可立即测试。</p>
+                                <h5><i class="bi bi-boxes me-2" aria-hidden="true"></i>模型连接 <span id="llmModelCount" class="llm-model-count">0</span></h5>
                             </div>
                             <div class="llm-model-toolbar-actions">
                                 <label class="llm-model-search" for="llmModelSearch">
@@ -1169,7 +1131,7 @@
                 <div class="modal-header">
                     <div>
                         <h5 class="modal-title" id="addModelModalTitle">添加模型</h5>
-                        <p class="modal-subtitle mb-0" id="addModelModalSubtitle">选择供应商和模型，填写 API Key 即可。</p>
+                        <p class="modal-subtitle mb-0" id="addModelModalSubtitle">选择供应商和模型，密钥保存为本机共享凭据；保存后可立即测试。</p>
                     </div>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
@@ -1535,19 +1497,21 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
     <!-- App Scripts -->
-    <script src="/static/assets/js/api.js?v=20260912-live-pulse"></script>
-    <script src="/static/assets/js/ui.js?v=20260912-ui-interactions-1"></script>
+    <script src="/static/assets/js/api.js?v=20260916-permissions"></script>
+    <script src="/static/assets/js/codex_permissions.js?v=20260917-permission-head-2"></script>
+    <script src="/static/assets/js/ui.js?v=20260917-role-management"></script>
     <script src="/notification-assets/email_notifications.js?v=1"></script>
     <script src="/static/assets/js/system_operations.js?v=20260912-backup-confirm-1"></script>
     <script src="/static/assets/js/system_tools.js?v=1.0.1-format-helpers"></script>
-    <script src="/static/assets/js/llm_manager.js?v=20260912-llm-interactions-1"></script>
-    <script src="/static/assets/js/codex_center.js?v=1.0.16-format-helpers"></script>
+    <script src="/static/assets/js/llm_manager.js?v=20260917-model-cards"></script>
+    <script src="/static/assets/js/codex_center.js?v=20260916-permissions"></script>
     <script src="/static/assets/js/codex_skills.js?v=1.1.1-format-helpers"></script>
-    <script src="/static/assets/js/dashboard.js?v=4.3.0-hourly-readout"></script>
-    <script src="/static/assets/js/main.js?v=20260912-live-pulse"></script>
-    <script src="/static/assets/js/chat_archive.js?v=2.0.5-fixed-table-columns"></script>
+    <script src="/static/assets/js/dashboard.js?v=20260917-usage-detail"></script>
+    <script src="/static/assets/js/main.js?v=20260917-global-settings-fix"></script>
+    <script src="/static/assets/js/assistant_prompts.js?v=20260917-3"></script>
+    <script src="/static/assets/js/chat_archive.js?v=20260917-context-actions"></script>
 
-    <!-- ==================== Judge History Modal ==================== -->
+    <!-- ==================== 接话判断 History Modal ==================== -->
     <div class="modal fade" id="judgeHistoryModal" tabindex="-1" aria-labelledby="judgeHistoryModalLabel"
         aria-hidden="true">
         <div class="modal-dialog modal-lg modal-dialog-scrollable">
@@ -1555,7 +1519,7 @@
                 <div class="modal-header">
                     <h5 class="modal-title" id="judgeHistoryModalLabel">
                         <i class="bi bi-clock-history me-2"></i>
-                        Judge 判断历史
+                        接话判断历史
                     </h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
                 </div>

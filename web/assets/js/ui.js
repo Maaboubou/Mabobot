@@ -36,7 +36,8 @@ const UI = {
         '/system/tools': 'settings',
         '/system/backups': 'settings',
         '/assistant/roles': 'roles',
-        '/assistant/chats': 'roles',
+        '/assistant/chats': 'users',
+        '/assistant/judges': 'roles',
         '/ai/models': 'llm',
         '/ai/mappings': 'llm',
         '/ai/usage': 'usage',
@@ -454,7 +455,7 @@ const UI = {
             'codex': 'Codex 运行中心',
             'plugins': '功能插件',
             'users': '聊天管理',
-            'roles': 'Bot 设定',
+            'roles': '角色管理',
             'settings': '系统',
             'wechat': 'WeChat 状态',
             'logs': '运行与日志',
@@ -1333,7 +1334,7 @@ const UI = {
                     </div>
                     <div class="capability-actions">
                         <button class="btn btn-quiet-accent btn-sm capability-configure" ${info.configurable ? '' : 'disabled'}>
-                            <i class="bi bi-sliders me-1"></i>${info.chat_configurable ? '默认设置' : '配置'}
+                            <i class="bi bi-sliders me-1"></i>默认配置
                         </button>
                         <button class="btn btn-light border btn-sm capability-assign">
                             <i class="bi bi-chat-square-text me-1"></i>分配聊天
@@ -1499,6 +1500,8 @@ const UI = {
 
     resetManagedChatContext() {
         this.setManagedChatContext(null);
+        const note = document.getElementById('chatPolicyDirtyNote');
+        if (note) note.hidden = true;
         const saveButton = document.getElementById('chatPolicySaveButton');
         if (saveButton) {
             saveButton.disabled = true;
@@ -1837,7 +1840,7 @@ const UI = {
                             <button type="button" class="chat-policy-plugin-config" data-plugin-config="${this.escapeHtml(capability.id)}"
                                 data-chat-configurable="${capability.chat_configurable ? 'true' : 'false'}"
                                 ${configurable ? '' : 'disabled'} title="${configurable ? '配置此功能插件' : '此功能插件没有可配置项'}" aria-label="配置 ${this.escapeHtml(capability.display_name || capability.id)}">
-                                <i class="bi bi-sliders"></i><span>${capability.chat_configurable ? '本聊天设置' : '默认设置'}</span>
+                                <i class="bi bi-sliders"></i><span>${capability.chat_configurable ? '聊天配置' : '默认配置'}</span>
                             </button>
                             <input class="form-check-input chat-policy-plugin-toggle" type="checkbox" value="${this.escapeHtml(capability.id)}" ${checked ? 'checked' : ''} ${available ? '' : 'disabled'} aria-label="启用 ${this.escapeHtml(capability.display_name || capability.id)}">
                         </div>
@@ -1847,7 +1850,7 @@ const UI = {
                         </div>
                     </article>`;
             }).join('');
-        const activePane = ['assistant', 'plugins', 'advanced'].includes(this.chatPolicyActivePane)
+        const activePane = ['assistant', 'permissions', 'advanced'].includes(this.chatPolicyActivePane)
             ? this.chatPolicyActivePane
             : 'assistant';
 
@@ -1855,33 +1858,34 @@ const UI = {
             <form id="chatPolicyForm" class="chat-policy-shell" data-user-id="${Number(policy.user_id)}"
                 data-version="${Number(policy.version)}" data-original-group="${Boolean(chat.is_group)}">
                 <section class="chat-policy-summary" aria-label="当前聊天关键状态">
-                    <label class="chat-policy-state-toggle">
+                    <label class="chat-policy-state-toggle form-switch">
                         <span><i class="bi bi-ear"></i><span><strong>接收消息</strong><small>${chat.listening_active ? '监听已生效' : (chat.listening_enabled ? '等待连接同步' : '当前已暂停')}</small></span></span>
-                        <input class="form-check-input" type="checkbox" name="listening_enabled" ${chat.listening_enabled ? 'checked' : ''}>
+                        <input class="form-check-input" type="checkbox" role="switch" name="listening_enabled" ${chat.listening_enabled ? 'checked' : ''}>
                     </label>
-                    <label class="chat-policy-state-toggle">
+                    <label class="chat-policy-state-toggle form-switch">
                         <span><i class="bi bi-stars"></i><span><strong>AI 助手</strong><small data-assistant-status>${assistant.enabled ? '已启用' : '已关闭'}</small></span></span>
-                        <input class="form-check-input" type="checkbox" name="assistant_enabled" ${assistant.enabled ? 'checked' : ''}>
+                        <input class="form-check-input" type="checkbox" role="switch" name="assistant_enabled" ${assistant.enabled ? 'checked' : ''}>
                     </label>
-                    <label class="chat-policy-state-toggle">
-                        <span><i class="bi bi-journal-text"></i><span><strong>启用聊天记录</strong><small data-chat-log-plugin-status>${this.escapeHtml(chatLogStatus)}</small></span></span>
-                        <input class="form-check-input" type="checkbox" data-chat-log-plugin-toggle ${chatLogEnabled ? 'checked' : ''} ${chatLogCapability ? '' : 'disabled'} aria-label="启用聊天记录插件">
+                    <label class="chat-policy-state-toggle form-switch">
+                        <span><i class="bi bi-journal-text"></i><span><strong>聊天记录</strong><small data-chat-log-plugin-status>全局 · 立即生效 · ${this.escapeHtml(chatLogStatus)}</small></span></span>
+                        <input class="form-check-input" type="checkbox" role="switch" data-chat-log-plugin-toggle ${chatLogEnabled ? 'checked' : ''} ${chatLogCapability ? '' : 'disabled'} aria-label="启用聊天记录插件">
                     </label>
                 </section>
 
                 <nav class="chat-policy-tabs" role="tablist" aria-label="聊天配置分区">
                     <button type="button" class="${activePane === 'assistant' ? 'active' : ''}" data-chat-policy-tab="assistant" aria-selected="${activePane === 'assistant'}"><i class="bi bi-stars"></i>助手</button>
-                    <button type="button" class="${activePane === 'plugins' ? 'active' : ''}" data-chat-policy-tab="plugins" aria-selected="${activePane === 'plugins'}"><i class="bi bi-puzzle"></i>功能插件 <span data-plugin-tab-count>${selectedPluginCount}</span></button>
+                    <button type="button" role="tab" id="chat-permissions-tab" aria-controls="chat-permissions-panel" class="${activePane === 'permissions' ? 'active' : ''}" data-chat-policy-tab="permissions" aria-selected="${activePane === 'permissions'}"><i class="bi bi-shield-check"></i>权限</button>
                     <button type="button" class="${activePane === 'advanced' ? 'active' : ''}" data-chat-policy-tab="advanced" aria-selected="${activePane === 'advanced'}"><i class="bi bi-sliders"></i>高级</button>
                 </nav>
 
                 <div class="chat-policy-pane ${activePane === 'assistant' ? 'active' : ''}" data-chat-policy-pane="assistant">
+                    <div class="chat-assistant-columns ${chat.is_group ? '' : 'is-private'}">
                     <section class="chat-policy-block">
                         <div class="chat-policy-block-head"><h4>回复身份</h4></div>
-                        <div class="chat-policy-field-grid three">
-                            <label><span class="chat-field-label"><span>Codex Profile</span><a href="/codex" onclick="event.preventDefault(); UI.switchTab('codex')">管理</a></span><select class="form-select" name="codex_profile_id">${profileOptions}</select></label>
-                            <label><span class="chat-field-label"><span>角色</span><a href="/assistant/roles" onclick="event.preventDefault(); App.openAssistantRoleManager()">管理</a></span><select class="form-select" name="role_id"><option value="">继承全局默认角色</option>${roleOptions}</select></label>
-                            <label><span>Codex 访问范围</span><select class="form-select" name="codex_mode" data-private-value="${this.escapeHtml(codex.mode || 'isolated')}" ${chat.is_group ? 'disabled' : ''}><option value="isolated" ${codex.mode === 'owner_full' ? '' : 'selected'}>隔离空间</option>${chat.is_group ? '' : `<option value="owner_full" ${codex.mode === 'owner_full' ? 'selected' : ''}>管理员 · 本机最大权限</option>`}</select><small class="field-help" title="${this.escapeHtml(codex.label || '隔离空间')} · ${this.escapeHtml(codex.workdir || '')}">${this.escapeHtml(codex.label || '隔离空间')} · ${this.escapeHtml(codex.workdir || '')}</small></label>
+                        <div class="chat-policy-field-grid two">
+                            <label class="chat-horizontal-field"><span class="chat-field-label"><span>Codex Profile</span><a href="/codex" onclick="event.preventDefault(); UI.switchTab('codex')">管理</a></span><select class="form-select" name="codex_profile_id">${profileOptions}</select></label>
+                            <label class="chat-horizontal-field"><span class="chat-field-label"><span>角色</span><a href="/assistant/roles" onclick="event.preventDefault(); App.openAssistantRoleManager()">管理</a></span><select class="form-select" name="role_id"><option value="">继承全局默认角色</option>${roleOptions}</select></label>
+
                         </div>
                     </section>
 
@@ -1889,7 +1893,7 @@ const UI = {
                         <div class="chat-policy-block-head"><h4>对话行为</h4></div>
                         <div class="chat-setting-list">
                             <div class="chat-setting-group">
-                                <label class="chat-setting-row"><span><strong>连续对话</strong><small>短时间内无需再次唤醒</small></span><input class="form-check-input" type="checkbox" name="followup_enabled" ${assistant.followup_enabled ? 'checked' : ''}></label>
+                                <label class="chat-setting-row chat-behavior-toggle form-switch"><span><strong>连续对话</strong><small>短时间内无需再次唤醒</small></span><input class="form-check-input" type="checkbox" role="switch" name="followup_enabled" ${assistant.followup_enabled ? 'checked' : ''}></label>
                                 <div class="chat-policy-dependent" data-followup-settings>
                                     <label><span>有效窗口（秒）</span><input class="form-control" name="followup_window_seconds" type="number" min="10" max="600" value="${Number(assistant.followup_window_seconds || 60)}" required></label>
                                     <label><span>消息合并（秒）</span><input class="form-control" name="followup_merge_seconds" type="number" min="1" max="30" value="${Number(assistant.followup_merge_seconds || 3)}" required></label>
@@ -1897,25 +1901,24 @@ const UI = {
                                 </div>
                             </div>
                             ${chat.is_group ? `<div class="chat-setting-group">
-                                <label class="chat-setting-row"><span><strong>主动参与群聊</strong><small>${judges.length ? '由回复判断器决定是否加入对话' : '需要先创建回复判断器'}</small></span><input class="form-check-input" type="checkbox" name="proactive_enabled" ${assistant.proactive_enabled ? 'checked' : ''} ${judges.length ? '' : 'disabled'}></label>
-                                <div class="chat-policy-field-grid three chat-policy-group-settings">
-                                    <label data-judge-setting><span class="chat-field-label"><span>回复判断器</span><a href="/assistant/roles" onclick="event.preventDefault(); App.openAssistantRoleManager()">管理</a></span><select class="form-select" name="judge_id"><option value="">选择判断器</option>${judgeOptions}</select>${judges.length ? '' : '<small class="chat-field-status">尚未创建判断器</small>'}</label>
-                                    <label><span>群内机器人昵称</span><input class="form-control" name="bot_group_nickname" value="${this.escapeHtml(chat.bot_group_nickname || '')}" maxlength="128" placeholder="无需填写 @"><small>${chat.bot_group_nickname_detected ? `最近识别：${this.escapeHtml(chat.bot_group_nickname_detected)}` : '用于识别群内 @ 名称'}</small></label>
-                                    <label class="chat-policy-toggle-field"><span>自动校准</span><span class="chat-toggle-control"><small>从微信读取本群昵称</small><input class="form-check-input" type="checkbox" name="bot_group_nickname_auto_enabled" ${chat.bot_group_nickname_auto_enabled ? 'checked' : ''}></span></label>
+                                <label class="chat-setting-row chat-behavior-toggle form-switch"><span><strong>主动参与群聊</strong><small>${judges.length ? '由接话判断决定是否加入对话' : '需要先创建接话判断'}</small></span><input class="form-check-input" type="checkbox" role="switch" name="proactive_enabled" ${assistant.proactive_enabled ? 'checked' : ''} ${judges.length ? '' : 'disabled'}></label>
+                                <div class="chat-policy-field-grid two chat-policy-group-settings" data-proactive-settings>
+                                    <label class="chat-horizontal-field" data-judge-setting><span class="chat-field-label"><span>接话判断</span><a href="/assistant/judges" onclick="event.preventDefault(); App.openAssistantRoleManager('judges')">管理</a></span><select class="form-select" name="judge_id"><option value="">选择接话判断</option>${judgeOptions}</select>${judges.length ? '' : '<small class="chat-field-status">尚未创建接话判断</small>'}</label>
                                 </div>
                             </div>` : ''}
                         </div>
                     </section>
 
-                    <section class="chat-policy-block chat-policy-archive">
-                        <div class="chat-policy-block-head"><h4>聊天档案</h4><button class="chat-policy-head-action" type="button" onclick="App.openSelectedChatArchive()"><i class="bi bi-database"></i>查看档案</button></div>
-                        <p class="text-muted mb-0">长期保存已接收的原始消息。助手默认读取最近 50 条，需要时自主查阅历史；文本归档不调用模型。</p>
-                    </section>
-                </div>
-
-                <div class="chat-policy-pane ${activePane === 'plugins' ? 'active' : ''}" data-chat-policy-pane="plugins">
-                    <section class="chat-policy-block">
-                        <div class="chat-policy-block-head"><h4>功能插件</h4><div class="chat-policy-block-actions"><a class="chat-policy-head-action" href="/plugins" onclick="event.preventDefault(); UI.switchTab('plugins')"><i class="bi bi-box-arrow-up-right"></i>管理功能插件</a></div></div>
+                    ${chat.is_group ? `<section class="chat-policy-block chat-nickname-group">
+                        <div class="chat-policy-block-head"><h4>群内昵称</h4></div>
+                                <div class="chat-policy-field-grid two">
+                                    <label class="chat-horizontal-field"><span class="chat-horizontal-copy"><span>手动昵称</span><small data-nickname-status data-detected="${this.escapeHtml(chat.bot_group_nickname_detected || '')}"></small></span><input class="form-control" name="bot_group_nickname" value="${this.escapeHtml(chat.bot_group_nickname || '')}" maxlength="128" placeholder="无需填写 @"></label>
+                                    <label class="chat-setting-row chat-behavior-toggle form-switch"><span><strong>自动从微信同步</strong><small>优先使用识别昵称，手动昵称仍可用于 @ 匹配</small></span><input class="form-check-input" type="checkbox" role="switch" name="bot_group_nickname_auto_enabled" ${chat.bot_group_nickname_auto_enabled ? 'checked' : ''}></label>
+                                </div>
+                            </section>` : ''}
+                    </div>
+                    <section class="chat-policy-block chat-inline-plugins">
+                        <div class="chat-policy-block-head"><div class="chat-policy-title-row"><h4>功能插件</h4><span class="chat-count-pill" data-plugin-tab-count>${selectedPluginCount}</span></div><div class="chat-policy-block-actions"><a class="chat-policy-head-action" href="/plugins" onclick="event.preventDefault(); UI.switchTab('plugins')"><i class="bi bi-box-arrow-up-right"></i>管理功能插件</a></div></div>
                         <div class="chat-plugin-toolbar">
                             <label><i class="bi bi-search"></i><input type="search" data-plugin-search-input placeholder="搜索插件" autocomplete="off"></label>
                             <div><button type="button" class="active" data-plugin-filter="enabled">已启用</button><button type="button" data-plugin-filter="all">全部</button></div>
@@ -1925,6 +1928,15 @@ const UI = {
                     </section>
                 </div>
 
+                <div id="chat-permissions-panel" role="tabpanel" aria-labelledby="chat-permissions-tab" class="chat-policy-pane ${activePane === 'permissions' ? 'active' : ''}" data-chat-policy-pane="permissions">
+                    <section class="chat-policy-block">
+                        <label class="chat-setting-row">
+                            <span><strong>附件内容审核</strong><small>审核本聊天 AI 生成或下载的附件。关闭后跳过内容审核，保留基础文件检查。</small></span>
+                            <input class="form-check-input" type="checkbox" role="switch" name="attachment_content_review_enabled" ${chat.attachment_content_review_enabled !== false ? 'checked' : ''}>
+                        </label>
+                    </section>
+                    ${CodexPermissions.render(codex, codex.fields || [], { chat: true, prefix: 'chat-permission' })}
+                </div>
                 <div class="chat-policy-pane ${activePane === 'advanced' ? 'active' : ''}" data-chat-policy-pane="advanced">
                     <section class="chat-policy-block chat-policy-type-block" aria-label="聊天类型设置">
                         <div class="chat-policy-field-grid compact">
@@ -1949,6 +1961,7 @@ const UI = {
         pluginDraft.value = '{}';
         form.appendChild(pluginDraft);
         this.setManagedChatContext({ ...chat, user_id: policy.user_id });
+        CodexPermissions.bindChat(form, codex);
         this.bindChatPolicyForm(form);
     },
 
@@ -1970,7 +1983,7 @@ const UI = {
         if (!form) return;
         for (const [name, items, placeholder] of [
             ['role_id', overview.roles || [], '继承全局默认角色'],
-            ['judge_id', overview.judges || [], '选择判断器']
+            ['judge_id', overview.judges || [], '选择接话判断']
         ]) {
             const select = form.elements[name];
             if (!select) continue;
@@ -2042,7 +2055,7 @@ const UI = {
             if (!applied) chatLogPluginToggle.checked = !requested;
             const enabled = Boolean(chatLogPluginToggle.checked);
             const status = form.querySelector('[data-chat-log-plugin-status]');
-            if (status) status.textContent = enabled ? '持续记录新消息' : '已关闭，助手仍可正常回复';
+            if (status) status.textContent = `全局 · 立即生效 · ${enabled ? '持续记录新消息' : '已关闭，助手仍可正常回复'}`;
             chatLogPluginToggle.disabled = false;
         });
 
@@ -2052,12 +2065,19 @@ const UI = {
             const proactiveEnabled = Boolean(form.elements.proactive_enabled?.checked);
             const judgeSetting = form.querySelector('[data-judge-setting]');
             if (judgeSetting) {
-                judgeSetting.classList.toggle('is-disabled', !proactiveEnabled);
+                form.querySelector('[data-proactive-settings]').hidden = !proactiveEnabled;
                 form.elements.judge_id.disabled = !proactiveEnabled;
                 form.elements.judge_id.required = proactiveEnabled;
                 if (proactiveEnabled && !form.elements.judge_id.value) {
                     form.elements.judge_id.value = form.elements.judge_id.querySelector('option[value]:not([value=""])')?.value || '';
                 }
+            }
+            const nicknameStatus = form.querySelector('[data-nickname-status]');
+            if (nicknameStatus) {
+                const automatic = form.elements.bot_group_nickname_auto_enabled.checked;
+                const detected = nicknameStatus.dataset.detected;
+                nicknameStatus.textContent = automatic && detected ? `当前优先使用：${detected}`
+                    : automatic ? '尚未识别，暂用手动昵称或账号名称' : '自动同步已关闭，使用手动昵称或账号名称';
             }
             const groupSelected = form.elements.chat_type.value === 'group';
             const codexSelect = form.elements.codex_mode;
@@ -2068,7 +2088,7 @@ const UI = {
             } else {
                 codexSelect.disabled = false;
                 const privateValue = codexSelect.dataset.privateValue;
-                if ([...codexSelect.options].some(option => option.value === privateValue)) codexSelect.value = privateValue;
+                if ([...(codexSelect.options || [])].some(option => option.value === privateValue)) codexSelect.value = privateValue;
             }
             const typeChanged = groupSelected !== (form.dataset.originalGroup === 'true');
             const typeNote = form.querySelector('[data-chat-type-note]');
@@ -2087,7 +2107,27 @@ const UI = {
         };
 
         form.querySelectorAll('[data-chat-policy-tab]').forEach(button => {
+            const pane = button.dataset.chatPolicyTab;
+            button.id = `chat-${pane}-tab`;
+            button.setAttribute('role', 'tab');
+            button.setAttribute('aria-controls', `chat-${pane}-panel`);
+            button.tabIndex = button.classList.contains('active') ? 0 : -1;
+            const panel = form.querySelector(`[data-chat-policy-pane="${pane}"]`);
+            if (panel) {
+                panel.id = `chat-${pane}-panel`;
+                panel.setAttribute('role', 'tabpanel');
+                panel.setAttribute('aria-labelledby', button.id);
+            }
             button.addEventListener('click', () => this.switchChatPolicyPane(button.dataset.chatPolicyTab));
+            button.addEventListener('keydown', event => {
+                if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+                event.preventDefault();
+                const tabs = [...form.querySelectorAll('[data-chat-policy-tab]')];
+                const index = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1
+                    : (tabs.indexOf(button) + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+                tabs[index].click();
+                tabs[index].focus();
+            });
         });
         const pluginSearch = form.querySelector('[data-plugin-search-input]');
         const applyPluginFilter = () => {
@@ -2124,13 +2164,15 @@ const UI = {
     },
 
     switchChatPolicyPane(pane) {
+        if (pane === 'plugins') pane = 'assistant';
         const form = document.getElementById('chatPolicyForm');
-        if (!form || !['assistant', 'plugins', 'advanced'].includes(pane)) return;
+        if (!form || !['assistant', 'permissions', 'advanced'].includes(pane)) return;
         this.chatPolicyActivePane = pane;
         form.querySelectorAll('[data-chat-policy-tab]').forEach(button => {
             const active = button.dataset.chatPolicyTab === pane;
             button.classList.toggle('active', active);
             button.setAttribute('aria-selected', String(active));
+            button.tabIndex = active ? 0 : -1;
         });
         form.querySelectorAll('[data-chat-policy-pane]').forEach(panel => {
             panel.classList.toggle('active', panel.dataset.chatPolicyPane === pane);
@@ -2164,13 +2206,15 @@ const UI = {
     syncChatPolicyDirty(form = document.getElementById('chatPolicyForm')) {
         if (!form) return;
         const dirty = Boolean(form._initialSnapshot && this.serializeChatPolicyForm(form) !== form._initialSnapshot);
+        const note = document.getElementById('chatPolicyDirtyNote');
+        if (note) note.hidden = !dirty;
         const button = document.getElementById('chatPolicySaveButton');
         if (!button) return;
         button.disabled = !dirty;
         button.classList.toggle('is-dirty', dirty);
         button.classList.remove('is-saving');
         const label = button.querySelector('span');
-        if (label) label.textContent = dirty ? '保存更改' : '已保存';
+        if (label) label.textContent = '保存并生效';
     },
 
     setChatPolicySaving(saving) {
@@ -2179,10 +2223,12 @@ const UI = {
         button.disabled = Boolean(saving);
         button.classList.toggle('is-saving', Boolean(saving));
         const label = button.querySelector('span');
-        if (label) label.textContent = saving ? '正在保存' : '保存更改';
+        if (label) label.textContent = saving ? '正在保存…' : '保存并生效';
     },
 
     renderUnmanagedChatPolicy(chatName) {
+        const note = document.getElementById('chatPolicyDirtyNote');
+        if (note) note.hidden = true;
         const container = document.getElementById('userPermissionsPanelContainer');
         if (!container) return;
         container.removeAttribute('aria-busy');
@@ -2328,7 +2374,7 @@ const UI = {
                 <aside class="cap-settings-aside">
                     <div class="cap-settings-capability">
                         <span class="capability-icon"><i class="bi ${this.escapeHtml(capability.icon || 'bi-sliders')}"></i></span>
-                        <div><strong>${this.escapeHtml(capability.display_name || settings.capability_id)}</strong><small>${Number(settings.field_count || 0)} 项全局设置</small></div>
+                        <div><strong>${this.escapeHtml(capability.display_name || settings.capability_id)}</strong><small>${Number(settings.field_count || 0)} 项默认配置</small></div>
                     </div>
                     <nav class="cap-settings-nav">${nav}</nav>
                 </aside>
@@ -2403,26 +2449,16 @@ const UI = {
 
     renderTranslationGlobalNote(notice = '') {
         return `<section class="translation-scope is-global">
-            <div class="translation-scope-copy"><strong><i class="bi bi-globe2" aria-hidden="true"></i>默认设置</strong>
-            <span>${this.escapeHtml(notice || '对所有未单独设置的聊天生效；单个聊天可在聊天页的「本聊天设置」中覆盖。')}</span></div>
+            <div class="translation-scope-copy"><strong><i class="bi bi-globe2" aria-hidden="true"></i>默认配置</strong></div>
         </section>`;
     },
 
     renderTranslationScope(chatName, customized, overrides) {
-        const hasOverrides = Object.keys(overrides || {}).length > 0;
-        return `<section class="translation-scope" data-translation-scope>
-            <div class="translation-scope-copy"><strong>作用范围</strong>
-            <span data-scope-hint>仅「${this.escapeHtml(chatName)}」使用这份设置，保存后立即生效。</span></div>
-            <label class="translation-scope-toggle form-check form-switch modern-toggle mb-0"><input class="form-check-input" type="checkbox" role="switch" data-scope-toggle ${customized ? 'checked' : ''}><span class="form-check-label">本聊天单独设置</span></label>
-        </section>
-        <div class="translation-scope-summary" data-scope-summary ${customized ? 'hidden' : ''}>
-            <p class="translation-scope-summary-title">当前跟随默认设置</p>
-            <dl>
-                <div><dt>互译语言</dt><dd data-summary-languages></dd></div>
-                <div><dt>翻译要求</dt><dd data-summary-prompt></dd></div>
-            </dl>
-            <p class="translation-inline-note" data-scope-override-note ${hasOverrides ? '' : 'hidden'}>保存后会移除本聊天的独立设置。</p>
-        </div>`;
+        return this.renderChatConfigHeader(customized);
+    },
+
+    renderChatConfigHeader(customized) {
+        return `<div class="chat-config-header"><span data-chat-config-status>${customized?'已自定义':'默认配置'}</span><button type="button" class="btn btn-sm btn-outline-secondary" data-chat-config-reset ${customized?'':'disabled'}>恢复默认</button></div>`;
     },
 
     renderTranslationSettingsView(settings, {scope = 'global', chatName = '', notice = ''} = {}) {
@@ -2444,12 +2480,11 @@ const UI = {
             data-chat-name="${this.escapeHtml(chatName)}" data-standard-prompt="${this.escapeHtml(standardPrompt)}"
             data-defaults="${this.escapeHtml(JSON.stringify(scope === 'chat' ? defaults : null))}">
             ${scope === 'chat' ? this.renderTranslationScope(chatName, customized, overrides) : this.renderTranslationGlobalNote(notice)}
-            <div class="translation-body" data-translation-body ${scope === 'chat' && !customized ? 'hidden' : ''}>
+            <div class="translation-body" data-translation-body>
                 <section class="translation-section">
                     <header class="translation-section-head">
                         <div><h4>互译方式</h4><p>自动识别原文语言，只输出其余语言；顺序就是输出顺序。</p></div>
                         <div class="translation-section-actions">
-                            <span class="translation-field-reset" data-field-reset-wrap="languages" hidden><button type="button" class="translation-text-button" data-field-reset="languages">恢复跟随默认</button></span>
                             <div class="translation-mode" role="radiogroup" aria-label="互译模式">
                                 <button type="button" role="radio" aria-checked="false" data-language-mode="2">双语互译</button>
                                 <button type="button" role="radio" aria-checked="false" data-language-mode="3">三语互译</button>
@@ -2468,7 +2503,6 @@ const UI = {
                         <div><h4>翻译要求</h4><p>语言名单自动填入提示词；可补充语气、行业和术语要求。</p></div>
                         <div class="translation-section-actions">
                             <span class="translation-status-chip" data-prompt-status></span>
-                            <span class="translation-field-reset" data-field-reset-wrap="prompt_template" hidden><button type="button" class="translation-text-button" data-field-reset="prompt_template">恢复跟随默认</button></span>
                             <button type="button" class="translation-text-button" data-prompt-toggle>展开编辑</button>
                         </div>
                     </header>
@@ -2790,28 +2824,25 @@ const UI = {
         root.querySelectorAll('[data-translation-settings]').forEach(editor => editor._apply?.(values));
     },
 
+    pluginChatPatch(values, config, reset = false) {
+        const initial = reset ? config.defaults : config.effective;
+        const set = {};
+        for (const [key, value] of Object.entries(values)) {
+            if (JSON.stringify(value) !== JSON.stringify(initial[key])) set[key] = value;
+        }
+        if (reset && Object.keys(config.overrides || {}).length) {
+            if (!Object.keys(set).length) return {set: {}, reset_all: true};
+            return {set, reset_fields: Object.keys(config.overrides).filter(key => !Object.hasOwn(set, key))};
+        }
+        return Object.keys(set).length ? {set} : null;
+    },
+
     collectTranslationChatPatch(root, chatConfig) {
         const editor = root.querySelector('[data-translation-settings]');
         if (!editor?._translationState) return null;
         const state = editor._translationState();
-        if (state.scopeEnabled && !state.valid) throw Error(state.message);
-        const overrides = chatConfig?.overrides || {};
-        let patch = null;
-        if (!state.scopeEnabled) {
-            if (Object.keys(overrides).length) patch = {set: {}, reset_all: true};
-        } else {
-            const defaults = chatConfig?.defaults || {};
-            const set = {};
-            const resetFields = [];
-            ['languages', 'prompt_template'].forEach(key => {
-                if (JSON.stringify(state.values[key]) !== JSON.stringify(defaults[key])) set[key] = state.values[key];
-                else if (Object.hasOwn(overrides, key)) resetFields.push(key);
-            });
-            if (Object.keys(set).length || resetFields.length) patch = {set, reset_fields: resetFields};
-        }
-        if (!patch) return null;
-        const signature = JSON.stringify({enabled: state.scopeEnabled, values: state.values});
-        return signature === editor._initialSignature ? null : patch;
+        if (!state.valid) throw Error(state.message);
+        return this.pluginChatPatch(state.values, chatConfig, Boolean(root._resetDefaults));
     },
 
     setPluginScopeBadge(form, pluginName, customized) {
@@ -2827,19 +2858,9 @@ const UI = {
             return `<form id="chatPluginSettingsForm" class="translation-settings-form">${this.renderTranslationSettingsView(settings, {scope: 'chat', chatName})}</form>`;
         }
         const config = settings.chat_config;
-        const overrides = {...(config.overrides || {})};
-        if (draft.reset_all) Object.keys(overrides).forEach(key => delete overrides[key]);
-        (draft.reset_fields || []).forEach(key => delete overrides[key]);
-        Object.assign(overrides, draft.set || {});
-        return `<form id="chatPluginSettingsForm" class="chat-config-form">${settings.groups.map(group => group.fields.map(field => {
-                const custom = Object.hasOwn(overrides, field.key);
-                const value = custom ? overrides[field.key] : config.defaults[field.key];
-                return `<section class="chat-config-section" data-chat-config-field="${this.escapeHtml(field.key)}">
-                    <div class="chat-config-heading"><label for="cap-cfg-${this.escapeHtml(field.key)}">${this.escapeHtml(field.key === 'prompt_template' ? '翻译提示词' : field.title)}</label>
-                    <select class="form-select" data-chat-config-source aria-label="${this.escapeHtml(field.title)}的来源"><option value="global" ${custom ? '' : 'selected'}>继承全局</option><option value="chat" ${custom ? 'selected' : ''}>自定义</option></select></div>
-                    <fieldset data-chat-config-editor ${custom ? '' : 'disabled'}>${this.renderCapabilitySettingsField({...field, value}, {compact: true})}</fieldset>
-                </section>`;
-            }).join('')).join('')}</form><p class="chat-config-save-note">仅当前聊天生效 · 应用后，请在聊天页保存更改。</p>`;
+        const customized = Object.keys(config.overrides || {}).length > 0;
+        return `<form id="chatPluginSettingsForm" class="chat-config-form">${this.renderChatConfigHeader(customized)}<p class="text-danger small mt-2" data-chat-config-error role="alert" hidden></p>${settings.groups.map(group => `
+            <details class="prompt-block" ${group.fields.some(field=>field.level==='basic')?'open':''}><summary>${this.escapeHtml(group.title)}</summary><div class="prompt-block-body">${group.fields.map(field => this.renderCapabilitySettingsField(field)).join('')}</div></details>`).join('')}</form>`;
     },
 
     renderCapabilitySettingsField(field, {compact = false} = {}) {
@@ -2853,6 +2874,8 @@ const UI = {
 
         if (!field.editable) {
             control = `<div class="cap-settings-readonly"><i class="bi bi-braces"></i><span>结构化配置将在专用编辑器中管理，当前已保护原值。</span></div>`;
+        } else if (field.control === 'json' || field.type === 'object' || (field.type === 'array' && Array.isArray(value) && value.some(item=>typeof item!=='string'))) {
+            control = `<textarea class="form-control font-monospace cap-settings-prompt-editor" id="${id}" rows="8" ${common} data-config-control="json">${this.escapeHtml(JSON.stringify(value, null, 2))}</textarea>`;
         } else if (field.type === 'boolean') {
             control = `<div class="form-check form-switch modern-toggle mb-0"><input class="form-check-input" type="checkbox" id="${id}" ${common} ${value ? 'checked' : ''}></div>`;
         } else if ((field.options || []).length) {

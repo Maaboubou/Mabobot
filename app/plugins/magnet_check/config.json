@@ -78,7 +78,8 @@
       "type": "string",
       "title": "报告保存目录",
       "description": "相对路径以插件目录为基准。",
-      "default": "reports"
+      "default": "reports",
+      "level": "hidden"
     }
   },
   "config": {

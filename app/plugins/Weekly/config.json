@@ -33,7 +33,7 @@
     },
     "WEEKLY_IMAGE_BATCH_TIMEOUT_SECONDS": {
       "type": "number",
-      "description": "Codex 子代理批量生成全部周报图片的超时时间",
+      "description": "Codex 主线程逐页生成全部周报图片的超时时间",
       "default": 3600
     },
     "WEEKLY_ADMIN_CHAT": {
@@ -64,7 +64,8 @@
     "WEEKLY_TASK_LOCK_STALE_SECONDS": {
       "type": "number",
       "description": "任务锁过期秒数；用于防止插件热重载导致同一时间多个周报任务并行",
-      "default": 7200
+      "default": 7200,
+      "scope": "global"
     },
     "WEEKLY_EDITOR_NAME": {
       "type": "string",

@@ -29,6 +29,7 @@ tiktoken>=0.12,<1
 # Media, OCR, and image processing
 numpy>=1.26,<3
 Pillow
+PyMuPDF>=1.26,<2
 ddddocr
 NudeNet>=3.4,<4
 opencv-python-headless>=4.11,<5

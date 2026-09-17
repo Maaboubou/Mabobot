@@ -13,6 +13,7 @@ from typing import Optional, Tuple, List, Dict, Set
 
 from app.core.event_bus import Event, EventType
 from app.plugins.boc_rate.boc_exchange_service import BOCExchangeService
+from app.services.plugin_config_context import ScopedConfigAttribute
 from app.utils.plugin_config import get_config
 import pytz
 
@@ -21,6 +22,10 @@ logger = logging.getLogger(__name__)
 
 
 class BOCExchangePlugin:
+    @ScopedConfigAttribute
+    def trigger_keywords(self):
+        return get_config('trigger_keywords', ['汇率', '中行', '牌价'], plugin_name='boc_rate') or []
+
     def __init__(self, context):
         self.context = context
         # 与 legacy 一致的初始化（无需特殊配置时传入空dict）
@@ -320,7 +325,7 @@ def _check_trend_3day_signal(service: BOCExchangeService) -> Optional[Dict]:
     return {"triggered": triggered, "cum_change": cum_change}
 
 
-def _execute_daily_task(event_bus):
+def _execute_daily_task(event_bus, target_chat=None):
     if not plugin:
         return
     service = plugin.service
@@ -381,6 +386,8 @@ def _execute_daily_task(event_bus):
             logger.warning("boc_rate: 生成走势图失败: %s", e)
 
         enabled_users = _get_push_enabled_users_for_boc_rate()
+        if target_chat is not None:
+            enabled_users &= {target_chat}
         try:
             wx = event_bus.context.get("wx")
         except Exception:
@@ -399,57 +406,16 @@ def _execute_daily_task(event_bus):
 
 
 def _start_daily_scheduler(event_bus, context):
-    def _runner():
-        while _scheduler_started and not context.workers.stop_event.is_set():
-            try:
-                daily_push_time = get_config("DAILY_PUSH_TIME", plugin_name="boc_rate") or "10:00"
-                hh, mm = _parse_hhmm(daily_push_time)
-                wait = _seconds_until_beijing_time(hh, mm)
-                logger.info(f"boc_rate: 距离下一次(北京时间 {hh:02d}:{mm:02d}) 执行还有 {wait:.1f}s")
-
-                remaining = max(1.0, wait)
-                check_interval = min(30.0, remaining)
-                while remaining > 0 and _scheduler_started:
-                    sleep_time = min(check_interval, remaining)
-                    time.sleep(sleep_time)
-                    remaining -= sleep_time
-                    if not _scheduler_started:
-                        return
-
-                if not _scheduler_started:
-                    break
-
-                active_plugin = plugin
-                if active_plugin is None:
-                    continue
-
-                def _managed_push(operation):
-                    if not _execution_lock.acquire(blocking=False):
-                        raise RuntimeError("上次汇率推送仍在执行")
-                    try:
-                        operation.progress(10, "正在读取汇率数据")
-                        _execute_daily_task(event_bus)
-                        operation.progress(100, "每日汇率推送完成")
-                        return {"scheduled": True}
-                    finally:
-                        _execution_lock.release()
-
-                active_plugin.context.tasks.submit(
-                    "daily_rate_alert",
-                    "中行汇率 · 每日推送",
-                    _managed_push,
-                    details={"scheduled": True},
-                )
-            except Exception as e:
-                logger.warning("boc_rate: 定时任务循环异常: %s", e)
-
     global _scheduler_started, _scheduler_thread
+    from app.services.plugin_chat_schedule import start_chat_schedule
+
     if not _scheduler_started:
-        with _scheduler_lock:
-            if not _scheduler_started:
-                _scheduler_started = True
-                _scheduler_thread = context.workers.start("daily-scheduler", _runner)
-                logger.info("boc_rate: daily scheduler SINGLETON started")
+        _scheduler_started = True
+        _scheduler_thread = start_chat_schedule(
+            context, event_bus, time_key="DAILY_PUSH_TIME",
+            execution_lock=_execution_lock,
+            callback=lambda chat_name, operation: _execute_daily_task(event_bus, target_chat=chat_name),
+        )
 
 def register(event_bus, subscribe, context):
     global plugin

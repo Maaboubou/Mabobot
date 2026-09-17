@@ -5,11 +5,13 @@ from __future__ import annotations
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
+from app.schemas.codex_permission import ChatPermissionPatch
 
 
 class ChatSettingsPatch(BaseModel):
     is_group: Optional[bool] = None
     listening_enabled: Optional[bool] = None
+    attachment_content_review_enabled: Optional[bool] = None
     sender_blacklist: Optional[List[str]] = Field(default=None, max_length=200)
     bot_group_nickname: Optional[str] = Field(default=None, max_length=128)
     bot_group_nickname_auto_enabled: Optional[bool] = None
@@ -28,8 +30,7 @@ class AssistantSettingsPatch(BaseModel):
     codex_profile_id: Optional[str] = Field(default=None, max_length=48)
 
 
-class CodexSettingsPatch(BaseModel):
-    mode: Optional[Literal["isolated", "owner_full"]] = None
+CodexSettingsPatch = ChatPermissionPatch
 
 
 class PluginGrantPatch(BaseModel):
