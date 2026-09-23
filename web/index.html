@@ -43,7 +43,7 @@
 
     <!-- App CSS -->
     <link href="/static/assets/css/style.css?v=20260917-role-management" rel="stylesheet">
-    <link href="/static/assets/css/dashboard.css?v=20260917-status-width" rel="stylesheet">
+    <link href="/static/assets/css/dashboard.css?v=20260921-bot-activity" rel="stylesheet">
     <link rel="stylesheet" href="/notification-assets/email_notifications.css?v=2">
 </head>
 
@@ -248,9 +248,9 @@
                             </div>
                         </article>
                         <article class="dashboard-kpi">
-                            <span class="dashboard-kpi-label"><i class="bi bi-robot" aria-hidden="true"></i>AI 回复</span>
+                            <span class="dashboard-kpi-label"><i class="bi bi-robot" aria-hidden="true"></i>Bot发送</span>
                             <div class="dashboard-kpi-value"><strong id="statAiReplies">-</strong><em id="statAiRepliesMeta"></em></div>
-                            <div class="dashboard-spark-chart" tabindex="0" role="group" aria-label="近 7 日AI 回复，方向键切换日期" aria-describedby="sparkRepliesTip">
+                            <div class="dashboard-spark-chart" tabindex="0" role="group" aria-label="近 7 日Bot发送，方向键切换日期" aria-describedby="sparkRepliesTip">
                                 <svg class="dashboard-spark" id="sparkReplies" viewBox="0 0 120 28" preserveAspectRatio="none" aria-hidden="true"></svg>
                                 <div class="dashboard-spark-tip" id="sparkRepliesTip" role="status" hidden></div>
                             </div>
@@ -304,11 +304,11 @@
                         </div>
                         <div class="dashboard-chart-legend" aria-label="柱状图图例">
                             <span><i class="dashboard-legend-received" aria-hidden="true"></i>收到消息</span>
-                            <span><i class="dashboard-legend-replies" aria-hidden="true"></i>AI 回复</span>
+                            <span><i class="dashboard-legend-replies" aria-hidden="true"></i>Bot发送</span>
                             <small>按整点统计，含当前小时</small>
                         </div>
                         <div class="dashboard-hourly" id="dashboardHourlyChart" tabindex="0" role="group"
-                            aria-label="最近 24 小时收到消息与 AI 回复数量，方向键逐小时查看">
+                            aria-label="最近 24 小时收到消息与 Bot发送数量，方向键逐小时查看">
                             <div class="loading-wrapper small">正在加载活动…</div>
                         </div>
                     </section>
@@ -1506,7 +1506,7 @@
     <script src="/static/assets/js/llm_manager.js?v=20260917-model-cards"></script>
     <script src="/static/assets/js/codex_center.js?v=20260916-permissions"></script>
     <script src="/static/assets/js/codex_skills.js?v=1.1.1-format-helpers"></script>
-    <script src="/static/assets/js/dashboard.js?v=20260917-usage-detail"></script>
+    <script src="/static/assets/js/dashboard.js?v=20260921-bot-activity"></script>
     <script src="/static/assets/js/main.js?v=20260917-global-settings-fix"></script>
     <script src="/static/assets/js/assistant_prompts.js?v=20260917-3"></script>
     <script src="/static/assets/js/chat_archive.js?v=20260917-context-actions"></script>

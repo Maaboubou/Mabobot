@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import requests
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 
 from app.utils.subprocess_utils import hidden_process_kwargs
 
@@ -341,21 +341,29 @@ class XiaohongshuMixin:
         """Deduplicate urlDefault/urlPre thumbnail pairs while preserving note order."""
         if not isinstance(info, dict):
             return []
+        return self._xhs_select_image_urls([
+            str(thumbnail.get("url") or "").strip()
+            for thumbnail in info.get("thumbnails") or []
+            if isinstance(thumbnail, dict)
+            and str(thumbnail.get("url") or "").strip().startswith(("http://", "https://"))
+        ])
+
+    def _xhs_select_image_urls(self, urls: List[str]) -> List[str]:
+        """Use CDN asset IDs, never expiring signatures, to identify XHS images."""
         selected: Dict[str, Tuple[int, str]] = {}
-        for thumbnail in info.get("thumbnails") or []:
-            if not isinstance(thumbnail, dict):
-                continue
-            url = str(thumbnail.get("url") or "").strip()
-            if not url.startswith(("http://", "https://")):
-                continue
+        for url in urls:
             parsed = urlparse(url)
             variant = re.search(r"^(.*)!nd_(dft|prv)_", parsed.path, re.IGNORECASE)
+            host = (parsed.hostname or "").casefold()
+            asset_id = parsed.path.rsplit("/", 1)[-1].split("!", 1)[0]
             if variant:
                 key = f"{parsed.netloc.casefold()}{variant.group(1)}"
                 score = 2 if variant.group(2).casefold() == "dft" else 1
             else:
                 key = url
                 score = 0
+            if (host == "xhscdn.com" or host.endswith(".xhscdn.com")) and asset_id:
+                key = f"xhscdn:{asset_id}"
             current = selected.get(key)
             if current is None or score > current[0]:
                 selected[key] = (score, url)
@@ -422,7 +430,12 @@ class XiaohongshuMixin:
     def _process_xhs_image_urls(
         self, image_urls: List[str], uid: str, *, note: Optional[dict] = None,
     ) -> Optional[str]:
-        image_urls = image_urls[:self.xhs_max_images]
+        selected_urls = self._xhs_select_image_urls(image_urls)
+        self.logger.info(
+            "小红书图片筛选: 候选=%s, 去重后=%s, 上限=%s",
+            len(image_urls), len(selected_urls), self.xhs_max_images,
+        )
+        image_urls = selected_urls[:self.xhs_max_images]
         if not image_urls:
             return None
 
@@ -449,10 +462,9 @@ class XiaohongshuMixin:
             for index, image_url in enumerate(image_urls):
                 raw_path = os.path.join(tmp_dir, f"temp_{uid}_ytdlp_{index}_raw")
                 jpg_path = os.path.join(tmp_dir, f"temp_{uid}_ytdlp_{index}.jpg")
+                temp_files.extend([raw_path, jpg_path])
                 self._xhs_download_file(image_url, raw_path)
-                temp_files.append(raw_path)
                 self._xhs_convert_to_jpg(raw_path, jpg_path)
-                temp_files.append(jpg_path)
                 converted_images.append(jpg_path)
             if not converted_images:
                 return None
@@ -649,6 +661,7 @@ class XiaohongshuMixin:
                     "--max-filesize",
                     str(max_bytes),
                     "-L",
+                    "--fail",
                     "-A",
                     headers["User-Agent"],
                     "-e",
@@ -713,19 +726,36 @@ class XiaohongshuMixin:
                 img.close()
 
     def _xhs_convert_to_jpg(self, input_path: str, output_path: str):
-        """使用 ffmpeg 将图片转换为 jpg"""
+        """Reject broken input instead of silently accepting ffmpeg error concealment."""
         self.logger.info(f"正在进行格式转换: {input_path} -> {output_path}")
         try:
-            # -y 表示覆盖输出文件
+            # Pillow catches truncated JPEG/PNG data before a tolerant decoder
+            # can turn missing pixels into a seemingly valid output image.
+            try:
+                source = Image.open(input_path)
+            except UnidentifiedImageError:
+                # Preserve ffmpeg support for formats unavailable in Pillow.
+                source = None
+            if source is not None:
+                with source:
+                    source.verify()
+                with Image.open(input_path) as source:
+                    source.load()
             subprocess.run(
-                [self.ffmpeg_bin, "-y", "-i", input_path, output_path],
+                [self.ffmpeg_bin, "-y", "-xerror", "-err_detect", "explode",
+                 "-i", input_path, "-frames:v", "1", output_path],
                 check=True,
                 capture_output=True,
                 **hidden_process_kwargs(),
             )
+            with Image.open(output_path) as image:
+                image.verify()
+            with Image.open(output_path) as image:
+                image.load()
             self.logger.info("转换完成")
-        except subprocess.CalledProcessError as e:
-            self.logger.error(f"转换失败: {e.stderr.decode()}")
+        except Exception as e:
+            self._remove_path_quietly(output_path)
+            self.logger.error("转换失败: %s", getattr(e, "stderr", None) or e)
             raise
 
     def _xhs_pick_url(self, value: Any) -> Optional[str]:

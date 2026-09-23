@@ -83,6 +83,10 @@ MEDIA_FOREGROUND_THRESHOLDS = (24, 14)
 class MediaIdentityError(RuntimeError):
     """The requested media row/file could not be proven to be the target."""
 
+    def __init__(self, message: str, *, code: str = "image_ui_identity_changed"):
+        super().__init__(message)
+        self.code = code
+
 
 class MediaFileMismatchError(MediaIdentityError):
     """A downloaded file failed the final thumbnail-to-file comparison."""
@@ -748,6 +752,7 @@ def select_media_candidate(
     messages = list(visible_messages)
     tokens = [message_context_token(item) for item in messages]
     matches: list[dict[str, Any]] = []
+    diagnostics = []
     for index, candidate in enumerate(messages):
         if not _candidate_basic_match(target, candidate):
             continue
@@ -759,8 +764,11 @@ def select_media_candidate(
                 if target.visual.detail_grid and visual.detail_grid
                 else None
             )
-        except Exception:
+        except Exception as exc:
+            diagnostics.append({"index": index, "rejected": "capture_failed", "error": type(exc).__name__})
             continue
+        diagnostics.append({"index": index, "phash": distance,
+                            "color": round(color_distance, 2), "detail": detail_distance})
         if (
             distance > VISUAL_REBIND_MAX_DISTANCE
             or color_distance > VISUAL_REBIND_COLOR_MAX_DISTANCE
@@ -787,8 +795,11 @@ def select_media_candidate(
             }
         )
 
+    from mabowx.msgs.media_diagnostics import media_event
+    media_event("candidate_selection", visible_count=len(messages), matching_count=len(matches),
+                candidates=diagnostics[:12], candidate_count=len(diagnostics))
     if not matches:
-        raise MediaIdentityError("当前可见区没有与接收缩略图一致的图片消息")
+        raise MediaIdentityError("当前可见区没有与接收缩略图一致的图片消息", code="target_not_visible")
     if len(matches) == 1:
         return matches[0]["candidate"]
 
@@ -811,7 +822,7 @@ def select_media_candidate(
     if best["distance"] + 3 <= second["distance"]:
         return best["candidate"]
     raise MediaIdentityError(
-        f"可见区存在 {len(matches)} 条无法唯一绑定的相似图片消息"
+        f"可见区存在 {len(matches)} 条无法唯一绑定的相似图片消息", code="identity_ambiguous"
     )
 
 

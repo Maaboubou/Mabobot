@@ -6,6 +6,7 @@ import re
 import shutil
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Callable
 
@@ -15,6 +16,7 @@ from mabowx.core.win32 import (
     force_foreground,
     get_foreground_window,
     is_window,
+    get_window_info,
     post_close_message,
     post_left_click,
     post_right_click,
@@ -198,10 +200,25 @@ def close_preview_window_safely(
         wxlog.warning("引用媒体预览窗口身份校验失败，已取消关闭")
         return False
 
-    if post_close_message(hwnd, {"mmui::PreviewWindow"}):
+    info = get_window_info(hwnd)
+    if info is None or (expected_pid and info.pid != expected_pid):
+        return False
+    # UIA exposes mmui::PreviewWindow, while Win32 exposes Qt*WindowIcon.
+    # The native class is permitted only after the exact UIA/PID/HWND proof.
+    if not info.visible:
+        media_event("preview_cleanup", route="already_hidden", hwnd=hwnd, outcome="closed")
+        return True
+    started = time.monotonic()
+    native_posted = post_close_message(hwnd, {info.class_name})
+    media_event("preview_cleanup", route="wm_close", hwnd=hwnd,
+                native_class=info.class_name, posted=native_posted)
+    if native_posted:
         deadline = time.monotonic() + max(0.0, wait_timeout)
         while time.monotonic() < deadline:
-            if not is_window(hwnd):
+            current_info = get_window_info(hwnd)
+            if not is_window(hwnd) or (current_info and not current_info.visible):
+                media_event("preview_cleanup", route="wm_close", hwnd=hwnd,
+                            outcome="closed", close_ms=round((time.monotonic() - started) * 1000))
                 return True
             time.sleep(0.08)
     if not is_window(hwnd):
@@ -228,10 +245,116 @@ def close_preview_window_safely(
 
     deadline = time.monotonic() + max(0.5, wait_timeout)
     while time.monotonic() < deadline:
-        if not is_window(hwnd):
+        current_info = get_window_info(hwnd)
+        if not is_window(hwnd) or (current_info and not current_info.visible):
+            media_event("preview_cleanup", route="ctrl_w", hwnd=hwnd, outcome="closed")
             return True
         time.sleep(0.08)
     return not is_window(hwnd)
+
+
+# Accessed only while holding the cross-process UI transaction. A lease is
+# never reconstructed from a persisted HWND: after restart, unknown previews
+# belong to the user until proven otherwise.
+_owned_media_previews: dict[int, dict] = {}
+_preview_property = "Mabobot.MediaPreview." + uuid.uuid4().hex
+
+
+def _preview_marker(hwnd, value=None):
+    """An OS window property disappears on destruction, even if HWND is reused."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        api = ctypes.windll.user32
+        if value is None:
+            api.GetPropW.argtypes = [wintypes.HWND, wintypes.LPCWSTR]
+            api.GetPropW.restype = wintypes.HANDLE
+            return int(api.GetPropW(hwnd, _preview_property) or 0)
+        if value == 0:
+            api.RemovePropW.argtypes = [wintypes.HWND, wintypes.LPCWSTR]
+            api.RemovePropW.restype = wintypes.HANDLE
+            return int(api.RemovePropW(hwnd, _preview_property) or 0)
+        api.SetPropW.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.HANDLE]
+        api.SetPropW.restype = wintypes.BOOL
+        return bool(api.SetPropW(hwnd, _preview_property, value))
+    except Exception:
+        return 0
+
+
+def _preview_fingerprint(control):
+    try:
+        return (int(control.NativeWindowHandle), int(control.ProcessId),
+                str(control.ClassName), tuple(control.GetRuntimeId()))
+    except Exception:
+        return None
+
+
+def _remember_preview(control):
+    fingerprint = _preview_fingerprint(control)
+    token = (uuid.uuid4().int & 0x7fffffff) or 1
+    if fingerprint and _preview_marker(fingerprint[0], token):
+        _owned_media_previews[fingerprint[0]] = {
+            "fingerprint": fingerprint, "active": True, "retry_at": 0.0,
+            "owner_token": token,
+        }
+
+
+def _release_preview(control, pid):
+    hwnd = int(getattr(control, "NativeWindowHandle", 0) or 0)
+    lease = _owned_media_previews.get(hwnd)
+    if lease and _preview_marker(hwnd) != lease['owner_token']:
+        _owned_media_previews.pop(hwnd, None)
+        return not is_window(hwnd)
+    try:
+        closed = close_preview_window_safely(control, expected_pid=pid)
+    except Exception as exc:
+        closed = False
+        media_event("preview_cleanup", level="warning", hwnd=hwnd, error=str(exc)[:240])
+    if closed:
+        _preview_marker(hwnd, 0)
+        _owned_media_previews.pop(hwnd, None)
+    elif lease:
+        lease.update(active=False, retry_at=time.monotonic() + 1)
+        media_event("preview_cleanup", level="warning", hwnd=hwnd, outcome="pending_recovery")
+    return closed
+
+
+def _preview_baseline(pid):
+    """Recover only a verified preview left by one of our finished operations."""
+    controls = uia.find_top_level_controls("mmui::PreviewWindow", pid=pid, max_results=10)
+    baseline = set()
+    owned_busy = False
+    seen = set()
+    for control in controls:
+        hwnd = int(getattr(control, "NativeWindowHandle", 0) or 0)
+        if not hwnd:
+            continue
+        seen.add(hwnd)
+        info = get_window_info(hwnd)
+        if info is not None and not info.visible:
+            continue
+        lease = _owned_media_previews.get(hwnd)
+        if lease and (lease["fingerprint"] != _preview_fingerprint(control)
+                      or _preview_marker(hwnd) != lease['owner_token']):
+            _owned_media_previews.pop(hwnd, None)
+            lease = None
+        if lease and not lease["active"]:
+            owned_busy = True
+            if time.monotonic() >= lease["retry_at"]:
+                lease["retry_at"] = time.monotonic() + 5
+                if _release_preview(control, pid):
+                    media_event("preview_recovered", hwnd=hwnd)
+                    continue
+                lease["retry_at"] = time.monotonic() + 5
+        baseline.add(hwnd)
+    for hwnd in list(_owned_media_previews):
+        if hwnd not in seen and not is_window(hwnd):
+            _owned_media_previews.pop(hwnd, None)
+    if baseline:
+        code = "preview_cleanup_failed" if owned_busy else "preview_busy_unowned"
+        media_event("preview_baseline_rejected", level="warning", baseline_hwnds=sorted(baseline), error_code=code)
+        raise MediaIdentityError("图片预览窗口被占用，请关闭预览后重试", code=code)
+    return baseline
 
 
 def _wait_for_media_preview(
@@ -294,11 +417,14 @@ def _wait_for_media_preview(
                 last_candidates.append({"rejected": "unreadable_handle", "error": str(exc)[:240]})
                 continue
             safe = bool(hwnd and hwnd not in baseline and _preview_identity_is_safe(control, hwnd, pid))
+            info = get_window_info(hwnd) if safe else None
+            safe = bool(safe and info is not None and info.visible and (not pid or info.pid == pid))
             last_candidates.append({"hwnd": hwnd, "baseline": hwnd in baseline, "identity_safe": safe})
             if safe:
                 new_controls.append(control)
         if len(new_controls) == 1:
             report("opened")
+            _remember_preview(new_controls[0])
             return new_controls[0]
         if len(new_controls) > 1:
             report("ambiguous")
@@ -344,18 +470,7 @@ def download_media_via_preview(
         already_clicked=already_clicked, retry_enabled=retry_click is not None,
     )
     if baseline_preview_hwnds is None:
-        baseline_preview_hwnds = set()
-        for existing in uia.find_top_level_controls(
-            "mmui::PreviewWindow",
-            pid=pid,
-            max_results=5,
-        ):
-            try:
-                hwnd = int(getattr(existing, "NativeWindowHandle", 0) or 0)
-            except Exception:
-                hwnd = 0
-            if hwnd:
-                baseline_preview_hwnds.add(hwnd)
+        baseline_preview_hwnds = _preview_baseline(pid)
     if baseline_preview_hwnds:
         media_event("preview_baseline_rejected", level="warning", baseline_hwnds=sorted(baseline_preview_hwnds))
         raise MediaIdentityError(
@@ -405,7 +520,7 @@ def download_media_via_preview(
     )
     if preview is None:
         media_event("preview_timeout_snapshot", level="warning", snapshot=media_ui_snapshot(message))
-        raise RuntimeError("媒体预览窗口未打开")
+        raise MediaIdentityError("媒体预览窗口未打开", code="preview_open_timeout")
 
     try:
         media_event("validate_preview_origin")
@@ -476,7 +591,7 @@ def download_media_via_preview(
             time.sleep(0.4)
         raise RuntimeError("媒体加载完成前未能复制到路径")
     finally:
-        if not close_preview_window_safely(preview, expected_pid=pid):
+        if not _release_preview(preview, pid):
             wxlog.warning("引用/媒体预览窗口未确认关闭；未向其他窗口发送快捷键")
 
 
@@ -873,22 +988,7 @@ class QuoteMessage(HumanMessage):
         timeout: int = 30,
     ) -> Path:
         pid = getattr(self.parent, "pid", None)
-        baseline: set[int] = set()
-        for existing in uia.find_top_level_controls(
-            "mmui::PreviewWindow",
-            pid=pid,
-            max_results=5,
-        ):
-            try:
-                hwnd = int(getattr(existing, "NativeWindowHandle", 0) or 0)
-            except Exception:
-                hwnd = 0
-            if hwnd:
-                baseline.add(hwnd)
-        if baseline:
-            raise MediaIdentityError(
-                "引用图片操作开始前已有预览窗口，拒绝猜测预览归属"
-            )
+        baseline = _preview_baseline(pid)
         if not self.click_quote():
             raise RuntimeError(f"无法点击引用消息: {getattr(self, '_quote_lookup_failure', '') or 'unknown'}")
         return download_media_via_preview(
@@ -920,7 +1020,7 @@ class ImageMessage(HumanMessage):
         if not callable(getter):
             raise MediaIdentityError("图片所属聊天不支持重新枚举消息")
         try:
-            return list(getter(resolve_group_senders=False) or [])
+            return list(getter(resolve_group_senders=False, probe_avatar_direction=False) or [])
         except TypeError:
             return list(getter() or [])
         except Exception as exc:
@@ -1032,7 +1132,7 @@ class ImageMessage(HumanMessage):
             )
             raise MediaIdentityError(
                 "缩略图消息行在校验后发生滚动或重排: "
-                f"expected={expected_row} current={current_row} delta={delta}"
+                f"expected={expected_row} current={current_row} delta={delta}", code="target_moved"
             )
         if target.chat_hwnd and current_hwnd != target.chat_hwnd:
             raise MediaIdentityError("缩略图控件在点击前离开原聊天窗口")
@@ -1074,7 +1174,7 @@ class ImageMessage(HumanMessage):
             )
             raise MediaIdentityError(
                 "点击投递后原消息行发生滚动或重排: "
-                f"expected={expected_row} current={current_row} delta={delta}"
+                f"expected={expected_row} current={current_row} delta={delta}", code="target_moved"
             )
         visual = verify_dispatched_candidate(target, self)
         media_rect = visual.rect
@@ -1165,11 +1265,19 @@ class ImageMessage(HumanMessage):
         # pixels on the clipboard, not a CF_HDROP file path. The supported file
         # route is the newly opened preview's owner-bound “更多 → 复制” menu.
         self._last_media_route = "preview"
-        path = download_media_via_preview(
-            self,
-            dir_path=dir_path,
-            timeout=max(1.0, float(timeout)),
-        )
+        deadline = time.monotonic() + max(1.0, float(timeout))
+        for attempt in range(2):
+            try:
+                path = download_media_via_preview(self, dir_path=dir_path,
+                                                  timeout=max(1.0, deadline - time.monotonic()))
+                break
+            except MediaIdentityError as exc:
+                if attempt or exc.code != "target_moved" or time.monotonic() + 1.2 >= deadline:
+                    raise
+                media_event("target_rebind_retry", reason=exc.code)
+                # Re-enumerate and verify the exact thumbnail after cleanup;
+                # never reuse coordinates from the click that just failed.
+                time.sleep(1.1)
         media_event("verify_downloaded_file")
         return self._verify_downloaded_path(path)
 

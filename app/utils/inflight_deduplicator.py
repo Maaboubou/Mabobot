@@ -67,7 +67,9 @@ class InFlightDeduplicator:
             if not state.event.wait(self.wait_timeout_seconds):
                 raise TimeoutError(f"Timed out waiting for in-flight operation: {key!r}")
             if state.error is not None:
-                raise RuntimeError(f"Shared operation failed: {state.error}") from state.error
+                # Preserve domain errors so every waiter gets the same retry
+                # policy (a media identity refusal must not become HTTP 500).
+                raise state.error
             if state.result is _MISSING:
                 raise RuntimeError(f"In-flight operation completed without a result: {key!r}")
             return state.result

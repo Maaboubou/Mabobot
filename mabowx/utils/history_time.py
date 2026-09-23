@@ -31,3 +31,17 @@ def history_timestamp(value: str, now: datetime | None = None) -> str:
         return date.replace(hour=int(hour), minute=int(minute), second=0, microsecond=0).strftime('%Y-%m-%d %H:%M:%S')
     except ValueError:
         return value
+
+
+def message_timestamp(value: str, now: datetime) -> float | None:
+    """Resolve a displayed separator; never substitute receipt time for unknown time."""
+    value = str(value or '').strip()
+    normalized = history_timestamp(value, now)
+    try:
+        parsed = datetime.strptime(normalized, '%Y-%m-%d %H:%M:%S')
+    except ValueError:
+        return None
+    # A bare clock just after midnight may belong to the previous day.
+    if re.fullmatch(r'\d{1,2}:\d{2}', value) and parsed > now:
+        parsed -= timedelta(days=1)
+    return parsed.timestamp() if parsed <= now else None

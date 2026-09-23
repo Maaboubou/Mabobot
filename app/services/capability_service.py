@@ -113,7 +113,7 @@ GROUP_META = OrderedDict(
 
 
 ASSISTANT_GROUP_FIELDS = {
-    "reply": {"default_role", "allow_mention_trigger"},
+    "reply": {"default_role", "allow_mention_trigger", "background_after_minutes"},
     "context": {
         "context_limit",
         "max_context_tokens",
@@ -134,6 +134,7 @@ ASSISTANT_GROUP_FIELDS = {
         "codex_reasoning_summary",
         "codex_web_search_mode",
         "codex_turn_timeout_seconds",
+        "codex_network_wait_seconds",
         "codex_max_turns_per_thread",
         "codex_exec_fallback_enabled",
     },
@@ -148,6 +149,7 @@ ASSISTANT_GROUP_FIELDS = {
 }
 
 ASSISTANT_BASIC_FIELDS = {
+    "background_after_minutes",
     "default_role",
     "allow_mention_trigger",
     "codex_persistent_session_enabled",

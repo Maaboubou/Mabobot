@@ -998,6 +998,10 @@ class CodexAgentRuntime:
                 _positive_int(request.get("timeout"), 600),
                 priority=profile.priority,
             ) as manager:
+                from app.assistant.task_supervisor import current_task
+                task = current_task(chat_id)
+                if task:
+                    task.detachable = pool.capacity * len(pool.managers) > 1
                 response = manager.chat(
                     request,
                     chat_id=chat_id,

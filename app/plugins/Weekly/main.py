@@ -1119,6 +1119,9 @@ def _execute_one_chat_task(
 ) -> bool:
     state_path = active_plugin.state_path
     issue_for_log = _next_issue_for_chat(state_path, chat_name)
+    from app.services.plugin_activity import record_plugin_trigger
+
+    record_plugin_trigger("Weekly")
     try:
         logger.info("🗞️ Weekly: 开始处理 chat=%s issue=%s triggered_by=%s", chat_name, issue_for_log, triggered_by)
         pdf_path, issue = _generate_weekly_pdf_for_chat(chat_name, active_plugin)

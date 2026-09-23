@@ -1319,6 +1319,33 @@ def message_callback(msg, chat):
         )
         
         received_at = time.time()
+        sent_at = getattr(msg, 'sent_at', None)
+        archive_only = (
+            sent_at is not None and received_at - sent_at > 600
+        ) or (sent_at is None and bool(getattr(msg, 'history_recovered', False)))
+        if archive_only:
+            # Stop before file downloads, UI link resolution and plugin dispatch.
+            logger.info("积压消息仅存档: chat=%r source_time=%r sent_at=%r", chat_name, getattr(msg, 'time', ''), sent_at)
+            _wait_for_main_app_ready()
+            response = requests.post(
+                f"{MAIN_APP_URL}/api/internal/wechat_message",
+                json={
+                    "content": msg.content, "sender": sender_name,
+                    "sender_id": getattr(msg, 'sender_id', None),
+                    "sender_remark": getattr(msg, 'sender_remark', None),
+                    "chat_name": chat_name, "is_group": is_group_chat,
+                    "type": msg.type, "mtype": getattr(msg, 'mtype', msg.type),
+                    "quote_nickname": quote_nickname or None,
+                    "quote_content": quote_content_str,
+                    "archive_message_id": str(getattr(msg, 'delivery_sequence', 0) or getattr(msg, 'id', '') or uuid.uuid4().hex),
+                    "archive_source": "mabowx_delivery:" + _ARCHIVE_DELIVERY_SESSION,
+                    "timestamp": received_at, "sent_at": sent_at,
+                    "archive_only": True,
+                },
+                timeout=30,
+            )
+            response.raise_for_status()
+            return
 
         # 初始化额外数据
         url = None
@@ -1492,6 +1519,7 @@ def message_callback(msg, chat):
             "tickle_to": tickle_to or None,
             "tickle_suffix": tickle_suffix or None,
             "timestamp": received_at,
+            "sent_at": sent_at,
         }
         
         # 发送到主应用
@@ -2114,7 +2142,7 @@ def download_image_message():
         )
         response = jsonify({
             "status": "retryable",
-            "error_code": "image_ui_identity_changed",
+            "error_code": e.code,
             "message": str(e),
         })
         response.status_code = 503
@@ -2348,6 +2376,11 @@ def _download_quote_media_on_demand(media_kind: str):
         response.status_code = 503
         response.headers["Retry-After"] = "5"
         return response
+    except MediaIdentityError as e:
+        logger.warning("引用%s界面校验失败: chat=%r message_id=%s code=%s reason=%s",
+                       media_kind, chat_name, message_id, e.code, e)
+        return jsonify({"status": "retryable", "error_code": e.code,
+                        "message": str(e)}), 503
     except Exception as e:
         logger.error("按需下载引用%s失败: %s", media_kind, e)
         return jsonify({"status": "error", "message": str(e)}), 500

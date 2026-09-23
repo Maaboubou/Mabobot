@@ -145,10 +145,11 @@
     },
     "codex_turn_timeout_seconds": {
       "type": "integer",
-      "description": "Codex 单轮回复超时；0 表示继承 Codex 运行配置",
-      "default": 0,
-      "minimum": 0,
-      "maximum": 3600
+      "description": "后台任务也受此限制。",
+      "default": 7200,
+      "minimum": 60,
+      "maximum": 43200,
+      "title": "任务最长执行时间（秒）"
     },
     "codex_max_turns_per_thread": {
       "type": "integer",
@@ -197,6 +198,23 @@
       "type": "string",
       "description": "旧版接话规则，仅用于首次迁移；请在接话判断中编辑",
       "default": "## Role\n你是一个谨慎的聊天群组观察员，负责判断 AI 助手是否应该参与当前对话。\n\n## Context\n以下是最近的聊天记录：\n[对话开始]\n{chat_text}\n[对话结束]\n\n## Rules\n- 明确提到机器人、请求帮助或提出适合 AI 回答的问题时，可以回复。\n- 纯表情、复读、礼貌收尾或参与会打扰正常交流时，不回复。\n- 不确定时优先不主动介入。\n\n## Output\n仅输出 JSON：\n{\n  \"atmosphere\": \"当前聊天氛围\",\n  \"should_reply\": true,\n  \"reason\": \"简短说明判断理由\"\n}"
+    },
+    "background_after_minutes": {
+      "type": "integer",
+      "title": "转后台时间（分钟）",
+      "description": "超过此时间后继续在后台执行。",
+      "default": 10,
+      "minimum": 1,
+      "maximum": 120,
+      "step": 1
+    },
+    "codex_network_wait_seconds": {
+      "type": "integer",
+      "title": "连接恢复等待（秒）",
+      "description": "连续连接异常的等待上限。",
+      "default": 1800,
+      "minimum": 30,
+      "maximum": 7200
     }
   },
   "config": {
@@ -205,7 +223,7 @@
     "codex_reasoning_effort": "inherit",
     "codex_reasoning_summary": "inherit",
     "codex_web_search_mode": "inherit",
-    "codex_turn_timeout_seconds": 1800,
+    "codex_turn_timeout_seconds": 7200,
     "codex_max_turns_per_thread": 0,
     "codex_exec_fallback_enabled": true,
     "context_window_auto_detect": true,
@@ -214,6 +232,8 @@
     "proactive_interval_minutes": 1,
     "proactive_msg_threshold": 5,
     "proactive_judge_model": "deepseek-chat",
-    "proactive_judge_prompt": "## Role\n你是一个谨慎的聊天群组观察员，负责判断 AI 助手是否应该参与当前对话。\n\n## Context\n以下是最近的聊天记录：\n[对话开始]\n{chat_text}\n[对话结束]\n\n## Rules\n- 明确提到机器人、请求帮助或提出适合 AI 回答的问题时，可以回复。\n- 纯表情、复读、礼貌收尾或参与会打扰正常交流时，不回复。\n- 不确定时优先不主动介入。\n\n## Output\n仅输出 JSON：\n{\n  \"atmosphere\": \"当前聊天氛围\",\n  \"should_reply\": true,\n  \"reason\": \"简短说明判断理由\"\n}"
+    "proactive_judge_prompt": "## Role\n你是一个谨慎的聊天群组观察员，负责判断 AI 助手是否应该参与当前对话。\n\n## Context\n以下是最近的聊天记录：\n[对话开始]\n{chat_text}\n[对话结束]\n\n## Rules\n- 明确提到机器人、请求帮助或提出适合 AI 回答的问题时，可以回复。\n- 纯表情、复读、礼貌收尾或参与会打扰正常交流时，不回复。\n- 不确定时优先不主动介入。\n\n## Output\n仅输出 JSON：\n{\n  \"atmosphere\": \"当前聊天氛围\",\n  \"should_reply\": true,\n  \"reason\": \"简短说明判断理由\"\n}",
+    "background_after_minutes": 10,
+    "codex_network_wait_seconds": 1800
   }
 }

@@ -178,7 +178,7 @@ class AssistantHandler:
         )
         self.codex_turn_timeout_seconds = max(
             0,
-            min(3600, int(get_config("codex_turn_timeout_seconds", 0, plugin_name=component_name) or 0)),
+            min(43200, int(get_config("codex_turn_timeout_seconds", 7200, plugin_name=component_name) or 7200)),
         )
         self.codex_max_turns_per_thread = max(
             0,
@@ -793,6 +793,12 @@ class AssistantHandler:
         role_name: str,
         automatic: bool,
     ) -> None:
+        from app.assistant.task_supervisor import current_task
+        if getattr(self, '_followup_closed', False):
+            return
+        task = current_task(chat_name)
+        if task is not None and task.activated and not task.store.is_head(task):
+            return
         if chat_type != "group":
             self._cancel_followup_pending(chat_name, reason="not_group")
             return
@@ -2589,6 +2595,7 @@ class AssistantHandler:
             self._bot_display_name_for_chat(chat_name),
             part,
             is_bot=True,
+            metadata={"reply_source": "assistant"},
         )
 
     def _format_response_parts(self, response: str, settings: Dict[str, Any]) -> List[str]:

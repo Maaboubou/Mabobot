@@ -18,7 +18,8 @@ from pathlib import Path
 from app.models.base import get_db
 from app.models.user_permission import WeChatUser
 from app.services.config_service import get_setting
-from app.services.chat_log_index import get_chat_log_index, attach_plugin_replies
+from app.services.chat_log_index import get_chat_log_index
+from app.services.plugin_activity import attach_plugin_activity
 from app.utils.dashboard_events import (
     get_latest_dashboard_event,
     get_recent_dashboard_events,
@@ -872,8 +873,7 @@ def get_dashboard_timeseries(
     try:
         snapshot = get_chat_log_index().snapshot(hours=hours, days=days)
         manager = getattr(request.app.state, "plugin_manager", None)
-        return attach_plugin_replies(snapshot, getattr(manager, "plugins", {}) or {},
-                                     bot_name=str(get_setting("WECHAT_BOT_NAME", "刘局") or ""))
+        return attach_plugin_activity(snapshot, getattr(manager, "plugins", {}) or {})
     except Exception as exc:
         logger.warning("读取聊天趋势失败: %s", exc)
         return {

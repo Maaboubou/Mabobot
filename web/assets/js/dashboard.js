@@ -561,7 +561,7 @@ const Dashboard = {
             date: day.date, value: day.received, text: `收到消息 ${UI.formatNumber(day.received)} 条`,
         })), currentDate);
         this.renderSparkline('sparkReplies', daily.map(day => ({
-            date: day.date, value: day.replies, text: `AI 回复 ${UI.formatNumber(day.replies)} 条`,
+            date: day.date, value: day.replies, text: `Bot发送 ${UI.formatNumber(day.replies)} 条`,
         })), currentDate);
         this.renderSparkline('sparkCost', series.map(day => ({
             date: day.date, value: this.costTotal(day.costs),
@@ -736,6 +736,8 @@ const Dashboard = {
         const container = document.getElementById('dashboardHourlyChart');
         if (!container) return;
         const hourly = timeseries?.hourly || [];
+        const selectedHour = (this.state.hourlyData || [])[this.state.hourlyIndex]?.at;
+        const pinned = this.state.hourlyPinned;
         this.state.hourlyData = hourly;
         this.state.hourlyGeneratedAt = timeseries?.generated_at || null;
         this.state.hourlyIndex = null;
@@ -777,10 +779,12 @@ const Dashboard = {
                 hourly[0],
             );
             summary.textContent = total || replies
-                ? `收到 ${UI.formatNumber(total)} · AI 回复 ${UI.formatNumber(replies)}${total ? ` · 消息峰值 ${busiest.at.slice(11)}:00` : ''}`
+                ? `收到 ${UI.formatNumber(total)} · Bot发送 ${UI.formatNumber(replies)}${total ? ` · 消息峰值 ${busiest.at.slice(11)}:00` : ''}`
                 : '最近 24 小时没有消息';
         }
         container.removeAttribute('data-stale');
+        const selectedIndex = hourly.findIndex(hour => hour.at === selectedHour);
+        if (selectedIndex >= 0) this.showHourTip(selectedIndex, { pinned });
     },
 
     /* 柱图读数：桌面悬浮、手机点按（按横向位置吸附到最近一小时）、
@@ -850,20 +854,25 @@ const Dashboard = {
         const cell = container?.querySelector(`.dashboard-hour[data-hour-index="${index}"]`);
         if (!hour || !tip || !cell || !container) return;
         const received = Math.max(0, Number(hour.received) || 0);
-        const replies = Math.max(0, Number(hour.replies) || 0);
+        const chatReplies = hour.chat_replies != null && Number.isFinite(Number(hour.chat_replies))
+            ? Math.max(0, Number(hour.chat_replies)) : null;
         // Hour buckets are server-local China time, independent of the browser's timezone.
         const start = new Date(`${hour.at}:00:00+08:00`);
         const end = new Date(start.getTime() + 60 * 60 * 1000);
         const partial = String(this.state.hourlyGeneratedAt || '').slice(0, 13) === hour.at;
-        const plugins = (Array.isArray(hour.plugin_replies) ? hour.plugin_replies : [])
+        const plugins = (Array.isArray(hour.plugin_triggers) ? hour.plugin_triggers : [])
             .filter(plugin => Number(plugin.count) > 0)
             .sort((a, b) => Number(b.count) - Number(a.count));
-        const pluginReadout = plugins.length ? `<div class="dashboard-hour-plugins"><small>已记录的插件回复</small>${plugins.map(plugin =>
-            `<span>${UI.escapeHtml(plugin.name || plugin.plugin_id)}<b>${UI.formatNumber(plugin.count)} 条</b></span>`).join('')}</div>` : '';
+        const pluginReadout = plugins.map(plugin =>
+            `<dt>${UI.escapeHtml(plugin.name || plugin.plugin_id)}：</dt><dd>${UI.formatNumber(plugin.count)}<small>次</small></dd>`).join('');
         tip.innerHTML = `
             <strong>${UI.escapeHtml(`${UI.formatShortDateTime(start)} – ${UI.formatShortDateTime(end)}`)}</strong>
-            <span>收到消息 ${UI.formatNumber(received)} · AI 回复 ${UI.formatNumber(replies)}</span>
-            <span>活跃聊天 ${UI.formatNumber(Number(hour.chats) || 0)} 个${partial ? ' · 截至当前' : ''}</span>${pluginReadout}`;
+            <dl class="dashboard-hour-details">
+                <dt>消息数：</dt><dd>${UI.formatNumber(received)}<small>条</small></dd>
+                <dt>聊天回复：</dt><dd>${chatReplies === null ? '—' : UI.formatNumber(chatReplies)}<small>条</small></dd>
+                ${pluginReadout}
+            </dl>
+            <small class="dashboard-hour-note">${hour.plugin_triggers_available === false ? '插件统计暂不可用' : '插件按处理轮次统计'}${partial ? ' · 截至当前' : ''}</small>`;
         tip.hidden = false;
         const half = tip.offsetWidth / 2 + 4;
         const center = cell.offsetLeft + cell.offsetWidth / 2;
@@ -944,9 +953,9 @@ const Dashboard = {
         }
         container.innerHTML = `
             <table class="dashboard-chat-table">
-                <caption class="visually-hidden">今日活跃聊天的收到消息与 AI 回复数量</caption>
+                <caption class="visually-hidden">今日活跃聊天的收到消息与 Bot发送数量</caption>
                 <colgroup><col><col class="dashboard-chat-number"><col class="dashboard-chat-number"></colgroup>
-                <thead><tr><th scope="col">聊天</th><th scope="col">收到消息</th><th scope="col">AI 回复</th></tr></thead>
+                <thead><tr><th scope="col">聊天</th><th scope="col">收到消息</th><th scope="col">Bot发送</th></tr></thead>
                 <tbody>${chats.map(chat => `<tr>
                     <th scope="row" title="${UI.escapeHtml(chat.chat_name || '')}">${UI.escapeHtml(chat.chat_name || '未知聊天')}</th>
                     <td>${UI.formatNumber(Number(chat.received) || 0)}</td>

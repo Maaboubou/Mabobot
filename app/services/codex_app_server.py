@@ -122,6 +122,7 @@ class _TurnTracker:
     request_id: str = ""
     thread_id: str = ""
     started_recorded: bool = False
+    network_wait_since: Optional[float] = None
 
 
 @dataclass
@@ -728,6 +729,11 @@ class CodexThreadStateStore:
         """Detach the physical thread while retaining logical-session totals."""
         normalized = str(chat_id or "").strip()
         with self._lock:
+            # A reset invalidates the old task's right to publish a chat head.
+            # The task may still finish and keep its private result for review.
+            with closing(self._connect()) as connection, connection:
+                if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='assistant_chat_heads'").fetchone():
+                    connection.execute("DELETE FROM assistant_chat_heads WHERE chat=?", (normalized,))
             state = self.get(normalized)
             if not state:
                 return False
@@ -1803,6 +1809,8 @@ class CodexAppServerManager:
         if not turn_id:
             return
         tracker = self._tracker(turn_id)
+        if method.startswith("item/") or method == "thread/tokenUsage/updated":
+            tracker.network_wait_since = None
         if method == "turn/started":
             if not tracker.started_recorded:
                 tracker.started_recorded = self._record_turn_event(
@@ -1892,6 +1900,9 @@ class CodexAppServerManager:
             error = params.get("error") if isinstance(params.get("error"), dict) else {}
             if not params.get("willRetry"):
                 tracker.error = str(error.get("message") or error or "Codex turn failed")
+                tracker.completed.set()
+            elif tracker.network_wait_since is None:
+                tracker.network_wait_since = time.monotonic()
             self._record_turn_event(
                 tracker,
                 "error",
@@ -2300,6 +2311,7 @@ class CodexAppServerManager:
         turn_options: Dict[str, Any],
         timeout: int,
         recovery_attempt: bool = False,
+        assistant_task=None,
     ) -> Tuple[str, _TurnTracker]:
         """Start one App Server turn and wait for its terminal notification."""
         result = self._request(
@@ -2320,6 +2332,9 @@ class CodexAppServerManager:
         tracker = self._tracker(turn_id)
         tracker.request_id = request_id
         tracker.thread_id = thread_id
+        task = assistant_task
+        if task:
+            task.bind(self, thread_id, turn_id)
         codex_job_manager.update(
             request_id,
             status="running",
@@ -2341,11 +2356,24 @@ class CodexAppServerManager:
             tracker.started_recorded = True
 
         try:
-            if not tracker.completed.wait(timeout=timeout):
-                self._interrupt_turn(thread_id, turn_id)
-                raise CodexAppServerError(
-                    f"Codex App Server turn timed out after {timeout}s"
-                )
+            deadline = min(time.monotonic() + timeout, task.deadline) if task and task.deadline else time.monotonic() + timeout
+            network_limit = 1800
+            if task:
+                from app.utils.plugin_config import get_config
+                network_limit = max(30, min(7200, int(get_config('codex_network_wait_seconds', 1800, plugin_name='assistant') or 1800)))
+            network_waiting = False
+            while not tracker.completed.wait(timeout=min(0.5, max(0, deadline - time.monotonic()))):
+                now = time.monotonic()
+                waiting = tracker.network_wait_since is not None
+                if task and waiting != network_waiting:
+                    task.store.update(task.id, status='network_wait' if waiting else 'background' if task.background else 'running')
+                network_waiting = waiting
+                if waiting and now - tracker.network_wait_since >= network_limit:
+                    self._interrupt_turn(thread_id, turn_id)
+                    raise CodexAppServerError(f"Codex connection did not recover within {network_limit}s")
+                if now >= deadline:
+                    self._interrupt_turn(thread_id, turn_id)
+                    raise CodexAppServerError(f"Codex task execution limit reached after {timeout}s")
             if not tracker.usage:
                 tracker.usage_ready.wait(timeout=2)
             if tracker.error or tracker.status not in {"completed", "complete"}:
@@ -2382,9 +2410,11 @@ class CodexAppServerManager:
             raise CodexAppServerError("Codex App Server is disabled")
         if not chat_id:
             raise CodexAppServerError("chat_id is required for persistent Codex threads")
-        with self._chat_lock(chat_id):
+        from app.assistant.task_supervisor import current_task
+        task = current_task(chat_id)
+        with self._chat_lock(task.id if task else chat_id):
             try:
-                return self._chat_locked(
+                response = self._chat_locked(
                     request,
                     chat_id=chat_id,
                     role_name=role_name,
@@ -2392,11 +2422,21 @@ class CodexAppServerManager:
                     max_turns=max(0, int(max_turns or 0)),
                     ephemeral=bool(request.get("mabobot_fresh_context")),
                 )
-            except Exception:
+                if task:
+                    task.error = None
+                    task.completed_result(response)
+                return response
+            except Exception as exc:
+                if task:
+                    task.error = str(exc)
                 from app.services.codex_permission_service import record_receipt
                 record_receipt(request.get("codex_chat_user_id"), request.get("codex_permission_signature"),
                     status="failed", reason_code="runtime_application_failed", runtime_instance=self.permission_worker_id)
                 raise
+            finally:
+                if task:
+                    with self._chat_locks_lock:
+                        self._chat_locks.pop(task.id, None)
 
     def run(self, request: Dict[str, Any], *, profile_name: str = "batch") -> Dict[str, Any]:
         """Run one isolated turn on this long-lived process."""
@@ -2563,7 +2603,13 @@ class CodexAppServerManager:
             output_schema = delivery_schema(output_schema)
 
         runtime_profile = str(request.get("codex_runtime_profile") or "").strip()
-        state = self.state_store.get(chat_id)
+        from app.assistant.task_supervisor import current_task
+        task = current_task(chat_id)
+        if task and task.deadline is None:
+            task.deadline = task.started + timeout
+        if task and time.monotonic() >= task.deadline:
+            raise CodexAppServerError("Assistant task execution limit reached")
+        state = task.load_state(self.state_store) if task else self.state_store.get(chat_id)
         developer_instructions = "\n\n".join(
             text for message in messages
             if message.get("role") in {"system", "developer"}
@@ -2573,6 +2619,29 @@ class CodexAppServerManager:
             # This field was rebuilt from the database at the start of this turn.
             # Keep host authority separate from chat text and persona prompts.
             developer_instructions += "\n\n" + request["codex_permission_instructions"]
+        if task and task.fork_required:
+            # Fork only through the last completed turn from before the parent
+            # task. Never clone an in-progress tool call or its side effects.
+            if state and state.get("thread_id") and state.get("last_turn_id"):
+                policy = ({"permissions": permission_profile,
+                           "runtimeWorkspaceRoots": [_as_runtime_path(p, self.use_wsl) for p in runtime_workspace_roots]}
+                          if permission_profile else {"sandbox": sandbox})
+                result = self._request("thread/fork", {
+                    "threadId": state["thread_id"], "lastTurnId": state["last_turn_id"],
+                    "model": model, "cwd": _as_runtime_path(workdir, self.use_wsl),
+                    "approvalPolicy": approval_policy, "developerInstructions": developer_instructions,
+                    "config": self._thread_config(reasoning_effort, web_search_mode, reasoning_summary), **policy,
+                }, timeout=min(timeout, 120))
+                self._verify_thread_permissions(result, permission_profile, approval_policy, runtime_workspace_roots, sandbox=sandbox)
+                fork_id = str((result.get("thread") or {}).get("id") or "")
+                if not fork_id or fork_id == state["thread_id"]:
+                    raise CodexAppServerError("Codex did not create an independent background branch")
+                state["thread_id"] = fork_id
+                task.state = dict(state)
+            else:
+                state = None
+                task.state = None
+            task.fork_required = False
         migrating_instructions = bool(
             state and state.get("instruction_transport_version") != 1
         )
@@ -2661,6 +2730,11 @@ class CodexAppServerManager:
                 )
                 thread_id = ""
 
+        if task:
+            delta.messages = list(delta.messages)
+            position = next((i for i in range(len(delta.messages) - 1, -1, -1)
+                             if delta.messages[i].get('role') == 'user'), len(delta.messages))
+            delta.messages[position:position] = task.context_messages()
         archive_cursor = None
         if incremental_context:
             from app.history.tools import get_archive
@@ -2935,6 +3009,7 @@ class CodexAppServerManager:
                 turn_input=turn_input,
                 turn_options=turn_options,
                 timeout=timeout,
+                assistant_task=task,
             )
             turn_ids.append(turn_id)
             from app.services.codex_permission_service import record_receipt
@@ -3026,6 +3101,7 @@ class CodexAppServerManager:
                         turn_options=turn_options,
                         timeout=timeout,
                         recovery_attempt=True,
+                        assistant_task=task,
                     )
                     turn_ids.append(turn_id)
                     turn_trackers.append(tracker)
@@ -3306,9 +3382,9 @@ class CodexAppServerManager:
                 # its thread resumable on the next reply.
                 state_payload["context_policy"] = "fresh"
                 state_payload["thread_reusable"] = False
-                self.state_store.put(chat_id, state_payload)
+                task.save_state(state_payload) if task else self.state_store.put(chat_id, state_payload)
             elif not ephemeral:
-                self.state_store.put(chat_id, state_payload)
+                task.save_state(state_payload) if task else self.state_store.put(chat_id, state_payload)
             codex_job_manager.update(
                 request_id,
                 status="completed",
@@ -3371,7 +3447,13 @@ class CodexAppServerManager:
             }
         except Exception as exc:
             if incremental_context:
-                self.invalidate_chat(chat_id, reason="incomplete_turn")
+                if task:
+                    broken = dict(task.state or {})
+                    broken.update(thread_id=None, last_turn_id=None, continuity_status="rotation_pending",
+                                  pending_rotation_reason="incomplete_turn")
+                    task.save_state(broken)
+                else:
+                    self.invalidate_chat(chat_id, reason="incomplete_turn")
             partial = []
             for tracker in turn_trackers:
                 partial.extend(tracker.usage_segments or [_normalize_app_server_usage(tracker.usage)])

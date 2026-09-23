@@ -18,6 +18,11 @@ PREFETCH_CONTEXT_KEY = "quote_image_prefetch"
 
 
 class QuoteImagePrefetch:
+    event_type = EventType.QUOTE_IMAGE_MESSAGE_RECEIVED
+    path_key = "quote_image_path"
+    context_key = PREFETCH_CONTEXT_KEY
+    download_method = "download_quote_image"
+
     def __init__(self, handler, db_session_factory, directory=None):
         self.handler = handler
         self.db_session_factory = db_session_factory
@@ -57,9 +62,9 @@ class QuoteImagePrefetch:
         )
 
     def submit(self, event):
-        if event.type != EventType.QUOTE_IMAGE_MESSAGE_RECEIVED or event.source != "wx_bot_internal":
+        if event.type != self.event_type or event.source != "wx_bot_internal":
             return
-        if not event.data.get("message_id") or event.data.get("quote_image_path"):
+        if not event.data.get("message_id") or event.data.get(self.path_key):
             return
         key = (str(event.data.get("chat_name") or ""), str(event.data["message_id"]))
         with self._lock:
@@ -69,7 +74,7 @@ class QuoteImagePrefetch:
             self._pending = {k: v for k, v in self._pending.items()
                              if not v[1].done() or now - v[0] < 600}
             if key in self._pending:
-                event.context[PREFETCH_CONTEXT_KEY] = self._pending[key][1]
+                event.context[self.context_key] = self._pending[key][1]
                 return
             if not self._slots.acquire(blocking=False):
                 logger.warning("引用图片预取队列已满: chat=%s message_id=%s", *key)
@@ -81,7 +86,7 @@ class QuoteImagePrefetch:
                 raise
             future.add_done_callback(lambda _future: self._slots.release())
             self._pending[key] = (now, future)
-            event.context[PREFETCH_CONTEXT_KEY] = future
+            event.context[self.context_key] = future
 
     def _capture(self, event, key):
         temporary = None
@@ -92,8 +97,9 @@ class QuoteImagePrefetch:
             if wx is None:
                 return None
             started = time.monotonic()
-            logger.info("引用图片开始提前保存: chat=%s message_id=%s", *key)
-            source = wx.download_quote_image(key[0], message_id=key[1])
+            logger.info("图片开始提前保存: kind=%s chat=%s message_id=%s ingress_wait_ms=%.0f",
+                        self.download_method, *key, max(0, time.time() - event.timestamp) * 1000)
+            source = getattr(wx, self.download_method)(key[0], message_id=key[1])
             if not source or not Path(source).is_file():
                 raise RuntimeError("原引用图片未能下载")
             source = Path(source)
@@ -119,6 +125,34 @@ class QuoteImagePrefetch:
         with self._lock:
             self._closed = True
         self._pool.shutdown(wait=False, cancel_futures=True)
+
+
+class ImagePrefetch(QuoteImagePrefetch):
+    """Save ordinary images while their rows are still visible, before the chat queue."""
+    event_type = EventType.IMAGE_MESSAGE_RECEIVED
+    path_key = "file_path"
+    context_key = "image_prefetch"
+    download_method = "download_image_message"
+
+    def __init__(self, handler, db_session_factory, directory=None):
+        super().__init__(handler, db_session_factory, directory or
+                         Path(__file__).resolve().parents[2] / "data/image_prefetch")
+
+    def _allowed(self, event):
+        from app.plugins.builtin_chat_logger.main import chat_logger_plugin
+        if chat_logger_plugin is None or "image" not in chat_logger_plugin.log_message_types:
+            return False
+        with self.db_session_factory() as db:
+            user = db.query(WeChatUser).filter(WeChatUser.chat_name == event.data.get("chat_name")).first()
+            if not user or event.data.get("sender") in _parse_sender_blacklist(user.sender_blacklist):
+                return False
+            permission = next((p for p in user.permissions
+                               if p.plugin_name.rsplit("/", 1)[-1] == "builtin_chat_logger"), None)
+            if permission is None:
+                return False
+            if permission.require_mention and event.data.get("chat_type") == "group" and not self.handler._event_mentions_bot(event):
+                return False
+            return chat_logger_plugin.is_image_enrichment_enabled(chat_id=user.id)
 
 
 def resolve_quote_image_prefetch(event):

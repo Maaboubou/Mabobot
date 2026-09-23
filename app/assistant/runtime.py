@@ -25,6 +25,8 @@ class AssistantRuntime:
         self._listener_ids: List[str] = []
         self._last_error = ""
         self._quote_prefetch = None
+        self._image_prefetch = None
+        self._tasks = None
 
     @property
     def handler(self) -> Optional[AssistantHandler]:
@@ -33,15 +35,15 @@ class AssistantRuntime:
 
     def _handle_text(self, event: Event):
         handler = self.handler
-        return handler.handle_text_message(event) if handler is not None else False
+        return self._tasks.dispatch(event, handler.handle_text_message) if handler is not None and self._tasks else False
 
     def _handle_quote_image(self, event: Event):
         handler = self.handler
-        return handler.handle_quote_image_message(event) if handler is not None else False
+        return self._tasks.dispatch(event, handler.handle_quote_image_message) if handler is not None and self._tasks else False
 
     def _handle_quote_video(self, event: Event):
         handler = self.handler
-        return handler.handle_quote_video_message(event) if handler is not None else False
+        return self._tasks.dispatch(event, handler.handle_quote_video_message) if handler is not None and self._tasks else False
 
     def start(self, event_bus: EventBus) -> bool:
         with self._lock:
@@ -55,6 +57,9 @@ class AssistantRuntime:
         try:
             handler = AssistantHandler(context=None)
             handler.event_bus = event_bus
+            from app.assistant.task_supervisor import AssistantTaskSupervisor
+            from app.services.codex_app_server import CodexThreadStateStore
+            self._tasks = AssistantTaskSupervisor(CodexThreadStateStore())
             subscriptions = (
                 (EventType.TEXT_MESSAGE_RECEIVED, self._handle_text, "text"),
                 (EventType.QUOTE_IMAGE_MESSAGE_RECEIVED, self._handle_quote_image, "quote-image"),
@@ -81,14 +86,25 @@ class AssistantRuntime:
             with self._lock:
                 self._handler = handler
                 self._listener_ids = listener_ids
-                from app.assistant.quote_prefetch import QuoteImagePrefetch
+                from app.assistant.quote_prefetch import ImagePrefetch, QuoteImagePrefetch
                 self._quote_prefetch = QuoteImagePrefetch(handler, event_bus.db_session_factory)
+                self._image_prefetch = ImagePrefetch(handler, event_bus.db_session_factory)
                 event_bus.context["quote_image_prefetch"] = self._quote_prefetch.submit
+                event_bus.context["image_prefetch"] = self._image_prefetch.submit
+                event_bus.context["assistant_task_control"] = lambda event: self._tasks.submit_control(
+                    event, event_bus.db_session_factory, self.handler) if self._tasks and self.handler else None
             logger.info("Core Codex assistant started with %s listeners", len(listener_ids))
             return True
         except Exception as exc:
             for listener_id in listener_ids:
                 event_bus.unsubscribe(listener_id)
+            for key, resource in (("quote_image_prefetch", self._quote_prefetch),
+                                  ("image_prefetch", self._image_prefetch),
+                                  ("assistant_task_control", self._tasks)):
+                event_bus.context.pop(key, None)
+                if resource is not None:
+                    resource.close()
+            self._quote_prefetch = self._image_prefetch = self._tasks = None
             if handler is not None:
                 try:
                     handler.close()
@@ -107,16 +123,26 @@ class AssistantRuntime:
             listener_ids = list(self._listener_ids)
             handler = self._handler
             prefetch = self._quote_prefetch
+            image_prefetch = self._image_prefetch
+            tasks = self._tasks
+            self._tasks = None
+            self._image_prefetch = None
             self._quote_prefetch = None
             self._listener_ids = []
             self._handler = None
             self._event_bus = None
         if event_bus is not None:
             event_bus.context.pop("quote_image_prefetch", None)
+            event_bus.context.pop("image_prefetch", None)
+            event_bus.context.pop("assistant_task_control", None)
             for listener_id in listener_ids:
                 event_bus.unsubscribe(listener_id)
         if prefetch is not None:
             prefetch.close()
+        if image_prefetch is not None:
+            image_prefetch.close()
+        if tasks is not None:
+            tasks.close()
         if handler is not None:
             try:
                 handler.close()
@@ -128,8 +154,25 @@ class AssistantRuntime:
             event_bus = self._event_bus
         if event_bus is None:
             return False
-        self.stop()
-        return self.start(event_bus)
+        # Settings saves must not cancel a turn or lose its background owner.
+        try:
+            replacement = AssistantHandler(context=None)
+            replacement.event_bus = event_bus
+            with self._lock:
+                old = self._handler
+                self._handler = replacement
+                if self._quote_prefetch:
+                    self._quote_prefetch.handler = replacement
+                if self._image_prefetch:
+                    self._image_prefetch.handler = replacement
+            if old is not None:
+                # close() only retires follow-up timers/judges. Existing reply
+                # calls keep their handler reference and continue normally.
+                old.close()
+            return True
+        except Exception:
+            logger.exception("Assistant settings reload failed")
+            return False
 
     def status(self) -> Dict[str, Any]:
         with self._lock:
@@ -143,6 +186,7 @@ class AssistantRuntime:
             "listener_count": listener_count,
             "pending_followups": len(handler._followup_sessions) if handler is not None else 0,
             "error": error,
+            "tasks": self._tasks.status() if self._tasks else [],
         }
 
 _assistant_runtime: Optional[AssistantRuntime] = None

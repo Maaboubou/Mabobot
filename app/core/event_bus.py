@@ -16,6 +16,7 @@ import queue
 import time
 
 from app.services.llm_usage_context import usage_context
+from app.services.plugin_activity import record_message_trigger
 
 from sqlalchemy.orm import Session
 from app.models.assistant_policy import AssistantChatPolicy
@@ -281,12 +282,13 @@ class EventBus:
 
         # Add event to user's queue
         try:
-            prepare = self.context.get("quote_image_prefetch")
-            if callable(prepare):
-                try:
-                    prepare(event)
-                except Exception:
-                    self.logger.exception("Quote image ingress preparation failed")
+            for key in ("quote_image_prefetch", "image_prefetch", "assistant_task_control"):
+                prepare = self.context.get(key)
+                if callable(prepare):
+                    try:
+                        prepare(event)
+                    except Exception:
+                        self.logger.exception("Image ingress preparation failed: %s", key)
             self._user_queues[chat_name].put(event, block=False)
             self.logger.debug(f"Enqueued event {event.type} for user '{chat_name}'")
         except queue.Full:
@@ -568,17 +570,23 @@ class EventBus:
                             plugin_name: str,
                             owner_kind: str,
                             display_name: str,
+                            observe: bool,
                         ):
                             self._wx = wx_obj
                             self._evt = evt
                             self._plugin_name = plugin_name
                             self._owner_kind = owner_kind
                             self._display_name = display_name
+                            self._observe = observe
                             self.consumed = False
 
                         def _mark_consumed(self):
                             # A delayed send cannot consume a different listener's turn.
+                            if self.consumed:
+                                return
                             self.consumed = True
+                            record_message_trigger(self._plugin_name, self._evt.id,
+                                                   observe=self._observe, owner_kind=self._owner_kind)
 
                         def _get_bot_display_name(self) -> str:
                             bot_display_name = None
@@ -671,14 +679,27 @@ class EventBus:
                             return result_inner
 
                         def send_files(self, *args, **kwargs):
-                            kwargs.pop('silent', False)
-                            kwargs.pop('skip_log', False)
-                            kwargs.pop('log_sender', None)
-                            kwargs.pop('log_name', None)
-                            kwargs.pop('log_speaker', None)
+                            silent = kwargs.pop('silent', False)
+                            skip_log = kwargs.pop('skip_log', False)
+                            log_sender = kwargs.pop('log_sender', None)
+                            log_name = kwargs.pop('log_name', None)
+                            log_speaker = kwargs.pop('log_speaker', None)
                             result_inner = getattr(self._wx, 'send_files')(*args, **kwargs)
                             if result_inner:
                                 self._mark_consumed()
+                                if not (silent or skip_log):
+                                    chat_name = args[0] if args else kwargs.get('chat_name')
+                                    file_paths = args[1] if len(args) >= 2 else kwargs.get('file_paths', [])
+                                    if isinstance(file_paths, (str, Path)):
+                                        file_paths = [file_paths]
+                                    # Each delivered attachment is one reply, including
+                                    # images/videos sent by background plugin tasks.
+                                    for file_path in file_paths:
+                                        filename = str(file_path).replace('\\', '/').rsplit('/', 1)[-1]
+                                        self._save_bot_response(
+                                            chat_name, f"[文件] {filename}",
+                                            log_sender or log_name or log_speaker,
+                                        )
                             return result_inner
 
                         def send_url_card(self, *args, **kwargs):
@@ -716,6 +737,7 @@ class EventBus:
                             listener.plugin_name,
                             listener.owner_kind,
                             listener.display_name,
+                            listener.propagation == "observe" or not event.type.value.endswith("_received"),
                         )
                         event.context['wx'] = consume_proxy
                         proxy_installed = True
@@ -740,16 +762,19 @@ class EventBus:
             except Exception as e:
                 self.logger.error(f"Error in event handler {listener.plugin_name}: {e}")
                 result = None
+            consumed = (
+                result is True
+                or (isinstance(result, dict) and result.get("consumed") is True)
+                or (consume_proxy is not None and consume_proxy.consumed)
+                or (isinstance(event.data, dict) and event.data.get("_consumed") is True)
+                or (isinstance(event.context, dict) and event.context.get("_consumed") is True)
+            )
+            if consumed:
+                record_message_trigger(listener.plugin_name, event.id,
+                                       observe=listener.propagation == "observe" or not event.type.value.endswith("_received"),
+                                       owner_kind=listener.owner_kind)
             # 仅当 Manifest 声明 stop_on_consumed，且处理器报告已消费时停止传播。
             if listener.propagation == "stop_on_consumed":
-                consumed = (
-                    result is True
-                    or (isinstance(result, dict) and result.get("consumed") is True)
-                    or (consume_proxy is not None and consume_proxy.consumed)
-                    or (isinstance(event.data, dict) and event.data.get("_consumed") is True)
-                    or (isinstance(event.context, dict) and event.context.get("_consumed") is True)
-                )
-
                 if consumed:
                     self.logger.debug(
                         f"Propagation stopped by plugin '{listener.id}' after handling {event.type.value}"

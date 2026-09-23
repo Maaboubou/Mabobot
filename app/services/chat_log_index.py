@@ -48,6 +48,7 @@ class _ChatCounters:
 class _Bucket:
     received: int = 0
     replies: int = 0
+    chat_replies: int = 0
     chats: Set[str] = field(default_factory=set)
     reply_senders: Dict[str, int] = field(default_factory=dict)
 
@@ -264,6 +265,10 @@ class ChatLogIndex:
                     sender = str(entry.get("sender") or "")
                     is_bot = entry.get("is_bot") is True or bool(bot_name and sender == bot_name)
                     _bump(state.hours, hour_key, chat_name, is_bot, sender if entry.get("is_bot") is True else "")
+                    metadata = entry.get("metadata") or {}
+                    if is_bot and ((bot_name and sender == bot_name)
+                                   or (isinstance(metadata, dict) and metadata.get("reply_source") == "assistant")):
+                        state.hours[hour_key].chat_replies += 1
                     _bump(state.minutes, minute_key, chat_name, is_bot)
                     _bump(state.days, day_key, chat_name, is_bot)
                     if day_key == today_key:
@@ -350,7 +355,7 @@ def _bump(buckets: Dict[str, _Bucket], key: str, chat_name: str, is_bot: bool, r
 
 
 def _merge_buckets(buckets: Iterable[Optional[_Bucket]], *, include_reply_senders: bool = False) -> Dict[str, Any]:
-    received = replies = 0
+    received = replies = chat_replies = 0
     chats: Set[str] = set()
     reply_senders: Dict[str, int] = {}
     for bucket in buckets:
@@ -360,11 +365,13 @@ def _merge_buckets(buckets: Iterable[Optional[_Bucket]], *, include_reply_sender
         replies += bucket.replies
         chats |= bucket.chats
         if include_reply_senders:
+            chat_replies += bucket.chat_replies
             for sender, count in bucket.reply_senders.items():
                 reply_senders[sender] = reply_senders.get(sender, 0) + count
     result: Dict[str, Any] = {"received": received, "replies": replies, "chats": len(chats)}
     if include_reply_senders:
         result["reply_senders"] = reply_senders
+        result["chat_replies"] = chat_replies
     return result
 
 

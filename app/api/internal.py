@@ -5,6 +5,8 @@
 """
 
 import logging
+import time
+from datetime import datetime
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from typing import Optional
@@ -73,6 +75,8 @@ class WeChatMessage(BaseModel):
     tickle_to: Optional[str] = None
     tickle_suffix: Optional[str] = None
     timestamp: float
+    sent_at: Optional[float] = None
+    archive_only: bool = False
     archive_message_id: Optional[str] = None
     archive_source: Optional[str] = None
 
@@ -88,6 +92,27 @@ async def receive_wechat_message(
     if not event_bus or not wechat_manager:
         logger.error("Event bus or WeChat manager not available")
         return {"status": "error", "message": "Core components not available"}
+
+    # Old deliveries are archived directly, before even the generic quote event.
+    # Do not invoke logger plugin handlers: image enrichment can download media.
+    if message.archive_only or (message.sent_at is not None and time.time() - message.sent_at > 600):
+        from app.assistant.chat_log import ChatLogManager
+        row_id = ChatLogManager().save_message(
+            message.chat_name, message.sender, message.content,
+            sender_id=message.sender_id or '', sender_remark=message.sender_remark or '',
+            message_type=message.mtype,
+            source_message_id=message.archive_message_id or '',
+            source_id_namespace=message.archive_source or 'wx_action',
+            occurred_at=datetime.fromtimestamp(message.sent_at).strftime('%Y-%m-%d %H:%M:%S') if message.sent_at is not None else '',
+            received_at=datetime.fromtimestamp(message.timestamp).strftime('%Y-%m-%d %H:%M:%S'),
+            metadata={"archive_only": True, "quote_nickname": message.quote_nickname,
+                      "quote_content": message.quote_content},
+        )
+        if not row_id:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=500, detail='积压消息存档失败')
+        logger.info("积压消息仅存档，跳过自动处理: chat=%r sent_at=%r", message.chat_name, message.sent_at)
+        return {"status": "success", "archive_only": True}
 
     # 根据消息类型确定事件类型
     # 优先根据显式URL判断为链接事件；其次检查mtype

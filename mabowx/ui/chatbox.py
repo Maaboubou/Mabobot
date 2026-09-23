@@ -2354,6 +2354,7 @@ class ChatBox(BaseUISubWnd):
     def _get_new_messages_serialized(self) -> list:
         if self._visible_list_is_unchanged():
             return []
+        recovering = self._last_anchor_missing
         visible_messages = self._read_delivery_messages()
         messages = self._consume_messages(visible_messages)
         # Keep direction evidence only for this exact visible delivery baseline.
@@ -2391,6 +2392,7 @@ class ChatBox(BaseUISubWnd):
             self._anchor_recovery_last_attempt = time.monotonic()
             self._last_anchor_recovery_result = recovery_result
             if recovered is not None:
+                recovering = True
                 self._delivery_direction_snapshot = None
                 visible_messages = final_visible
                 messages = recovered
@@ -2421,6 +2423,11 @@ class ChatBox(BaseUISubWnd):
         ]
         attach_delivery_context(visible_messages, context_candidates)
         for message in messages:
+            if recovering:
+                from datetime import datetime
+                from mabowx.utils.history_time import message_timestamp
+                message.history_recovered = True
+                message.sent_at = message_timestamp(getattr(message, 'time', ''), datetime.now())
             self._delivery_sequence += 1
             message.delivery_sequence = self._delivery_sequence
         messages = self._resolve_group_senders(messages)

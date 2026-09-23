@@ -204,6 +204,7 @@ class ChatLoggerPlugin:
 
             if enrichment_enabled and row_id:
                 data = dict(event.data or {})
+                data["_image_prefetch"] = (event.context or {}).get("image_prefetch")
                 wx_manager = (event.context or {}).get("wx")
                 self.context.workers.start(
                     f"image-enrichment-{chat_name}-{message_id or time.time_ns()}",
@@ -225,7 +226,13 @@ class ChatLoggerPlugin:
             if not self.is_image_enrichment_enabled(chat_id=chat_id):
                 self.chat_log_manager.update_image_enrichment(chat_name, row_id, status="disabled")
                 return
-            if (not file_path or not os.path.exists(file_path)) and wx_manager and message_id:
+            prefetch = data.get("_image_prefetch")
+            if prefetch is not None:
+                # A completed failure must not trigger another click against a stale row.
+                result = prefetch.result(timeout=135)
+                if result and result.get("status") == "ready":
+                    file_path = result["path"]
+            if prefetch is None and (not file_path or not os.path.exists(file_path)) and wx_manager and message_id:
                 file_path = wx_manager.download_image_message(chat_name, message_id) or ""
 
             if not file_path or not os.path.exists(file_path):

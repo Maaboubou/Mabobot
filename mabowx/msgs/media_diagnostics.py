@@ -62,7 +62,7 @@ def media_event(event, *, level="info", **details):
         if trace is not None:
             payload["elapsed_ms"] = round((time.monotonic() - trace["started"]) * 1000)
             payload.pop("started", None)
-            if event not in {"failed", "completed", "preview_timeout_snapshot"}:
+            if event not in {"failed", "completed", "preview_timeout_snapshot"} and not event.startswith("preview_cleanup"):
                 trace["stage"] = event
                 payload["stage"] = event
         payload.update(details)

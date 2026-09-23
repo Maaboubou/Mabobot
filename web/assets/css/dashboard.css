@@ -695,15 +695,16 @@
     top: 0;
     z-index: 2;
     display: grid;
-    gap: 2px;
-    padding: 6px 10px;
+    gap: 8px;
+    padding: 12px 14px;
     border: 1px solid var(--border-color);
     border-radius: var(--radius-sm);
     background: var(--bg-card);
     box-shadow: var(--shadow-md);
     color: var(--text-secondary);
-    font-size: 11px;
-    line-height: 1.35;
+    font-size: 12px;
+    line-height: 1.5;
+    width: 280px;
     max-width: calc(100% - 8px);
     max-height: 280px;
     overflow-y: auto;
@@ -712,21 +713,26 @@
     pointer-events: auto;
 }
 
-.dashboard-hour-plugins {
+.dashboard-hour-details {
     display: grid;
-    gap: 4px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px 20px;
+    margin: 0;
+}
+
+.dashboard-hour-details dt { font-weight: 400; }
+.dashboard-hour-details dd {
+    margin: 0;
+    text-align: right;
+    color: var(--text-main);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+.dashboard-hour-details dd small { margin-left: 6px; color: var(--text-secondary); }
+.dashboard-hour-note {
     border-top: 1px solid var(--border-soft);
-    margin-top: 4px;
-    padding-top: 6px;
+    padding-top: 8px;
 }
-
-.dashboard-hour-plugins > span {
-    display: flex;
-    justify-content: space-between;
-    gap: 16px;
-}
-
-.dashboard-hour-plugins b { white-space: nowrap; font-weight: 500; }
 
 .dashboard-hour-tip strong {
     color: var(--text-main);

@@ -660,8 +660,21 @@ class WeChatManager:
                     },
                     timeout=timeout
                 )
-                response.raise_for_status()
-                data = response.json()
+                try:
+                    data = response.json()
+                except ValueError:
+                    data = {}
+                if not response.ok:
+                    code = str(data.get("error_code") or "http_error")
+                    reason = str(data.get("message") or response.reason)
+                    self.logger.warning("引用%s下载失败: message_id=%s status=%s code=%s reason=%s",
+                                        media_label, message_id, response.status_code, code, reason)
+                    last_exception = RuntimeError(f"{code}: {reason}")
+                    if code in {"preview_busy_unowned", "image_identity_mismatch"} or response.status_code < 500:
+                        break
+                    if attempt < len(retry_configs):
+                        time.sleep(1)
+                    continue
 
                 if data.get("status") == "success":
                     file_path = data.get("file_path")
@@ -757,7 +770,7 @@ class WeChatManager:
                     error_msg = str(data.get("message") or response.reason or "未知错误")
                     last_exception = Exception(f"{error_code}: {error_msg}")
 
-                    if error_code == "image_identity_mismatch":
+                    if error_code in {"image_identity_mismatch", "preview_busy_unowned"}:
                         self.logger.warning(
                             "🖼️ 图片身份校验拒绝，不再重复下载: "
                             f"message_id={message_id} reason={error_msg}"
