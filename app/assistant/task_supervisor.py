@@ -168,8 +168,6 @@ class TaskScope:
         self.detachable = True
         self.done = threading.Event()
         self.bound = threading.Event()
-        self.notice_done = threading.Event()
-        self.notice_done.set()
         self.manager = None
         self.thread_id = self.turn_id = ''
         self.started = time.monotonic()
@@ -201,15 +199,16 @@ class TaskScope:
 
     def context_messages(self):
         messages = []
+        internal_context = '内部任务上下文，仅用于衔接会话；对外回复不要提及任务编号或后台状态。\n'
         if self.parent:
             messages.append({'role': 'user', 'name': 'background_task_context', 'content':
-                             (f'本轮继续已完成任务 {self.parent.id[:8]}，沿用其会话历史。' if self.parent.done.is_set() else
+                             internal_context + (f'本轮继续已完成任务 {self.parent.id[:8]}，沿用其会话历史。' if self.parent.done.is_set() else
                               f'后台任务 {self.parent.id[:8]} 由独立会话继续执行。本轮只处理当前新请求，避免重复执行后台任务。')})
         excluded = set((self.state or {}).get('background_receipts', [])) | {self.id}
         for task_id, result in self.store.completions(self.chat, excluded):
             self.receipts.append(task_id)
             messages.append({'role': 'user', 'name': 'background_task_result', 'content':
-                             f'后台任务 {task_id[:8]} 已完成，以下为结果摘要和产物记录：\n' + json.dumps(result, ensure_ascii=False)[:6000]})
+                             internal_context + f'后台任务 {task_id[:8]} 已完成，以下为结果摘要和产物记录：\n' + json.dumps(result, ensure_ascii=False)[:6000]})
         return messages
 
     def bind(self, manager, thread_id, turn_id):
@@ -232,27 +231,13 @@ class TaskScope:
 class TaskWechatProxy:
     def __init__(self, wx, task):
         self._wx, self._task = wx, task
-        self._labelled = False
 
     def __getattr__(self, name):
         value = getattr(self._wx, name)
-        if name == 'outbound_send_session':
-            def session(*args, **kwargs):
-                # Wait before acquiring WeChat's send mutex; the background
-                # acknowledgement needs that same mutex to finish.
-                if self._task.background:
-                    self._task.notice_done.wait(timeout=150)
-                return value(*args, **kwargs)
-            return session
         if name not in {'send_message', 'send_files', 'send_url_card'}:
             return value
 
         def send(*args, **kwargs):
-            if self._task.background:
-                self._task.notice_done.wait(timeout=150)
-            if name == 'send_message' and self._task.background and not self._labelled and len(args) >= 2:
-                self._labelled = True
-                args = (args[0], f'任务 {self._task.id[:8]}：\n{args[1]}', *args[2:])
             return self._task.store.delivery(self._task, name, args, kwargs, value)
         return send
 
@@ -343,26 +328,10 @@ class AssistantTaskSupervisor:
                 if task.done.is_set() or task.result_ready or any(t.background and not t.done.is_set() for t in self._active.values()):
                     continue
                 task.background = True
-                task.notice_done.clear()
                 self.store.update(task.id, status='background', background=1)
-            try:
-                notice = self._control_pool.submit(self._background_notice, task, wx)
-                notice.add_done_callback(lambda _: task.notice_done.set())
-            except RuntimeError:
-                task.notice_done.set()
             logger.info('Assistant task detached: chat=%s task=%s elapsed=%.1fs', chat, task.id, time.monotonic() - task.started)
             return True
         return future.result()
-
-    def _background_notice(self, task, wx):
-        try:
-            if wx is not None:
-                self.store.delivery(task, 'send_message', (task.chat, f'任务 {task.id[:8]} 已转后台，可以继续发送新任务。'),
-                                    {'silent': True}, wx.send_message)
-        except Exception:
-            logger.exception('Background acknowledgement failed: task=%s', task.id)
-        finally:
-            task.notice_done.set()
 
     def _run(self, task, event, handler):
         token = _task.set(task)
