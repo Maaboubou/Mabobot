@@ -10,6 +10,7 @@ from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 from urllib.parse import urlparse
 import requests
+from mabobot_logging import current_log_context
 
 from .event_bus import EventBus, get_event_bus, Event, EventType
 from ..utils.health_state import ConsecutiveHealthGate, should_resync_connection
@@ -22,6 +23,10 @@ CONNECTION_MONITOR_INTERVAL_SEC = 5
 CONNECTION_FAILURE_THRESHOLD = 3
 CONNECTION_RECOVERY_THRESHOLD = 2
 TEXT_SEND_API_TIMEOUT_SEC = 30
+
+
+def _trace_headers(fallback: Optional[str] = None) -> Dict[str, str]:
+    return {"X-Trace-ID": current_log_context().get("trace_id") or str(fallback or uuid.uuid4().hex)}
 
 @dataclass
 class MessageInfo:
@@ -79,6 +84,7 @@ class WeChatManager:
         单次 UI 事务、目标校验和重试均由 mabowx 内部负责。
         """
         with self._outbound_send_lock:
+            trace_headers = _trace_headers(str(payload.get("request_id") or ""))
             self.logger.debug(
                 "Acquired WeChat outbound send lock: endpoint=%s chat=%s",
                 endpoint,
@@ -87,7 +93,8 @@ class WeChatManager:
             return self._http.post(
                 f"{WX_BOT_URL}{endpoint}",
                 json=payload,
-                timeout=timeout
+                timeout=timeout,
+                headers=trace_headers,
             )
 
     @contextmanager
@@ -400,12 +407,16 @@ class WeChatManager:
                     data.get("route"),
                     data.get("attempt_count"),
                     message[:50],
+                    extra={"event": "wechat.text.send.completed", "request_id": request_id,
+                           "chat": chat_name, "outcome": "success"},
                 )
                 # 增加处理消息计数：只有成功发送回复时才计数
                 self._stats['messages_processed'] += 1
                 return True
             else:
-                self.logger.error(f"Failed to send message via API: {data.get('message')}")
+                self.logger.error("Failed to send message via API: %s", data.get('message'),
+                                  extra={"event": "wechat.text.send.failed", "request_id": request_id,
+                                         "chat": chat_name, "error_code": "bot_send_failed"})
                 return False
         except requests.HTTPError as e:
             response_body = ""
@@ -586,10 +597,12 @@ class WeChatManager:
             return None
 
         try:
+            trace_id = _trace_headers(message_id)["X-Trace-ID"]
             response = self._http.post(
                 f"{WX_BOT_URL}/api/resolve_link_url",
                 json={"chat_name": chat_name, "message_id": message_id, "timeout": timeout},
-                timeout=max(timeout + 15, 20)
+                timeout=max(timeout + 15, 20),
+                headers={"X-Trace-ID": trace_id},
             )
             response.raise_for_status()
             data = response.json()
@@ -602,7 +615,24 @@ class WeChatManager:
             self.logger.error(f"❌ 链接卡片URL解析失败: {data.get('message')}")
             return None
         except requests.RequestException as e:
-            self.logger.error(f"❌ Failed to call resolve_link_url API: {e}")
+            response = getattr(e, "response", None)
+            status_code = getattr(response, "status_code", None)
+            reason = None
+            if response is not None:
+                try:
+                    payload = response.json()
+                    if isinstance(payload, dict):
+                        reason = payload.get("message")
+                except ValueError:
+                    pass
+            self.logger.error(
+                "❌ Failed to call resolve_link_url API: %s "
+                "chat=%s message_id=%s status=%s reason=%s",
+                e, chat_name, message_id, status_code, reason,
+                extra={"event": "wechat.link.resolve.failed", "trace_id": trace_id,
+                       "chat": chat_name, "message_id": message_id,
+                       "error_code": "bot_http_error"},
+            )
             return None
 
     def _download_quote_media(
@@ -658,7 +688,8 @@ class WeChatManager:
                         "message_id": message_id,
                         "timeout": 120 if is_video else 30,
                     },
-                    timeout=timeout
+                    timeout=timeout,
+                    headers=_trace_headers(message_id),
                 )
                 try:
                     data = response.json()
@@ -758,7 +789,8 @@ class WeChatManager:
                 response = self._http.post(
                     f"{WX_BOT_URL}/api/download_image_message",
                     json={"chat_name": chat_name, "message_id": message_id},
-                    timeout=timeout
+                    timeout=timeout,
+                    headers=_trace_headers(message_id),
                 )
                 try:
                     data = response.json()

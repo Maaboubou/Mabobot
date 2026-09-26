@@ -1,6 +1,7 @@
 """Usage normalization and reproducible, route-specific token pricing.
 
-Prices are snapshots verified 2026-09-07. No network calls on the request path.
+GPT-6 additions were verified 2026-09-23; earlier prices were verified 2026-09-07.
+No network calls on the request path.
 Amounts and rates are decimal strings; unknown is never coerced to zero.
 """
 from datetime import datetime, timezone, timedelta
@@ -9,7 +10,7 @@ import hashlib
 import json
 from urllib.parse import urlsplit
 
-VERSION = '2026-09-07'
+VERSION = '2026-09-23'
 OPENAI_URL = 'https://developers.openai.com/api/docs/pricing'
 DEEPSEEK_URL = 'https://api-docs.deepseek.com/zh-cn/quick_start/pricing/'
 # USD / million tokens: uncached input, output, cache read, cache write.
@@ -18,6 +19,8 @@ OPENAI = {
     'gpt-5.6-terra': ('2', '12', '.2', '2.5'),
     'gpt-5.6-luna': ('.2', '1.2', '.02', '.25'),
     'gpt-6-astra': ('10', '50', '1', '12.5'),
+    'gpt-6-sol': ('2', '10', '.2', '2.5'),
+    'gpt-6-luna': ('.1', '.5', '.01', '.125'),
 }
 RATE_KEYS = ('input_cost_per_token', 'output_cost_per_token',
              'cache_read_input_token_cost', 'cache_creation_input_token_cost')

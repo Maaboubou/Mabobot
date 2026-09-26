@@ -207,6 +207,19 @@ FIELD_SPECS: Dict[str, Dict[str, Any]] = {
 }
 
 
+# Defaults used by the runtime; diagnostics distinguish defaults from missing credentials.
+RUNTIME_DEFAULTS = {
+    "CODEX_BINARY_POLICY": "global",
+    "CODEX_CONFIG_POLICY": "inherit",
+    "CODEX_INTERACTIVE_POOL_SIZE": 1,
+    "CODEX_BATCH_POOL_SIZE": 1,
+    "CODEX_APP_SERVER_ROTATE_TOKENS": 220000,
+    "CODEX_APP_SERVER_MAX_COMPACTIONS": 2,
+    "CODEX_APP_SERVER_IDLE_ROTATE_SECONDS": 2592000,
+    "CODEX_APP_SERVER_CONTEXT_SAFETY_TOKENS": 32768,
+}
+
+
 MODEL_SETTING_PREFIXES = (
     "OPENAI", "ANTHROPIC", "GEMINI", "DEEPSEEK", "OPENROUTER", "PERPLEXITY",
     "LINKAI", "GROK", "KIMI", "AZURE", "BEDROCK", "VERTEX", "MISTRAL",
@@ -269,13 +282,34 @@ class SystemSettingsConsoleService:
         }
 
     def _field(self, key: str, setting: Setting | None, spec: Dict[str, Any]) -> Dict[str, Any]:
-        sensitive = is_sensitive_setting(key)
+        sensitive = key not in RUNTIME_DEFAULTS and is_sensitive_setting(key)
         configured = bool(setting and setting.value)
         value = setting.value if setting else ""
         readonly_text = ""
         if spec.get("environment_only"):
             configured = bool(str(os.getenv(key, "") or "").strip())
-            readonly_text = "已由启动环境配置" if configured else "当前运行环境未配置 · 请修改 .env 后重启"
+            if key in RUNTIME_DEFAULTS:
+                default = RUNTIME_DEFAULTS[key]
+                raw = str(os.getenv(key, "") or "").strip()
+                effective = raw or default
+                used_default = not raw
+                if isinstance(default, int):
+                    try:
+                        effective = int(raw)
+                        if key.endswith("_POOL_SIZE") and effective <= 0:
+                            effective, used_default = default, True
+                        else:
+                            effective = max(0, effective)
+                    except ValueError:
+                        effective, used_default = default, True
+                else:
+                    effective = str(effective).lower()
+                configured = True
+                value = str(effective)
+                source = "默认值" if used_default else "启动环境"
+                readonly_text = f"{effective} · {source}；修改 .env 后重启，任务级配置可能覆盖此值"
+            else:
+                readonly_text = "已由启动环境配置" if configured else "未配置 · 使用对应插件时才需要设置"
         elif spec.get("runtime_key"):
             if key == "WEB_PORT":
                 effective = str(os.getenv("WEB_PORT", "8888") or "8888")

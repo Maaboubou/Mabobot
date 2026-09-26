@@ -2,23 +2,53 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.services.plugin_runtime import get_plugin_runtime_registry
 from app.services.incident_service import get_incident_service
 from app.services.runtime_operations import get_runtime_operation_service
-from app.services.storage_service import StorageError, get_storage_service
+from app.services.storage_service import get_storage_service
 
 
 router = APIRouter()
 
 
+class StoragePreviewRequest(BaseModel):
+    retention_days: int = Field(7, ge=1, le=3650)
+
+
 class StorageCleanupRequest(BaseModel):
-    retention_days: int = 7
+    preview_id: str
     confirmation: str
+
+
+class StorageTrashRequest(BaseModel):
+    confirmation: str
+
+
+_storage_submit_lock = threading.Lock()
+
+
+def _storage_job(kind, title, target):
+    operations = get_runtime_operation_service()
+    with _storage_submit_lock:
+        if any(row['status'] in {'queued', 'running', 'cancelling'}
+               for row in operations.list(limit=100, owner='system:storage')):
+            raise HTTPException(status_code=409, detail='已有存储任务正在执行，请等待完成')
+
+        def run(context):
+            result = target(context)
+            operations.record_audit(category='storage', action=kind, target='managed_storage',
+                                    status='failed' if result.get('error_count') else 'success',
+                                    summary=title, after=result)
+            return result
+
+        return {'operation': operations.submit(owner='system:storage', kind=kind,
+                                                title=title, target=run)}
 
 
 @router.get("/")
@@ -91,39 +121,29 @@ def storage_overview() -> Dict[str, Any]:
 
 @router.post("/storage/scan")
 def scan_storage() -> Dict[str, Any]:
-    service = get_storage_service()
-    operation = get_runtime_operation_service().submit(
-        owner="system:storage",
-        kind="storage_scan",
-        title="扫描存储占用",
-        target=lambda context: service.scan(context),
-    )
-    return {"operation": operation}
+    return _storage_job('storage_scan', '扫描存储占用', get_storage_service().scan)
 
 
-@router.get("/storage/cleanup-preview")
-def storage_cleanup_preview(retention_days: int = Query(7, ge=0, le=3650)) -> Dict[str, Any]:
-    return get_storage_service().cleanup_preview(retention_days)
+@router.post("/storage/cleanup-preview")
+def storage_cleanup_preview(request: StoragePreviewRequest) -> Dict[str, Any]:
+    return _storage_job('storage_preview', '预览缓存清理',
+                        lambda context: get_storage_service().cleanup_preview(request.retention_days, context))
 
 
 @router.post("/storage/cleanup")
 def cleanup_storage(request: StorageCleanupRequest) -> Dict[str, Any]:
-    service = get_storage_service()
-    try:
-        result = service.cleanup_managed(
-            retention_days=max(0, min(int(request.retention_days), 3650)),
-            confirmation=request.confirmation,
-        )
-    except StorageError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    get_runtime_operation_service().record_audit(
-        category="storage",
-        action="cleanup_managed_storage",
-        target="managed_plugin_cache_and_temporary",
-        summary=f"将 {result['moved_to_trash']} 个托管缓存文件移入回收区",
-        after=result,
-    )
-    return result
+    return _storage_job('storage_cleanup', '缓存移入回收区',
+                        lambda context: get_storage_service().cleanup_managed(
+                            preview_id=request.preview_id, confirmation=request.confirmation))
+
+
+@router.post("/storage/trash/{batch_id}/{action}")
+def storage_trash_action(batch_id: str, action: str, request: StorageTrashRequest) -> Dict[str, Any]:
+    if action not in {'restore', 'purge'}:
+        raise HTTPException(status_code=422, detail='无效的回收区操作')
+    return _storage_job('storage_' + action, '恢复缓存' if action == 'restore' else '永久删除回收文件',
+                        lambda context: get_storage_service().trash_action(
+                            batch_id, action=action, confirmation=request.confirmation))
 
 
 @router.get("/{operation_id}")

@@ -57,6 +57,7 @@ const API = {
         getInfo: () => API.get('/api/system/info'),
         getStatus: () => API.get('/api/system/status'),
         getHealthDetails: () => API.get('/api/system/health/details'),
+        getLogStatus: () => API.get('/api/system/log-status'),
         getLogs: (type, lines, search, plugin, options = {}) => {
             const params = new URLSearchParams({
                 lines: lines || 100,
@@ -64,7 +65,11 @@ const API = {
             });
             if (search) params.append('search', search);
             if (plugin) params.append('plugin_name', plugin);
-            return API.get(`/api/system/logs/${type}?${params.toString()}`, options);
+            const { logFilters = {}, ...requestOptions } = options;
+            Object.entries(logFilters).forEach(([key, value]) => {
+                if (value) params.append(key, value);
+            });
+            return API.get(`/api/system/logs/${type}?${params.toString()}`, requestOptions);
         },
         restart: (serviceName) => API.post(`/api/system/restart/${serviceName}`),
         getRestartCapabilities: () => API.get('/api/system/restart-capabilities'),
@@ -90,6 +95,7 @@ const API = {
 
     backups: {
         getOverview: () => API.get('/api/backups/'),
+        cancelRestore: name => API.post('/api/backups/cancel-restore', { archive_name: name, confirmation: '取消恢复计划' }),
         create: options => API.post('/api/backups/', options),
         validate: name => API.post(`/api/backups/${encodeURIComponent(name)}/validate`, {}),
         prepareRestore: (name, confirmation) => API.post(
@@ -105,17 +111,24 @@ const API = {
             }
         ),
         downloadUrl: name => `/api/backups/${encodeURIComponent(name)}/download`,
-        importFile: async file => {
-            const response = await fetch(
-                `/api/backups/import?filename=${encodeURIComponent(file.name)}`,
-                { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file }
-            );
-            if (!response.ok) {
-                const error = await response.json().catch(() => ({}));
-                throw new Error(error.detail || error.message || `HTTP ${response.status}`);
-            }
-            return response.json();
-        }
+        importFile: (file, onProgress) => new Promise((resolve, reject) => {
+            const request = new XMLHttpRequest();
+            request.open('POST', `/api/backups/import?filename=${encodeURIComponent(file.name)}`);
+            request.setRequestHeader('Content-Type', 'application/octet-stream');
+            request.upload.onprogress = event => {
+                if (event.lengthComputable && onProgress) onProgress(Math.round(event.loaded / event.total * 100));
+            };
+            request.onload = () => {
+                let result;
+                try { result = JSON.parse(request.responseText); }
+                catch { reject(new Error('无法读取导入结果，请刷新列表检查文件是否已导入')); return; }
+                if (request.status >= 200 && request.status < 300) resolve(result);
+                else reject(new Error(result.detail || result.message || `HTTP ${request.status}`));
+            };
+            request.onerror = () => reject(new Error('上传连接中断，请刷新列表检查结果后重试'));
+            request.onabort = () => reject(new Error('上传已取消'));
+            request.send(file);
+        })
     },
 
     operations: {
@@ -129,8 +142,9 @@ const API = {
         getAudit: (limit = 50) => API.get(`/api/operations/audit?limit=${encodeURIComponent(limit)}`),
         getStorage: () => API.get('/api/operations/storage'),
         scanStorage: () => API.post('/api/operations/storage/scan', {}),
-        getCleanupPreview: (days = 7) => API.get(`/api/operations/storage/cleanup-preview?retention_days=${encodeURIComponent(days)}`),
-        cleanupStorage: (days, confirmation) => API.post('/api/operations/storage/cleanup', { retention_days: days, confirmation })
+        getCleanupPreview: (days = 7) => API.post('/api/operations/storage/cleanup-preview', { retention_days: days }),
+        cleanupStorage: (previewId, confirmation) => API.post('/api/operations/storage/cleanup', { preview_id: previewId, confirmation }),
+        storageTrashAction: (batchId, action, confirmation) => API.post(`/api/operations/storage/trash/${encodeURIComponent(batchId)}/${action}`, { confirmation })
     },
 
     // Plugins

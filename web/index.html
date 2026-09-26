@@ -42,7 +42,7 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
 
     <!-- App CSS -->
-    <link href="/static/assets/css/style.css?v=20260917-role-management" rel="stylesheet">
+    <link href="/static/assets/css/style.css?v=20260925-backup-flow" rel="stylesheet">
     <link href="/static/assets/css/dashboard.css?v=20260921-bot-activity" rel="stylesheet">
     <link rel="stylesheet" href="/notification-assets/email_notifications.css?v=2">
 </head>
@@ -137,7 +137,7 @@
             </div>
 
             <div class="sidebar-footer p-3 border-top border-secondary border-opacity-25">
-                <small class="text-muted d-block mb-1">版本：3.5.0</small>
+                <small class="text-muted d-block mb-1">版本：3.6.0</small>
                 <div class="d-flex align-items-center text-muted gap-2">
                     <button id="themeToggle" type="button" class="sidebar-theme-toggle"
                         aria-label="切换到暗色模式" aria-pressed="false" title="切换到暗色模式">
@@ -548,7 +548,12 @@
                             </div>
                             <div class="modal-body">
                                 <div class="alert alert-danger d-none" id="codexOAuthAlert" role="alert"></div>
-                                <div class="codex-oauth-pending" id="codexOAuthPending">
+                                <div class="codex-oauth-loading d-none" id="codexOAuthLoading" role="status" aria-live="polite">
+                                    <span class="spinner-border" aria-hidden="true"></span>
+                                    <strong id="codexOAuthLoadingText">正在加载 ChatGPT 账号…</strong>
+                                    <small id="codexOAuthLoadingHint">请稍候</small>
+                                </div>
+                                <div class="codex-oauth-pending d-none" id="codexOAuthPending">
                                     <div class="codex-oauth-qr-frame"><img id="codexOAuthQr" alt="ChatGPT Codex 授权二维码"></div>
                                     <div class="codex-oauth-instructions">
                                         <span class="codex-inline-badge busy">等待授权</span>
@@ -989,12 +994,21 @@
                     <!-- Toolbar -->
                     <div class="logs-toolbar">
                         <div class="logs-toolbar-left">
-                            <div class="btn-group btn-group-sm logs-source-switch">
-                                <button class="btn btn-sm logs-type-btn active" data-log-type="app"
-                                    onclick="App.loadLogs('app')">App</button>
-                                <button class="btn btn-sm logs-type-btn" data-log-type="wx_bot"
-                                    onclick="App.loadLogs('wx_bot')">WxBot</button>
-                            </div>
+                            <select class="form-select form-select-sm logs-source-switch" id="logTypeSelect"
+                                aria-label="日志来源" onchange="App.loadLogs(this.value)">
+                                <option value="app">Web</option>
+                                <option value="wx_bot">微信 Bot</option>
+                                <option value="mabowx">mabowx</option>
+                                <option value="launcher">启动器</option>
+                                <option value="auto_login">自动登录</option>
+                                <option value="dashboard_events">仪表盘事件</option>
+                            </select>
+                            <button type="button" class="btn btn-sm btn-outline-secondary logs-filter-toggle"
+                                id="logFilterToggle" aria-controls="logFilterRow" aria-expanded="false"
+                                onclick="App.toggleLogFilters()">
+                                <i class="bi bi-funnel" aria-hidden="true"></i><span>筛选</span>
+                                <span class="logs-filter-count" id="logFilterCount" hidden></span>
+                            </button>
                             <div class="input-group input-group-sm logs-plugin-group">
                                 <span class="input-group-text"><i class="bi bi-funnel"></i></span>
                                 <select class="form-select form-select-sm" id="logPluginFilter">
@@ -1013,6 +1027,10 @@
                                 <button class="btn btn-sm btn-outline-secondary" id="logSearchNext"
                                     onclick="App.navigateLogSearch(1)" title="下一个结果（Enter）" disabled>
                                     <i class="bi bi-chevron-down"></i>
+                                </button>
+                                <button class="btn btn-sm btn-outline-secondary" id="logSearchAll"
+                                    onclick="App.searchAllLogs()" title="检索当前来源保留的全部日志">
+                                    <i class="bi bi-search"></i><span class="log-search-all-label">全部</span>
                                 </button>
                             </div>
                         </div>
@@ -1036,6 +1054,25 @@
                         </div>
                     </div>
 
+                    <div class="logs-filter-row" id="logFilterRow">
+                        <select class="form-select form-select-sm" id="logLevelFilter" aria-label="日志级别">
+                            <option value="">全部级别</option>
+                            <option value="DEBUG">DEBUG</option>
+                            <option value="INFO">INFO</option>
+                            <option value="WARNING">WARNING</option>
+                            <option value="ERROR">ERROR</option>
+                            <option value="CRITICAL">CRITICAL</option>
+                        </select>
+                        <input class="form-control form-control-sm" id="logEventFilter"
+                            placeholder="事件名" aria-label="事件名">
+                        <input class="form-control form-control-sm" id="logTraceFilter"
+                            placeholder="trace_id" aria-label="关联 ID">
+                        <input class="form-control form-control-sm" id="logFromTimeFilter"
+                            type="datetime-local" aria-label="开始时间" title="开始时间">
+                        <input class="form-control form-control-sm" id="logToTimeFilter"
+                            type="datetime-local" aria-label="结束时间" title="结束时间">
+                    </div>
+
                     <!-- Log Content -->
                     <div id="logContent" class="logs-body">
                         <div class="logs-placeholder">
@@ -1053,6 +1090,7 @@
                     <div class="logs-statusbar">
                         <span id="logStatusInfo">就绪</span>
                         <span class="logs-status-right">
+                            <span class="logs-storage-status" id="logStorageStatus" aria-live="polite"></span>
                             <span id="logAutoRefreshBadge" class="badge bg-secondary-subtle text-secondary d-none">
                                 <i class="bi bi-arrow-repeat"></i> <span id="logRefreshCountdown"></span>
                             </span>
@@ -1497,17 +1535,18 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
     <!-- App Scripts -->
-    <script src="/static/assets/js/api.js?v=20260916-permissions"></script>
+    <script src="/static/assets/js/api.js?v=20260925-backup-flow"></script>
     <script src="/static/assets/js/codex_permissions.js?v=20260917-permission-head-2"></script>
-    <script src="/static/assets/js/ui.js?v=20260917-role-management"></script>
+    <script src="/static/assets/js/ui.js?v=20260925-storage"></script>
     <script src="/notification-assets/email_notifications.js?v=1"></script>
-    <script src="/static/assets/js/system_operations.js?v=20260912-backup-confirm-1"></script>
-    <script src="/static/assets/js/system_tools.js?v=1.0.1-format-helpers"></script>
+    <script src="/static/assets/js/system_storage.js?v=20260925-storage"></script>
+    <script src="/static/assets/js/system_operations.js?v=20260925-backup-flow"></script>
+    <script src="/static/assets/js/system_tools.js?v=20260925-system-simplify"></script>
     <script src="/static/assets/js/llm_manager.js?v=20260917-model-cards"></script>
-    <script src="/static/assets/js/codex_center.js?v=20260916-permissions"></script>
+    <script src="/static/assets/js/codex_center.js?v=20260925-oauth-loading"></script>
     <script src="/static/assets/js/codex_skills.js?v=1.1.1-format-helpers"></script>
     <script src="/static/assets/js/dashboard.js?v=20260921-bot-activity"></script>
-    <script src="/static/assets/js/main.js?v=20260917-global-settings-fix"></script>
+    <script src="/static/assets/js/main.js?v=20260925-storage"></script>
     <script src="/static/assets/js/assistant_prompts.js?v=20260917-3"></script>
     <script src="/static/assets/js/chat_archive.js?v=20260917-context-actions"></script>
 

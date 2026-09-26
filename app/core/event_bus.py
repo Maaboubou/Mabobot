@@ -17,6 +17,7 @@ import time
 
 from app.services.llm_usage_context import usage_context
 from app.services.plugin_activity import record_message_trigger
+from mabobot_logging import log_context
 
 from sqlalchemy.orm import Session
 from app.models.assistant_policy import AssistantChatPolicy
@@ -342,7 +343,9 @@ class EventBus:
                 self._user_last_activity[chat_name] = time.time()
 
                 # Process event using existing sync logic
-                self._process_event_sync(event)
+                with log_context(trace_id=event.data.get("trace_id") or event.data.get("message_id"),
+                                 message_id=event.data.get("message_id"), chat=chat_name):
+                    self._process_event_sync(event)
 
                 # Mark task as done
                 self._user_queues[chat_name].task_done()

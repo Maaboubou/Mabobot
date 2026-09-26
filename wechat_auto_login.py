@@ -30,11 +30,12 @@ from typing import Any, Iterable
 from dotenv import load_dotenv
 
 from app.utils.subprocess_utils import hidden_process_kwargs
+from mabobot_logging import configure_process_logging, log_path
 
 
 ROOT_DIR = Path(__file__).resolve().parent
 LOG_DIR = ROOT_DIR / "logs"
-LOG_FILE = LOG_DIR / "wechat_auto_login.log"
+LOG_FILE = log_path("auto_login")
 
 WECHAT_TITLES = {"微信", "WeChat"}
 VK_RETURN = 0x0D
@@ -99,16 +100,7 @@ class ReloginResult:
 
 
 def setup_logging() -> None:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        handlers=[
-            logging.FileHandler(LOG_FILE, encoding="utf-8"),
-            logging.StreamHandler(sys.stdout),
-        ],
-        force=True,
-    )
+    configure_process_logging("auto_login", console_stream=sys.stdout)
 
 
 def ensure_windows() -> None:
@@ -585,8 +577,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    setup_logging()
     load_project_env()
+    setup_logging()
 
     try:
         ensure_windows()

@@ -18,9 +18,9 @@
 
 ## 价格与币种
 
-Codex 固定按实际返回模型的官方**标准 API Token 价格**折算，计入费用合计，标为“API 等值估算”。它衡量等值 API 消耗，不代表订阅扣款；工具、搜索、图片生成等单独收费项目未折算。当前官方快照覆盖 GPT-5.6 Sol/Terra/Luna、GPT-6 Astra；未知模型不映射为相近模型。
+Codex 固定按实际返回模型的官方**标准 API Token 价格**折算，计入费用合计，标为“API 等值估算”。它衡量等值 API 消耗，不代表订阅扣款；工具、搜索、图片生成等单独收费项目未折算。当前官方快照覆盖 GPT-5.6 Sol/Terra/Luna、GPT-6 Astra/Sol/Luna；未知模型不映射为相近模型。
 
-官方快照核验于 2026-09-07：
+官方快照首次核验于 2026-09-07；GPT-6 Sol/Luna 价格补充核验于 2026-09-23：
 
 - [OpenAI API 定价](https://developers.openai.com/api/docs/pricing)：包含缓存读写和 >272K 请求长上下文价格。直接 API 支持上报的 fast/priority、flex 档位；Codex 始终采用标准档位。
 - [DeepSeek 官方定价](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)：V4 Flash/Pro/Vision，按北京时间工作日 9–12、14–18 高峰价格，其他时段为空闲价。

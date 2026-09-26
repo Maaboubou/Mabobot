@@ -13,6 +13,7 @@ const App = {
     logFollowEnabled: false,
     logProgrammaticScroll: false,
     currentLogContent: '',
+    logServerSearch: '',
     currentLogSearchQuery: '',
     currentLogSearchMatches: [],
     currentLogSearchIndex: -1,
@@ -1946,8 +1947,30 @@ const App = {
         const linesSelect = document.getElementById('logLinesSelect');
         const logContent = document.getElementById('logContent');
 
-        if (pluginFilter) pluginFilter.addEventListener('change', debouncedLoad);
+        const pluginGroup = pluginFilter?.closest('.logs-plugin-group');
+        const linesGroup = linesSelect?.closest('.logs-lines-group');
+        if (pluginGroup && linesGroup) {
+            this.logPluginAnchor = document.createComment('log plugin toolbar position');
+            this.logLinesAnchor = document.createComment('log lines toolbar position');
+            pluginGroup.before(this.logPluginAnchor);
+            linesGroup.before(this.logLinesAnchor);
+            this.logLayoutMedia = window.matchMedia('(max-width: 767.98px)');
+            this.logLayoutMedia.addEventListener('change', () => this.syncLogFilterLayout());
+            this.syncLogFilterLayout();
+        }
+
+        if (pluginFilter) pluginFilter.addEventListener('change', () => {
+            this.updateLogFilterCount();
+            debouncedLoad();
+        });
         if (linesSelect) linesSelect.addEventListener('change', debouncedLoad);
+        ['logLevelFilter', 'logEventFilter', 'logTraceFilter', 'logFromTimeFilter', 'logToTimeFilter'].forEach(id => {
+            const control = document.getElementById(id);
+            if (control) control.addEventListener(['logLevelFilter', 'logFromTimeFilter', 'logToTimeFilter'].includes(id) ? 'change' : 'input', () => {
+                this.updateLogFilterCount();
+                debouncedLoad();
+            });
+        });
         if (searchInput) {
             searchInput.addEventListener('input', debouncedSearch);
             searchInput.addEventListener('keydown', (event) => {
@@ -1956,7 +1979,9 @@ const App = {
                     this.navigateLogSearch(event.shiftKey ? -1 : 1);
                 } else if (event.key === 'Escape' && searchInput.value) {
                     searchInput.value = '';
+                    this.logServerSearch = '';
                     this.applyLogSearch({ focus: false });
+                    this.loadLogs();
                 }
             });
         }
@@ -1970,7 +1995,45 @@ const App = {
                 });
             }, { passive: true });
         }
+        document.getElementById('logFilterRow')?.addEventListener('keydown', event => {
+            if (event.key !== 'Escape') return;
+            this.toggleLogFilters(false);
+            document.getElementById('logFilterToggle')?.focus();
+        });
+        this.updateLogFilterCount();
         this.logControlsReady = true;
+    },
+
+    syncLogFilterLayout() {
+        const filterRow = document.getElementById('logFilterRow');
+        const pluginGroup = document.querySelector('.logs-plugin-group');
+        const linesGroup = document.querySelector('.logs-lines-group');
+        if (!filterRow || !pluginGroup || !linesGroup) return;
+        if (this.logLayoutMedia?.matches) {
+            filterRow.prepend(pluginGroup, linesGroup);
+        } else {
+            this.logPluginAnchor?.after(pluginGroup);
+            this.logLinesAnchor?.after(linesGroup);
+            this.toggleLogFilters(false);
+        }
+    },
+
+    toggleLogFilters(force) {
+        const filterRow = document.getElementById('logFilterRow');
+        const button = document.getElementById('logFilterToggle');
+        if (!filterRow || !button) return;
+        const expanded = this.logLayoutMedia?.matches && (force ?? !filterRow.classList.contains('is-open'));
+        filterRow.classList.toggle('is-open', Boolean(expanded));
+        button.setAttribute('aria-expanded', String(Boolean(expanded)));
+    },
+
+    updateLogFilterCount() {
+        const count = ['logPluginFilter', 'logLevelFilter', 'logEventFilter', 'logTraceFilter', 'logFromTimeFilter', 'logToTimeFilter']
+            .filter(id => document.getElementById(id)?.value.trim()).length;
+        const badge = document.getElementById('logFilterCount');
+        if (!badge) return;
+        badge.textContent = String(count);
+        badge.hidden = count === 0;
     },
 
     async loadLogs(logType, isInitialLoad = false) {
@@ -2029,6 +2092,7 @@ const App = {
                 }
             }
         }
+        this.updateLogFilterCount();
 
         // Update status bar
         const statusInfo = document.getElementById('logStatusInfo');
@@ -2039,7 +2103,16 @@ const App = {
             const controller = new AbortController();
             this.logAbortController = controller;
             // Keyword finding is browser-side so the surrounding log lines remain visible.
-            const data = await API.system.getLogs(logType, lines, null, plugin, { signal: controller.signal });
+            const filters = {
+                level: document.getElementById('logLevelFilter')?.value || '',
+                event: document.getElementById('logEventFilter')?.value.trim() || '',
+                trace_id: document.getElementById('logTraceFilter')?.value.trim() || '',
+                from_time: document.getElementById('logFromTimeFilter')?.value || '',
+                to_time: document.getElementById('logToTimeFilter')?.value || '',
+            };
+            const data = this.logServerSearch
+                ? await API.system.getLogs(logType, lines, this.logServerSearch, plugin, { signal: controller.signal, logFilters: filters })
+                : await API.system.getLogs(logType, lines, null, plugin, { signal: controller.signal, logFilters: filters });
             if (this.logAbortController !== controller) return;
             this.logAbortController = null;
             if (data.content !== undefined) {
@@ -2048,20 +2121,28 @@ const App = {
                 const searchChanged = activeSearch !== this.currentLogSearchQuery;
                 await UI.renderLogs(this.currentLogContent, activeSearch);
 
-                // Update active button state
-                document.querySelectorAll('.logs-type-btn').forEach(btn => {
-                    btn.classList.remove('active');
-                });
-                const activeBtn = document.querySelector(`.logs-type-btn[data-log-type="${logType}"]`);
-                if (activeBtn) {
-                    activeBtn.classList.add('active');
-                }
+                const typeSelect = document.getElementById('logTypeSelect');
+                if (typeSelect) typeSelect.value = logType;
 
                 // Update status bar
                 const lineCount = data.content ? data.content.split('\n').filter(l => l.trim()).length : 0;
                 const totalInfo = data.total_lines ? ` / 共 ${data.total_lines} 行` : '';
                 this.currentLogStatusBase = `${logType} · ${lineCount} 行${totalInfo}`;
                 if (plugin) this.currentLogStatusBase += ` · 插件：${plugin}`;
+                if (filters.level) this.currentLogStatusBase += ` · ${filters.level}`;
+                if (filters.event) this.currentLogStatusBase += ` · 事件：${filters.event}`;
+                if (filters.trace_id) this.currentLogStatusBase += ` · trace：${filters.trace_id}`;
+                if (this.logServerSearch) this.currentLogStatusBase += ` · 文件检索：${this.logServerSearch}`;
+                API.system.getLogStatus().then(status => {
+                    if (this.currentLogType !== logType) return;
+                    const stream = (status.streams || []).find(item => item.source === logType);
+                    const target = document.getElementById('logStorageStatus');
+                    if (target && stream) {
+                        const size = (stream.total_bytes / 1048576).toFixed(1);
+                        target.textContent = `${size} MiB · ${stream.file_count} 个文件 · 保留 ${stream.max_age_days} 天`;
+                        target.title = `单文件上限 ${(stream.max_bytes / 1048576).toFixed(0)} MiB；最后写入 ${stream.last_write || '暂无'}`;
+                    }
+                }).catch(() => {});
                 this.syncLogSearchMatches(activeSearch, {
                     resetIndex: searchChanged || logTypeChanged,
                     focus: Boolean(activeSearch) && (searchChanged || logTypeChanged || isInitialLoad),
@@ -2080,6 +2161,11 @@ const App = {
             await UI.renderLogs('加载日志失败：' + e.message, null);
             if (statusInfo) statusInfo.textContent = '加载失败';
         }
+    },
+
+    searchAllLogs() {
+        this.logServerSearch = document.getElementById('logSearchInput')?.value.trim() || '';
+        this.loadLogs();
     },
 
     toggleLogFollow() {
@@ -2245,8 +2331,9 @@ const App = {
             UI.renderSystemSettings(settings);
             const activeGroup = document.getElementById('settings')?.dataset.activeSystemGroup;
             if (activeGroup === 'notifications') await window.EmailNotifications?.load();
-            if (activeGroup === 'operations') await window.SystemOperations?.loadRuntime();
+            if (activeGroup === 'developer') await window.SystemOperations?.loadRuntime();
             if (activeGroup === 'tools') await window.SystemTools?.load();
+            if (activeGroup === 'storage') await window.SystemStorage?.load();
             if (activeGroup === 'backups') await window.SystemOperations?.loadBackups();
         } catch (e) {
             UI.showError('加载设置失败：' + e.message);
@@ -2255,7 +2342,10 @@ const App = {
 
     async saveSettings() {
         try {
-            const inputs = document.querySelectorAll('.system-setting-input');
+            const group = document.getElementById('settings')?.dataset.activeSystemGroup;
+            const section = document.querySelector(`[data-system-section="${CSS.escape(group || '')}"]`);
+            if (!section) return;
+            const inputs = section.querySelectorAll('.system-setting-input');
             const values = {};
 
             for (const input of inputs) {
@@ -2274,8 +2364,19 @@ const App = {
             }
 
             await API.settings.updateConsole(values);
-            UI.showSuccess('系统设置已原子保存');
-            await this.loadSettings();
+            inputs.forEach(input => {
+                if (!Object.prototype.hasOwnProperty.call(values, input.name)) return;
+                const submitted = values[input.name];
+                if (input.dataset.sensitive === 'true') {
+                    if (input.value === submitted) input.value = '';
+                    input.dataset.original = '';
+                    input.placeholder = '已配置—输入新值以替换';
+                } else {
+                    input.dataset.original = submitted;
+                }
+            });
+            UI.updateSystemSettingsDirty();
+            UI.showSuccess('当前分区已保存');
         } catch (e) {
             UI.showError('保存设置失败：' + e.message);
         }

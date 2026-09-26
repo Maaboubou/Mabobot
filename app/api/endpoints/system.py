@@ -16,7 +16,7 @@ from typing import Dict, Any
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 
-from app.utils.logging_utils import read_log_lines
+from app.utils.runtime_logs import log_status, read_runtime_logs, source_path, source_paths
 from app.utils.system_temperature import get_temperature_status
 from app.version import APP_VERSION
 
@@ -454,27 +454,34 @@ async def get_components_status(request: Request) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"Failed to get components status: {str(e)}")
 
 
+@router.get("/log-status")
+async def get_log_status() -> Dict[str, Any]:
+    """Show current runtime log size, retention settings and write activity."""
+    loop = asyncio.get_running_loop()
+    streams = await loop.run_in_executor(None, log_status)
+    return {"streams": streams}
+
+
 @router.get("/logs/{log_type}")
 async def get_logs(
     log_type: str,
     lines: int = 100,
     plugin_name: str = None,
-    search: str = None
+    search: str = None,
+    level: str = None,
+    trace_id: str = None,
+    event: str = None,
+    from_time: str = None,
+    to_time: str = None,
 ) -> Dict[str, Any]:
     """获取日志内容"""
     try:
-        # 定义日志文件路径
-        log_files = {
-            "app": "logs/app.log",
-            "wx_bot": "logs/wx_bot.log"
-        }
-
-        if log_type not in log_files:
+        try:
+            log_path = source_path(log_type)
+        except ValueError:
             raise HTTPException(status_code=400, detail=f"Invalid log type: {log_type}")
 
-        log_path = Path(log_files[log_type])
-
-        if not log_path.exists():
+        if not any(path.is_file() for path in source_paths(log_type)):
             return {
                 "log_type": log_type,
                 "content": "",
@@ -486,26 +493,29 @@ async def get_logs(
         # 普通查看仅反向读取文件尾部；筛选时逐行扫描并使用固定长度队列。
         # 放入线程池，避免日志 I/O 阻塞 FastAPI 事件循环。
         line_limit = max(1, min(int(lines or 100), 5000))
-        required_text = (
-            f"app.plugins.{plugin_name}"
-            if plugin_name and log_type == "app"
-            else None
-        )
         loop = asyncio.get_running_loop()
-        read_result = await loop.run_in_executor(
+        content, read_result = await loop.run_in_executor(
             None,
             partial(
-                read_log_lines,
-                log_path,
+                read_runtime_logs,
+                log_type,
                 max_lines=line_limit,
                 search=search,
-                required_text=required_text,
-                include_rotated=True,
+                plugin_name=plugin_name,
+                level=level,
+                trace_id=trace_id,
+                event=event,
+                from_time=from_time,
+                to_time=to_time,
             ),
         )
-        content = ''.join(read_result.lines)
 
-        file_size = log_path.stat().st_size
+        file_size = 0
+        for path in source_paths(log_type):
+            try:
+                file_size += path.stat().st_size
+            except OSError:
+                continue
 
         return {
             "log_type": log_type,
@@ -523,6 +533,8 @@ async def get_logs(
 
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read log file: {str(e)}")
 

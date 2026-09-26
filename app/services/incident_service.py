@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import threading
 import time
@@ -11,6 +12,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.utils.logging_utils import read_log_lines
+from app.utils.runtime_logs import source_paths
+from mabobot_logging import log_path as runtime_log_path
 
 
 LOG_PATTERN = re.compile(
@@ -41,8 +44,9 @@ def parse_log_time(value: Any) -> Optional[float]:
 
 
 class IncidentService:
-    def __init__(self, log_path: Path = Path("logs/app.log"), cache_seconds: float = 10.0):
-        self.log_path = log_path
+    def __init__(self, log_path: Optional[Path] = None, cache_seconds: float = 10.0):
+        self._default_log = log_path is None
+        self.log_path = log_path or runtime_log_path("app")
         self.cache_seconds = max(1.0, float(cache_seconds))
         self._lock = threading.Lock()
         self._cached_at = 0.0
@@ -89,20 +93,49 @@ class IncidentService:
         return incidents[: max(1, min(int(limit), 200))]
 
     def _scan(self, scan_lines: int) -> List[Dict[str, Any]]:
-        if not self.log_path.exists():
+        paths = source_paths("app") if self._default_log else [self.log_path]
+        paths = [path for path in paths if path.exists()]
+        if not paths:
             return []
-        result = read_log_lines(
-            self.log_path,
-            max_lines=scan_lines,
-            include_rotated=True,
-        )
+        lines = [line for path in paths for line in read_log_lines(
+            path, max_lines=scan_lines, include_rotated=True,
+        ).lines]
+        if len(paths) > 1:
+            def timestamp(line: str) -> str:
+                try:
+                    return str(json.loads(line).get("ts") or "")
+                except (ValueError, AttributeError):
+                    return line[:23]
+            lines.sort(key=timestamp)
+            lines = lines[-scan_lines:]
         grouped: Dict[str, Dict[str, Any]] = {}
-        for line in result.lines:
-            match = LOG_PATTERN.match(line.rstrip("\r\n"))
-            if not match:
-                continue
-            values = match.groupdict()
+        for line in lines:
+            try:
+                item = json.loads(line)
+            except ValueError:
+                item = None
+            if isinstance(item, dict) and item.get("ts"):
+                if item.get("level") not in {"ERROR", "WARNING", "CRITICAL"}:
+                    continue
+                values = {
+                    "timestamp": str(item["ts"]),
+                    "level": str(item["level"]),
+                    "component": str(item.get("logger") or item.get("service") or "unknown"),
+                    "message": str(item.get("message") or ""),
+                }
+                event = str(item.get("event") or "")
+                code = str(item.get("error_code") or "")
+            else:
+                match = LOG_PATTERN.match(line.rstrip("\r\n"))
+                if not match:
+                    continue
+                values = match.groupdict()
+                event = code = ""
             fingerprint, normalized = self._fingerprint(values["component"], values["message"])
+            if code:
+                fingerprint = hashlib.sha256(
+                    f"{values['component']}|{event}|{code}".encode("utf-8")
+                ).hexdigest()[:16]
             current = grouped.get(fingerprint)
             if current is None:
                 current = {

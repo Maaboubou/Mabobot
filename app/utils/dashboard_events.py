@@ -9,11 +9,17 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from mabobot_logging import LOG_PROFILES, ManagedRotatingFileHandler
+from app.utils.logging_utils import read_log_lines
+
 logger = logging.getLogger(__name__)
+_writer_lock = threading.RLock()
+_writer: Optional[ManagedRotatingFileHandler] = None
 
 
 def _get_events_file() -> Path:
@@ -42,8 +48,22 @@ def append_dashboard_event(event_type: str, payload: Dict[str, Any]) -> None:
             "event_type": event_type,
             "payload": payload,
         }
-        with open(events_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+        global _writer
+        with _writer_lock:
+            if _writer is None or Path(_writer.baseFilename) != events_file.resolve():
+                if _writer is not None:
+                    _writer.close()
+                _, max_bytes, backups, max_age = LOG_PROFILES["dashboard_events"]
+                _writer = ManagedRotatingFileHandler(
+                    events_file, max_bytes=max_bytes, backup_count=backups,
+                    max_age_days=max_age,
+                )
+                _writer.setFormatter(logging.Formatter("%(message)s"))
+            record = logging.LogRecord(
+                "dashboard_events", logging.INFO, __file__, 0,
+                json.dumps(event, ensure_ascii=False), (), None,
+            )
+            _writer.handle(record)
     except Exception as e:
         logger.warning(f"Failed to append dashboard event '{event_type}': {e}")
 
@@ -59,10 +79,8 @@ def get_latest_dashboard_event(event_type: str) -> Optional[Dict[str, Any]]:
         if not events_file.exists():
             return None
 
-        with open(events_file, "r", encoding="utf-8", errors="ignore") as f:
-            lines = f.readlines()
-
-        for line in reversed(lines[-5000:]):
+        lines = read_log_lines(events_file, max_lines=5000, include_rotated=True).lines
+        for line in reversed(lines):
             line = line.strip()
             if not line:
                 continue
@@ -92,11 +110,9 @@ def get_recent_dashboard_events(event_type: str, limit: int = 10) -> List[Dict[s
         if not events_file.exists():
             return []
 
-        with open(events_file, "r", encoding="utf-8", errors="ignore") as f:
-            lines = f.readlines()
-
+        lines = read_log_lines(events_file, max_lines=5000, include_rotated=True).lines
         events: List[Dict[str, Any]] = []
-        for line in reversed(lines[-5000:]):
+        for line in reversed(lines):
             line = line.strip()
             if not line:
                 continue
@@ -133,19 +149,33 @@ def get_recent_events(
         if not events_file.exists():
             return []
 
-        with open(events_file, "rb") as f:
-            f.seek(0, 2)
-            size = f.tell()
-            f.seek(max(0, size - max(1, int(max_bytes))))
-            tail = f.read().decode("utf-8", errors="ignore")
-        lines = tail.splitlines()
-        if size > max_bytes and lines:
-            # The first line may be cut mid-record.
-            lines = lines[1:]
+        budget = max(1, int(max_bytes))
+        lines: List[str] = []
+        candidates = [events_file] + [
+            events_file.with_name(f"{events_file.name}.{index}")
+            for index in range(1, LOG_PROFILES["dashboard_events"][2] + 1)
+        ]
+        for candidate in candidates:
+            if budget <= 0:
+                break
+            try:
+                with candidate.open("rb") as stream:
+                    stream.seek(0, 2)
+                    size = stream.tell()
+                    size_to_read = min(size, budget)
+                    stream.seek(size - size_to_read)
+                    tail = stream.read(size_to_read).decode("utf-8", errors="ignore")
+            except FileNotFoundError:
+                continue
+            part = tail.splitlines()
+            if size > size_to_read and part:
+                part = part[1:]
+            lines.extend(reversed(part))
+            budget -= size_to_read
 
         wanted = {str(item) for item in event_types} if event_types else None
         events: List[Dict[str, Any]] = []
-        for line in reversed(lines):
+        for line in lines:
             line = line.strip()
             if not line:
                 continue

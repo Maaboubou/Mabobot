@@ -16,6 +16,7 @@ from app.dependencies import get_event_bus_instance, get_wechat_manager_instance
 from app.core.wechat_manager import WeChatManager
 from app.models.base import SessionLocal
 from app.models.user_permission import WeChatUser, UserPermission
+from mabobot_logging import current_log_context
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -151,6 +152,7 @@ async def receive_wechat_message(
             type=EventType.QUOTE_MESSAGE_RECEIVED,
             source="wx_bot_internal",
             data={
+                "trace_id": current_log_context().get("trace_id") or message.message_id,
                 "message": message.content,
                 "archive_message_id": message.archive_message_id,
                 "archive_source": message.archive_source,
@@ -214,6 +216,7 @@ async def receive_wechat_message(
         type=event_type,
         source="wx_bot_internal",
         data={
+            "trace_id": current_log_context().get("trace_id") or message.message_id,
             "message": message.content,
             "archive_message_id": message.archive_message_id,
             "archive_source": message.archive_source,

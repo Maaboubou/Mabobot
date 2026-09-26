@@ -40,7 +40,7 @@ def main() -> int:
             return 2
         return DesktopLauncher(startup_mode=args.startup).run()
     except Exception as exc:
-        show_error(f"桌面启动器无法启动：\n\n{exc}\n\n请查看 logs/launcher.log。")
+        show_error(f"桌面启动器无法启动：\n\n{exc}\n\n请查看 logs/launcher.jsonl。")
         return 1
     finally:
         instance.release()

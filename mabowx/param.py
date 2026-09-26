@@ -24,8 +24,8 @@ class WxParam:
     # 文件日志始终按 DEBUG 记录；这里保留后续自定义入口。
     LOG_LEVEL = "INFO"
 
-    # 每日滚动日志保留份数。
-    LOG_BACKUP_COUNT = 14
+    # 文件日志按大小滚动，最多保留 6 份备份、14 天；实际规则见 mabobot_logging。
+    LOG_BACKUP_COUNT = 6
 
     # 单条日志最大字符数，超过后截断。
     LOG_MAX_MESSAGE_CHARS = 8000

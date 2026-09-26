@@ -139,9 +139,12 @@ const SystemTools = {
         const container = document.getElementById('systemToolsConsole');
         if (!container) return;
         const tools = overview.tools || [];
-        const summary = overview.summary || {};
-        const upgradable = tools.filter(tool => tool.category === 'upgradable');
-        const maintenance = tools.filter(tool => tool.category === 'maintenance');
+        const needsAttention = tool => tool.health !== 'ready' || tool.update_available
+            || tool.restart_required || tool.operation_running || this.operationActive(tool.operation)
+            || tool.operation?.status === 'failed';
+        const attention = tools.filter(needsAttention);
+        const ready = tools.filter(tool => !needsAttention(tool));
+        const readyExpanded = container.querySelector('[data-ready-tools]')?.open || false;
         const errors = overview.check_errors || {};
         container.innerHTML = `
             <div class="system-platform-heading system-tools-heading">
@@ -151,22 +154,15 @@ const SystemTools = {
                     <button class="btn btn-sm btn-primary" id="systemToolsCheckAll" onclick="SystemTools.checkAll()"><i class="bi bi-search me-1"></i>检查全部版本</button>
                 </div>
             </div>
-            <div class="system-runtime-strip system-tools-summary">
-                <div><span>纳入管理</span><strong>${Number(summary.total || tools.length)}</strong></div>
-                <div><span>状态正常</span><strong class="text-success">${Number(summary.ready || 0)}</strong></div>
-                <div><span>需要关注</span><strong class="${Number(summary.attention || 0) ? 'text-warning' : ''}">${Number(summary.attention || 0)}</strong></div>
-                <div><span>可用更新</span><strong class="${Number(summary.updates || 0) ? 'text-primary' : ''}">${Number(summary.updates || 0)}</strong></div>
-                <div><span>正在处理</span><strong>${Number(summary.active || 0)}</strong></div>
-            </div>
             ${Object.keys(errors).length ? `<div class="system-tools-check-errors"><i class="bi bi-exclamation-triangle"></i><span>${Object.entries(errors).map(([id, error]) => `${this.esc(id)}：${this.esc(error)}`).join('；')}</span></div>` : ''}
             <section class="system-tool-group">
-                <div class="system-tool-group-head"><div><h4>可升级组件</h4><p>检查稳定版，逐项安装并验证；不会执行“全部升级”</p></div><span>${upgradable.length} 项</span></div>
-                <div class="system-tool-list">${upgradable.map(tool => this.renderTool(tool)).join('')}</div>
+                <div class="system-tool-group-head"><div><h4>需要处理</h4><p>可用更新、环境修复与正在执行的操作</p></div><span>${attention.length} 项</span></div>
+                <div class="system-tool-list">${attention.length ? attention.map(tool => this.renderTool(tool)).join('') : '<div class="system-empty-row">当前没有需要处理的组件，可点击“检查全部版本”查找更新。</div>'}</div>
             </section>
-            <section class="system-tool-group">
-                <div class="system-tool-group-head"><div><h4>环境维护</h4><p>识别实际来源，只修复 Mabobot 托管的运行时</p></div><span>${maintenance.length} 项</span></div>
-                <div class="system-tool-list">${maintenance.map(tool => this.renderTool(tool)).join('')}</div>
-            </section>`;
+            ${ready.length ? `<details class="system-tool-group" data-ready-tools ${readyExpanded ? 'open' : ''}>
+                <summary class="system-platform-block-head"><h4>状态正常的组件</h4><span>${ready.length} 项 · 展开查看</span></summary>
+                <div class="system-tool-list">${ready.map(tool => this.renderTool(tool)).join('')}</div>
+            </details>` : ''}`;
         container.dataset.ready = 'true';
         container.removeAttribute('aria-busy');
         this.schedulePoll(tools.some(tool => tool.operation_running || this.operationActive(tool.operation)));

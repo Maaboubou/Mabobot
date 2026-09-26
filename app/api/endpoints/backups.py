@@ -24,6 +24,7 @@ class BackupCreateRequest(BaseModel):
     include_diagnostics: bool = False
     include_machine_bound: bool = False
     include_generated: bool = True
+    include_codex_profiles: bool = True
 
 
 class RestorePrepareRequest(BaseModel):
@@ -32,6 +33,21 @@ class RestorePrepareRequest(BaseModel):
 
 class BackupDeleteRequest(BaseModel):
     confirmation: str
+
+
+class RestoreCancelRequest(BaseModel):
+    archive_name: str
+    confirmation: str
+
+
+@router.post("/cancel-restore")
+def cancel_restore(request: RestoreCancelRequest) -> Dict[str, Any]:
+    try:
+        return get_backup_service().cancel_pending_restore(
+            request.archive_name, confirmation=request.confirmation,
+        )
+    except (BackupError, OSError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/")
@@ -48,6 +64,7 @@ def create_backup(request: BackupCreateRequest) -> Dict[str, Any]:
         include_diagnostics=request.include_diagnostics,
         include_machine_bound=request.include_machine_bound,
         include_generated=request.include_generated,
+        include_codex_profiles=request.include_codex_profiles,
     ).normalized()
     operation = get_runtime_operation_service().submit(
         owner="system:backup",

@@ -15,11 +15,11 @@ import urllib.request
 from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
 import psutil
+from mabobot_logging import create_json_handler, log_path
 
 from .constants import LOG_DIR, PROJECT_ROOT, SERVICES, ServiceSpec
 
@@ -61,22 +61,14 @@ class LogBuffer:
         self._sequence = 0
         self._lock = threading.RLock()
         LOG_DIR.mkdir(parents=True, exist_ok=True)
-        target = log_file or (LOG_DIR / "launcher.log")
+        target = log_file or log_path("launcher")
         self._logger = logging.getLogger(f"mabobot.launcher.{id(self)}")
         self._logger.setLevel(logging.INFO)
         self._logger.propagate = False
-        handler = RotatingFileHandler(
-            target,
-            maxBytes=3 * 1024 * 1024,
-            backupCount=2,
-            encoding="utf-8",
-        )
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-        )
-        self._logger.addHandler(handler)
+        self._logger.addHandler(create_json_handler("launcher", target))
 
-    def add(self, source: str, message: str, level: str = "info") -> dict[str, Any]:
+    def add(self, source: str, message: str, level: str = "info", *,
+            persist: bool = True) -> dict[str, Any]:
         normalized_level = (
             level if level in {"info", "success", "warning", "error"} else "info"
         )
@@ -96,7 +88,9 @@ class LogBuffer:
             if normalized_level == "error"
             else (logging.WARNING if normalized_level == "warning" else logging.INFO)
         )
-        self._logger.log(logger_level, "[%s] %s", source, clean_message)
+        if persist:
+            self._logger.log(logger_level, "%s", clean_message,
+                             extra={"event": "launcher.event", "source": source})
         return item
 
     def snapshot(self, since: int = 0) -> tuple[list[dict[str, Any]], int]:
@@ -158,6 +152,7 @@ class ServiceSupervisor:
         self._lock = threading.RLock()
         self._stop_event = threading.Event()
         self._shutting_down = False
+        self._restore_blocked = False
         self._runtimes = {spec.key: ServiceRuntime(spec=spec) for spec in specs}
         self._monitor_thread: threading.Thread | None = None
 
@@ -210,12 +205,47 @@ class ServiceSupervisor:
             getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         )
 
+    def _apply_restore_before_services(self) -> None:
+        from dotenv import dotenv_values
+        values = dotenv_values(self.project_root / ".env")
+        backup_dir = Path(os.getenv("SYSTEM_BACKUP_DIR") or values.get("SYSTEM_BACKUP_DIR") or "data/system_backups")
+        if not backup_dir.is_absolute():
+            backup_dir = self.project_root / backup_dir
+        pending = backup_dir / "pending_restore.json"
+        if not pending.exists():
+            if self._restore_blocked:
+                raise RuntimeError("上次恢复失败，已阻止启动；请检查 restore-failed 记录并重新创建恢复计划")
+            return
+        if any(item.process and item.process.poll() is None for item in self._runtimes.values()):
+            raise RuntimeError("存在待恢复备份，请先停止全部服务，再重新启动")
+        # A fresh process loads the current restore code before either service
+        # can open a database. All later children import the restored code.
+        self._restore_blocked = True
+        result = subprocess.run(
+            [sys.executable, "-c", "from dotenv import load_dotenv; load_dotenv('.env'); "
+             "from app.services.backup_service import apply_pending_restore; apply_pending_restore()"],
+            cwd=str(self.project_root), capture_output=True, text=True,
+            encoding="utf-8", errors="replace", creationflags=self._creation_flags(),
+        )
+        if result.returncode or pending.exists():
+            raise RuntimeError("备份恢复失败，已阻止服务启动；请查看备份目录中的 restore-failed 记录")
+        self._restore_blocked = False
+        self.logs.add("系统", "备份已恢复，开始启动服务", "success")
+
     def start_service(self, key: str, *, automatic: bool = False) -> dict[str, Any]:
         with self._lock:
             runtime = self._require_runtime(key)
             if self._shutting_down:
                 return self._snapshot_runtime(runtime)
             if runtime.process and runtime.process.poll() is None:
+                return self._snapshot_runtime(runtime)
+
+            try:
+                self._apply_restore_before_services()
+            except Exception as exc:
+                runtime.status = "error"
+                runtime.detail = str(exc)
+                self.logs.add("系统", runtime.detail, "error")
                 return self._snapshot_runtime(runtime)
 
             script = self.project_root / runtime.spec.script
@@ -280,14 +310,25 @@ class ServiceSupervisor:
         stream = process.stdout
         if stream is None:
             return
+        startup_lines: deque[str] = deque(maxlen=40)
+        recent_lines: deque[str] = deque(maxlen=20)
+        logging_ready = False
         try:
             for line in stream:
                 message = line.rstrip("\r\n")
                 if message:
+                    recent_lines.append(message)
+                    runtime = self._runtimes[key]
+                    if "logging.ready service=" in message:
+                        logging_ready = True
+                        startup_lines.clear()
+                    elif not logging_ready:
+                        startup_lines.append(message)
                     self.logs.add(
-                        self._runtimes[key].spec.label,
+                        runtime.spec.label,
                         message,
                         infer_output_level(message),
+                        persist=False,
                     )
         except (OSError, ValueError) as exc:
             if process.poll() is None:
@@ -295,6 +336,19 @@ class ServiceSupervisor:
                     self._runtimes[key].spec.label, f"日志读取中断：{exc}", "warning"
                 )
         finally:
+            runtime = self._runtimes[key]
+            if not logging_ready and startup_lines:
+                self.logs.add(runtime.spec.label,
+                              "子进程在日志初始化前退出，保留最近启动输出", "error")
+                for message in startup_lines:
+                    self.logs.add(runtime.spec.label, message,
+                                  infer_output_level(message))
+            elif process.poll() not in (None, 0) and recent_lines:
+                self.logs.add(runtime.spec.label,
+                              "子进程异常退出，保留最近输出", "error")
+                for message in recent_lines:
+                    self.logs.add(runtime.spec.label, message,
+                                  infer_output_level(message))
             try:
                 stream.close()
             except OSError:
@@ -419,7 +473,13 @@ class ServiceSupervisor:
         return self.start_service(key)
 
     def start_all(self) -> list[dict[str, Any]]:
-        return [self.start_service(key) for key in tuple(self._runtimes)]
+        results = []
+        for key in tuple(self._runtimes):
+            result = self.start_service(key)
+            results.append(result)
+            if self._restore_blocked:
+                break
+        return results
 
     def stop_all(self) -> list[dict[str, Any]]:
         return [self.stop_service(key) for key in tuple(self._runtimes)]

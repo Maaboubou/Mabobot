@@ -5,13 +5,14 @@ FastAPI主应用程序
 import asyncio
 import logging
 import os
+import uuid
 from dotenv import load_dotenv
 
 from .utils.network_env import (
     configure_startup_network_environment,
     preload_litellm_cost_map_direct,
 )
-from .utils.logging_utils import create_rotating_file_handler
+from mabobot_logging import configure_process_logging, configured_level, log_context
 
 
 # app.main 也可能被 uvicorn 直接导入，因此在其他应用模块之前加载本地端口配置。
@@ -55,16 +56,8 @@ from .utils.health_state import stable_active_listeners
 from .chatbot_presets import BUILTIN_CHATBOT_JUDGES, BUILTIN_CHATBOT_ROLES
 from .version import APP_VERSION
 
-# 配置日志
-os.makedirs("logs", exist_ok=True)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        create_rotating_file_handler("logs/app.log"),
-        logging.StreamHandler()
-    ]
-)
+# Direct ``uvicorn app.main:app`` imports also need the same logger setup.
+configure_process_logging("app")
 
 # 配置第三方库日志级别，减少噪音
 logging.getLogger("werkzeug").setLevel(logging.WARNING)  # 只记录警告以上
@@ -683,6 +676,15 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+
+@app.middleware("http")
+async def attach_log_trace(request, call_next):
+    trace_id = (request.headers.get("X-Trace-ID") or "").strip()[:128] or uuid.uuid4().hex
+    with log_context(trace_id=trace_id):
+        response = await call_next(request)
+    response.headers["X-Trace-ID"] = trace_id
+    return response
+
 # The bundled console is same-origin and does not need CORS. Deployments with
 # a separate frontend can explicitly opt in to a comma-separated allowlist.
 cors_origins = [
@@ -807,5 +809,5 @@ if __name__ == "__main__":
         host=os.getenv("WEB_HOST", "127.0.0.1"),
         port=int(os.getenv("WEB_PORT", "8888")),
         reload=True,
-        log_level="info"
+        log_level=logging.getLevelName(configured_level()).lower()
     )

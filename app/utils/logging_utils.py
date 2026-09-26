@@ -1,13 +1,12 @@
 """日志轮转与低内存读取工具。"""
 
-import logging
 import os
-import time
 from collections import deque
 from dataclasses import dataclass
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Callable, List, Optional, Union
+
+from mabobot_logging import ManagedRotatingFileHandler as ResilientRotatingFileHandler
 
 
 DEFAULT_LOG_MAX_BYTES = 20 * 1024 * 1024
@@ -25,32 +24,6 @@ class LogReadResult:
     strategy: str
 
 
-class ResilientRotatingFileHandler(RotatingFileHandler):
-    """Windows 文件暂时被占用时保留日志，并延后轮转重试。"""
-
-    def __init__(self, *args, rollover_retry_seconds: float = DEFAULT_ROLLOVER_RETRY_SECONDS, **kwargs):
-        self.rollover_retry_seconds = max(1.0, float(rollover_retry_seconds))
-        self._rollover_retry_after = 0.0
-        super().__init__(*args, **kwargs)
-
-    def emit(self, record: logging.LogRecord) -> None:
-        try:
-            now = time.monotonic()
-            if now >= self._rollover_retry_after and self.shouldRollover(record):
-                try:
-                    self.doRollover()
-                    self._rollover_retry_after = 0.0
-                except OSError:
-                    # Windows 上只要另一个进程仍持有文件句柄，rename 就会失败。
-                    # 先继续写当前文件，避免丢日志；稍后再尝试轮转。
-                    self._rollover_retry_after = now + self.rollover_retry_seconds
-                    if self.stream is None:
-                        self.stream = self._open()
-            logging.FileHandler.emit(self, record)
-        except Exception:
-            self.handleError(record)
-
-
 def create_rotating_file_handler(
     log_path: Union[str, Path],
     *,
@@ -58,16 +31,17 @@ def create_rotating_file_handler(
     max_bytes: int = DEFAULT_LOG_MAX_BYTES,
     backup_count: int = DEFAULT_LOG_BACKUP_COUNT,
 ) -> ResilientRotatingFileHandler:
-    """创建统一的按大小轮转处理器。"""
+    """旧调用入口，复用统一的轮转实现。"""
+    if encoding.lower().replace("-", "") != "utf8":
+        raise ValueError("Runtime logs must use UTF-8")
     path = Path(log_path)
     os.makedirs(path.parent, exist_ok=True)
     return ResilientRotatingFileHandler(
         path,
-        mode="a",
-        maxBytes=max(1, int(max_bytes)),
-        backupCount=max(1, int(backup_count)),
-        encoding=encoding,
-        delay=True,
+        max_bytes=max(1, int(max_bytes)),
+        backup_count=max(1, int(backup_count)),
+        max_age_days=30,
+        retry_seconds=DEFAULT_ROLLOVER_RETRY_SECONDS,
     )
 
 
@@ -123,6 +97,7 @@ def read_log_lines(
     search: Optional[str] = None,
     required_text: Optional[str] = None,
     include_rotated: bool = False,
+    line_filter: Optional[Callable[[str], bool]] = None,
 ) -> LogReadResult:
     """
     读取日志最后若干行。
@@ -136,7 +111,7 @@ def read_log_lines(
     required = str(required_text or "")
     log_files = _log_files_in_chronological_order(path, include_rotated)
 
-    if not search_folded and not required:
+    if not search_folded and not required and line_filter is None:
         tail_lines = []
         for candidate in reversed(log_files):
             remaining = limit - len(tail_lines)
@@ -169,6 +144,8 @@ def read_log_lines(
                 if required and required not in line:
                     continue
                 if search_folded and search_folded not in line.casefold():
+                    continue
+                if line_filter is not None and not line_filter(line):
                     continue
                 filtered_count += 1
                 recent.append(line)

@@ -14,7 +14,7 @@ import json
 import uuid
 _ARCHIVE_DELIVERY_SESSION = uuid.uuid4().hex
 from datetime import datetime
-from flask import Flask, request, jsonify
+from flask import Flask, g, request, jsonify
 from dotenv import load_dotenv
 from mabowx import MediaFileMismatchError, MediaIdentityError, WeChat, media_download_trace
 import comtypes
@@ -63,7 +63,7 @@ from app.services.wechat_file_store import (
 )
 from app.utils.inflight_deduplicator import InFlightDeduplicator
 from app.utils.health_state import OnlineProbeTracker
-from app.utils.logging_utils import create_rotating_file_handler
+from mabobot_logging import configure_process_logging, log_context
 from app.utils.wechat_media import image_file_fingerprint
 
 # --- 全局变量 ---
@@ -751,19 +751,9 @@ class ColoredFormatter(logging.Formatter):
         
         return formatted
 
-# 创建文件处理器（无颜色）
-file_handler = create_rotating_file_handler("logs/wx_bot.log")
-file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
-
-# 创建控制台处理器（带颜色）
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(ColoredFormatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
-
-# 配置根日志记录器
-logging.basicConfig(
-    level=logging.INFO,
-    handlers=[file_handler, console_handler],
-    force=True  # 强制重新配置
+configure_process_logging(
+    "wx_bot",
+    console_formatter=ColoredFormatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"),
 )
 
 # 配置第三方库日志级别，减少噪音
@@ -774,6 +764,21 @@ logging.getLogger("requests").setLevel(logging.WARNING)  # requests库只记录�
 logging.getLogger("urllib3").setLevel(logging.WARNING)  # urllib3库只记录警告
 
 logger = logging.getLogger(__name__)
+
+
+@app.before_request
+def bind_request_log_context():
+    trace_id = (request.headers.get("X-Trace-ID") or "").strip()[:128] or uuid.uuid4().hex
+    context = log_context(trace_id=trace_id)
+    context.__enter__()
+    g.log_context = context
+
+
+@app.teardown_request
+def release_request_log_context(_error=None):
+    context = getattr(g, "log_context", None)
+    if context is not None:
+        context.__exit__(None, None, None)
 
 # --- FastAPI主应用地址 ---
 _web_port = os.getenv("WEB_PORT", "8888").strip() or "8888"
@@ -1308,13 +1313,16 @@ def message_callback(msg, chat):
         if len(quote_content_one_line) > 20:
             quote_content_one_line = quote_content_one_line[:20] + "..."
         quote_content_part = f", quote_content='{quote_content_one_line}'" if quote_content_one_line else ""
+        delivery_trace = str(getattr(msg, "delivery_id", "") or getattr(msg, "delivery_sequence", "") or "")
         logger.info(
             f"📥 Received message: "
             f"sender='{msg.sender}', "
             f"chat='{chat_name}', "
             f"type='{msg.type}', "
             f"content='{str(msg.content)}'"
-            f"{quote_content_part}"
+            f"{quote_content_part}",
+            extra={"event": "wechat.message.received", "trace_id": delivery_trace,
+                   "delivery_id": delivery_trace},
             
         )
         
@@ -1343,6 +1351,7 @@ def message_callback(msg, chat):
                     "archive_only": True,
                 },
                 timeout=30,
+                headers={"X-Trace-ID": delivery_trace},
             )
             response.raise_for_status()
             return
@@ -1528,7 +1537,8 @@ def message_callback(msg, chat):
             response = requests.post(
                 f"{MAIN_APP_URL}/api/internal/wechat_message",
                 json=msg_data,
-                timeout=30 # 30秒超时，足够图片下载
+                timeout=30, # 30秒超时，足够图片下载
+                headers={"X-Trace-ID": delivery_trace},
             )
             response.raise_for_status() # 如果请求失败则抛出异常
             logger.debug(f"Message forwarded to main app, status: {response.status_code}")
@@ -1574,6 +1584,7 @@ def send_message():
         request_id,
         who,
         msg[:50],
+        extra={"event": "wechat.text.send.started", "request_id": request_id, "chat": who},
     )
 
     def _send_once() -> dict:
@@ -1664,6 +1675,8 @@ def send_message():
             response_body["lock_wait_ms"],
             response_body["send_elapsed_ms"],
             total_ms,
+            extra={"event": "wechat.text.send.completed", "request_id": request_id,
+                   "chat": who, "duration_ms": total_ms, "outcome": "success"},
         )
         return jsonify(response_body)
 
@@ -1678,6 +1691,8 @@ def send_message():
         total_ms,
         last_attempt.get("response"),
         last_attempt.get("error"),
+        extra={"event": "wechat.text.send.failed", "request_id": request_id,
+               "chat": who, "duration_ms": total_ms, "error_code": "send_failed"},
     )
     return jsonify(response_body), 500
 
@@ -2043,7 +2058,9 @@ def resolve_link_url():
                 "message": f"Message not found in cache: {chat_name}:{message_id}"
             }), 404
 
-        logger.info("🔗 按需解析链接卡片URL: %s:%s", chat_name, message_id)
+        logger.info("🔗 按需解析链接卡片URL: %s:%s", chat_name, message_id,
+                    extra={"event": "wechat.link.resolve.started", "chat": chat_name,
+                           "message_id": message_id})
         get_url = getattr(msg, "get_url", None)
         if not callable(get_url):
             return jsonify({
@@ -2052,10 +2069,18 @@ def resolve_link_url():
             }), 501
         url = get_url(timeout=timeout)
         if isinstance(url, str) and url.strip().startswith(("http://", "https://")):
+            logger.info("链接卡片URL解析完成: chat=%s message_id=%s", chat_name, message_id,
+                        extra={"event": "wechat.link.resolve.completed", "chat": chat_name,
+                               "message_id": message_id, "outcome": "success"})
             return jsonify({"status": "success", "url": url})
+        logger.error("链接卡片URL解析没有得到有效地址: chat=%s message_id=%s", chat_name, message_id,
+                     extra={"event": "wechat.link.resolve.failed", "chat": chat_name,
+                            "message_id": message_id, "error_code": "url_unavailable"})
         return jsonify({"status": "error", "message": "Failed to resolve link URL"}), 500
     except Exception as e:
-        logger.error(f"Error resolving link URL: {e}", exc_info=True)
+        logger.error("Error resolving link URL: %s", e, exc_info=True,
+                     extra={"event": "wechat.link.resolve.failed", "chat": chat_name,
+                            "message_id": message_id, "error_code": "resolve_exception"})
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
@@ -2081,7 +2106,9 @@ def download_image_message():
     request_id = uuid.uuid4().hex
 
     def _download_once() -> str:
-        logger.info("Downloading image message once: %s:%s type=%s request_id=%s", chat_name, message_id, type(msg), request_id)
+        logger.info("Downloading image message once: %s:%s type=%s request_id=%s", chat_name, message_id, type(msg), request_id,
+                    extra={"event": "wechat.media.download.started", "chat": chat_name,
+                           "message_id": message_id, "request_id": request_id})
         with media_download_trace(msg, request_id=request_id, chat=chat_name, message_id=message_id):
             file_path = msg.download()
         logger.info("Download completed, result: %s", file_path)
@@ -2101,7 +2128,10 @@ def download_image_message():
             _download_once,
             cache_validator=lambda value: os.path.exists(str(value)),
         )
-        logger.info("Successfully resolved image download: %s", file_path)
+        logger.info("Successfully resolved image download: %s", file_path,
+                    extra={"event": "wechat.media.download.completed", "chat": chat_name,
+                           "message_id": message_id, "request_id": request_id,
+                           "outcome": "success"})
         return jsonify({"status": "success", "file_path": file_path})
     except TimeoutError as e:
         logger.warning("Image download is still in progress: %s:%s", chat_name, message_id)
@@ -2341,7 +2371,9 @@ def _download_quote_media_on_demand(media_kind: str):
     cache_key = (f"quote_{media_kind}", chat_name, message_id)
 
     def _download_quote_once() -> str:
-        logger.info("🎬 按需下载引用%s（单次）: %s:%s", media_kind, chat_name, message_id)
+        logger.info("🎬 按需下载引用%s（单次）: %s:%s", media_kind, chat_name, message_id,
+                    extra={"event": "wechat.media.download.started", "chat": chat_name,
+                           "message_id": message_id})
         download = getattr(msg, "download_quote_media", None)
         if not callable(download):
             # 兼容重启前创建、仍只有旧方法名的消息对象。
@@ -2363,7 +2395,9 @@ def _download_quote_media_on_demand(media_kind: str):
             _download_quote_once,
             cache_validator=lambda value: os.path.exists(str(value)),
         )
-        logger.info("🎬 引用%s按需下载成功: %s", media_kind, media_path)
+        logger.info("🎬 引用%s按需下载成功: %s", media_kind, media_path,
+                    extra={"event": "wechat.media.download.completed", "chat": chat_name,
+                           "message_id": message_id, "outcome": "success"})
         return jsonify({
             "status": "success",
             "file_path": media_path,
@@ -2382,7 +2416,9 @@ def _download_quote_media_on_demand(media_kind: str):
         return jsonify({"status": "retryable", "error_code": e.code,
                         "message": str(e)}), 503
     except Exception as e:
-        logger.error("按需下载引用%s失败: %s", media_kind, e)
+        logger.error("按需下载引用%s失败: %s", media_kind, e, exc_info=True,
+                     extra={"event": "wechat.media.download.failed", "chat": chat_name,
+                            "message_id": message_id, "error_code": "download_failed"})
         return jsonify({"status": "error", "message": str(e)}), 500
 
 

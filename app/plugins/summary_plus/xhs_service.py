@@ -394,11 +394,10 @@ class XiaohongshuMixin:
         raise RuntimeError("小红书正文制图需要中文字体（微软雅黑、Noto Sans CJK 或文泉驿）")
 
     def _xhs_render_description(self, description: str, author: str, output_path: str):
-        """Render the approved 1000px body card for the end of a long image."""
+        """Render note text as the first panel of the long image."""
         text = re.sub(r"#([^#]+?)\[话题\]#", r"#\1 ", description).strip()
         text = text.replace("\r\n", "\n").replace("\r", "\n")
         font = self._xhs_text_font(36)
-        bold = self._xhs_text_font(46, bold=True)
         small = self._xhs_text_font(26)
         lines = []
         for paragraph in text.split("\n"):
@@ -414,23 +413,26 @@ class XiaohongshuMixin:
                 else:
                     line += char
             lines.append(line)
-        with Image.new("RGB", (1000, 220 + len(lines) * 62), "white") as card:
+        author = " ".join(author.split())
+        with Image.new("RGB", (1000, 56 + len(lines) * 62 + (48 if author else 0)), "white") as card:
             draw = ImageDraw.Draw(card)
             draw.line((48, 0, 952, 0), fill="#dddddd", width=2)
-            draw.text((48, 32), "笔记正文", font=bold, fill="#222222")
-            # Keep the author on one line even when upstream metadata is unusually long.
-            author = " ".join(author.split())
-            while author and small.getlength(author) > 876:
-                author = author[:-2] + "…"
-            draw.text((48, 102), author, font=small, fill="#888888")
             for index, line in enumerate(lines):
-                draw.text((48, 166 + index * 62), line, font=font, fill="#292929")
+                draw.text((48, 28 + index * 62), line, font=font, fill="#292929")
+            if author:
+                # Keep the author on one line even when upstream metadata is unusually long.
+                while small.getlength(author) > 876:
+                    author = author[:-2] + "…"
+                draw.text((48, 34 + len(lines) * 62), author, font=small, fill="#888888")
             card.save(output_path, "PNG")
 
     def _process_xhs_image_urls(
         self, image_urls: List[str], uid: str, *, note: Optional[dict] = None,
     ) -> Optional[str]:
         selected_urls = self._xhs_select_image_urls(image_urls)
+        if len(selected_urls) > 1:
+            # Put the final source image in the cover slot before applying the limit.
+            selected_urls = [selected_urls[-1], *selected_urls[:-1]]
         self.logger.info(
             "小红书图片筛选: 候选=%s, 去重后=%s, 上限=%s",
             len(image_urls), len(selected_urls), self.xhs_max_images,
@@ -475,7 +477,7 @@ class XiaohongshuMixin:
                 user = user if isinstance(user, dict) else {}
                 author = str(user.get("nickname") or user.get("name") or note.get("uploader") or note.get("creator") or "")
                 self._xhs_render_description(description, author, body_path)
-                converted_images.append(body_path)
+                converted_images.insert(0, body_path)
             output_path = os.path.join(tmp_dir, f"xhs_long_img_{uid}.jpg")
             self._merge_images_vertically(converted_images, output_path)
             return output_path

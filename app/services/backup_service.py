@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
+from app.services import backup_codex_profiles
 from app.services.wechat_file_store import normalize_index_saved_paths
 from app.services.wsl_probe_guard import run_guarded_wsl_command
 from app.version import APP_VERSION, BACKUP_FORMAT_VERSION, PLUGIN_RUNTIME_API_VERSION
@@ -48,6 +49,7 @@ class BackupOptions:
     include_diagnostics: bool = False
     include_machine_bound: bool = False
     include_generated: bool = True
+    include_codex_profiles: bool = True
 
     def normalized(self) -> "BackupOptions":
         if self.profile not in {"state", "migration"}:
@@ -61,11 +63,12 @@ class BackupService:
     MANIFEST_NAME = "backup-manifest.json"
     PENDING_NAME = "pending_restore.json"
     ARCHIVE_SUFFIX = ".mabobot-backup.zip"
+    LEGACY_ARCHIVE_SUFFIX = ".ggbot-backup.zip"
 
     # State archives contain mutable operator state only. Runtime manifests and
     # dependency files belong to migration archives so a state restore cannot
     # silently downgrade code after an application update.
-    STATE_ROOT_FILES = {".env"}
+    STATE_ROOT_FILES = {".env", "app/assistant/config.json", "config/wechat_content_policy.json"}
     STATE_DATA_DIRECTORIES = {
         "chat_logs",
         "chat_archive",
@@ -95,6 +98,7 @@ class BackupService:
         "config",
     }
     MIGRATION_ROOT_FILES = {
+        "mabobot_logging.py",
         "start.py",
         "wx_bot.py",
         "wechat_auto_login.py",
@@ -138,6 +142,7 @@ class BackupService:
         project_root: Optional[Path] = None,
         backup_root: Optional[Path] = None,
         ppt_master_dir: Optional[Path] = None,
+        codex_user_home: Optional[Path] = None,
     ):
         self.project_root = (project_root or Path(__file__).resolve().parents[2]).resolve()
         configured = backup_root or Path(os.getenv("SYSTEM_BACKUP_DIR") or "data/system_backups")
@@ -174,7 +179,17 @@ class BackupService:
                 self.ppt_master_dir = self._resolve_ppt_master_dir(configured_skill)
             except BackupError as exc:
                 self.ppt_master_config_error = str(exc)
+        self.codex_user_home = codex_user_home.resolve() if codex_user_home is not None else None
+        self.codex_runtime_home = self.codex_user_home.as_posix() if self.codex_user_home else None
         self._lock = threading.RLock()
+
+    def _require_codex_home(self) -> Path:
+        if self.codex_user_home is None:
+            try:
+                self.codex_user_home, self.codex_runtime_home = backup_codex_profiles.discover_home()
+            except Exception as exc:
+                raise BackupError(f"无法备份或恢复 Codex Profile: {exc}") from exc
+        return self.codex_user_home
 
     def _resolve_portable_storage_path(
         self,
@@ -289,7 +304,7 @@ class BackupService:
         name = Path(str(value or "")).name
         if (
             name != value
-            or not name.endswith(BackupService.ARCHIVE_SUFFIX)
+            or not name.endswith((BackupService.ARCHIVE_SUFFIX, BackupService.LEGACY_ARCHIVE_SUFFIX))
             or re.fullmatch(r"[A-Za-z0-9._-]+", name) is None
         ):
             raise BackupError("备份文件名无效")
@@ -305,6 +320,13 @@ class BackupService:
 
     def _relative(self, path: Path) -> str:
         resolved = path.resolve()
+        if self.codex_user_home is not None:
+            try:
+                relative = resolved.relative_to(self.codex_user_home).as_posix()
+                if backup_codex_profiles.allowed(relative):
+                    return relative
+            except ValueError:
+                pass
         if self.ppt_master_dir is not None:
             try:
                 skill_relative = resolved.relative_to(self.ppt_master_dir.resolve())
@@ -449,6 +471,11 @@ class BackupService:
         add(self._iter_state_data(options))
         add(self._iter_plugin_state_files())
         add(self._iter_portable_storage())
+        if options.include_codex_profiles:
+            try:
+                add(backup_codex_profiles.sources(self._require_codex_home()))
+            except (ValueError, OSError) as exc:
+                raise BackupError(f"Codex Profile 备份失败: {exc}") from exc
 
         if options.profile == "migration":
             add(self.project_root / name for name in self.MIGRATION_ROOT_FILES if (self.project_root / name).is_file())
@@ -532,7 +559,8 @@ class BackupService:
             or "data/codex_chat_scopes"
         ).rstrip("/")
         sensitive = (
-            relative_path.name == ".env"
+            backup_codex_profiles.allowed(relative)
+            or relative_path.name == ".env"
             or "cookie" in relative.lower()
             or "secret" in relative.lower()
             or relative == wechat_files_root
@@ -670,6 +698,7 @@ class BackupService:
                                 "include_diagnostics": options.include_diagnostics,
                                 "include_machine_bound": options.include_machine_bound,
                                 "include_generated": options.include_generated,
+                                "include_codex_profiles": options.include_codex_profiles,
                             },
                             "security": {
                                 "encrypted": False,
@@ -679,7 +708,7 @@ class BackupService:
                                 ),
                                 "warning": (
                                     "此备份格式未加密；.env、Cookie、聊天附件、"
-                                    "Codex 工作区和插件密钥均以明文保存。"
+                                    "Codex 工作区、Profile 登录凭据和插件密钥均以明文保存。"
                                 ),
                             },
                             "consistency": {
@@ -705,6 +734,9 @@ class BackupService:
             if operation:
                 operation.progress(98, "正在校验迁移包")
             validation = self.validate_archive(destination, verify_files=False)
+            if not validation["valid"]:
+                destination.unlink(missing_ok=True)
+                raise BackupError("新备份校验失败：" + "；".join(validation["errors"][:5]))
             result = {
                 "name": name,
                 "path": str(destination),
@@ -796,6 +828,8 @@ class BackupService:
     ) -> bool:
         if relative == self.MANIFEST_NAME:
             return False
+        if backup_codex_profiles.allowed(relative):
+            return bool(options.get("include_codex_profiles", True))
         if relative in self.STATE_ROOT_FILES or self._is_plugin_state_member(relative):
             return True
         if any(self._path_is_within(relative, root) for root in storage_layout.values()):
@@ -869,6 +903,8 @@ class BackupService:
             not isinstance(options[name], bool) for name in option_names
         ):
             raise BackupError("mabowx v2 备份选项清单无效")
+        if "include_codex_profiles" in options and not isinstance(options["include_codex_profiles"], bool):
+            raise BackupError("Profile 备份选项无效")
         storage_layout = self._validate_storage_layout(payload.get("storage_layout"))
         files = payload.get("files")
         if not isinstance(files, list) or not files:
@@ -896,6 +932,10 @@ class BackupService:
             if byte_count < 0 or re.fullmatch(r"[0-9a-f]{64}", str(record.get("sha256") or "")) is None:
                 raise BackupError(f"mabowx v2 文件校验记录无效: {relative}")
 
+        try:
+            backup_codex_profiles.validate_members(seen)
+        except ValueError as exc:
+            raise BackupError(str(exc)) from exc
         try:
             declared_file_count = int(payload.get("file_count"))
         except (TypeError, ValueError) as exc:
@@ -982,6 +1022,22 @@ class BackupService:
                             min(95, int(checked / max(len(expected), 1) * 95)),
                             f"正在校验 {checked}/{len(expected)}",
                         )
+                if manifest.get("profile") == "migration":
+                    for relative in ("start.py", "wx_bot.py", "mabobot_launcher/supervisor.py", "app/utils/logging_utils.py"):
+                        if relative in members:
+                            import ast
+                            try:
+                                tree = ast.parse(archive.read(relative), filename=relative)
+                            except (SyntaxError, ValueError) as exc:
+                                errors.append(f"启动代码无效: {relative}: {exc}")
+                                continue
+                            imports_logging = any(
+                                (isinstance(node, ast.ImportFrom) and node.module == "mabobot_logging")
+                                or (isinstance(node, ast.Import) and any(alias.name == "mabobot_logging" for alias in node.names))
+                                for node in ast.walk(tree)
+                            )
+                            if imports_logging and "mabobot_logging.py" not in expected:
+                                errors.append(f"缺少启动依赖 mabobot_logging.py（{relative}）")
                 expected_total = sum(int(record.get("bytes") or 0) for record in expected.values())
                 if int(manifest.get("total_bytes") or -1) != expected_total:
                     errors.append("迁移包总大小与清单不一致")
@@ -998,7 +1054,7 @@ class BackupService:
     def list_backups(self) -> List[Dict[str, Any]]:
         rows = []
         for source, imported in ((self.backup_root, False), (self.incoming_root, True)):
-            for path in source.glob(f"*{self.ARCHIVE_SUFFIX}"):
+            for path in sorted(set(source.glob(f"*{self.ARCHIVE_SUFFIX}")) | set(source.glob(f"*{self.LEGACY_ARCHIVE_SUFFIX}"))):
                 try:
                     manifest = self.read_manifest(path)
                     validation = self.validate_archive(path, verify_files=False)
@@ -1019,10 +1075,12 @@ class BackupService:
                             "error": "；".join(validation["errors"][:3]) if validation["errors"] else None,
                         }
                     )
-                except IncompatibleBackupError:
-                    # The mabowx generation is a hard cut. Retired archives stay
-                    # on disk but are intentionally absent from the current UI.
-                    continue
+                except IncompatibleBackupError as exc:
+                    rows.append({
+                        "name": path.name, "bytes": path.stat().st_size,
+                        "imported": imported, "valid": False, "compatible": False,
+                        "error": str(exc) + "；请使用对应旧版本导出数据，不能直接恢复到当前版本。",
+                    })
                 except BackupError as exc:
                     rows.append(
                         {
@@ -1102,7 +1160,30 @@ class BackupService:
             pass
         return result
 
+    def cancel_pending_restore(self, archive_name: str, *, confirmation: str) -> Dict[str, Any]:
+        if confirmation != "取消恢复计划":
+            raise BackupError("请确认取消恢复计划")
+        with self._lock:
+            path = self.pending_path()
+            if not path.exists():
+                raise BackupError("恢复计划已不存在，请刷新页面")
+            try:
+                pending = json.loads(path.read_text(encoding="utf-8"))
+                current_name = str(pending.get("archive_name") or "")
+            except (OSError, ValueError, AttributeError):
+                current_name = ""
+            if current_name != archive_name:
+                raise BackupError("恢复计划已改变，请刷新后重新确认")
+            path.unlink()
+        return {"cancelled": True}
+
     def prepare_restore(self, archive_name: str, *, confirmation: str) -> Dict[str, Any]:
+        with self._lock:
+            if self.pending_path().exists():
+                raise BackupError("已有待执行的恢复计划，请先应用或取消")
+            return self._prepare_restore(archive_name, confirmation=confirmation)
+
+    def _prepare_restore(self, archive_name: str, *, confirmation: str) -> Dict[str, Any]:
         if confirmation.strip() != "恢复备份":
             raise BackupError("请输入“恢复备份”确认操作")
         archive = self.archive_path(archive_name)
@@ -1160,6 +1241,17 @@ class BackupService:
 
     def _restore_target(self, relative: str) -> Path:
         member = PurePosixPath(self._safe_member(relative))
+        if backup_codex_profiles.allowed(relative):
+            home = self._require_codex_home()
+            target = home / Path(*member.parts)
+            for parent in (target, *target.parents):
+                if parent == home:
+                    break
+                if parent.is_symlink():
+                    raise BackupError(f"Profile 恢复目标包含链接: {relative}")
+            if not target.resolve().is_relative_to(home):
+                raise BackupError(f"Profile 恢复目标越界: {relative}")
+            return target
         prefix = self.PPT_MASTER_ARCHIVE_ROOT.parts
         if member.parts[: len(prefix)] == prefix:
             if self.ppt_master_dir is None:
@@ -1214,7 +1306,7 @@ class BackupService:
 
         if manifest.get("profile") != "migration":
             return
-        for relative in sorted(self.REQUIRED_MIGRATION_FILES):
+        for relative in sorted(self.REQUIRED_MIGRATION_FILES | ({"mabobot_logging.py"} if "mabobot_logging.py" in records else set())):
             if not relative.endswith(".py"):
                 continue
             path = stage / Path(*PurePosixPath(relative).parts)
@@ -1235,6 +1327,21 @@ class BackupService:
                     stale[relative] = path
         return [stale[key] for key in sorted(stale)]
 
+    def _require_offline(self) -> None:
+        import psutil
+        for process in psutil.process_iter(["pid", "cmdline", "cwd"]):
+            if process.info["pid"] == os.getpid():
+                continue
+            try:
+                cwd = process.info.get("cwd")
+                args = process.info.get("cmdline") or []
+                if cwd and Path(cwd).resolve() == self.project_root and any(
+                    Path(arg).name in {"wx_bot.py", "start.py"} for arg in args[1:]
+                ):
+                    raise BackupError("恢复前必须停止当前项目的 Web 和微信 Bot；请使用启动器重启全部服务")
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+
     def restore_archive(self, archive_path: Path, *, create_safety_backup: bool = True) -> Dict[str, Any]:
         """Restore an archive while the application is stopped.
 
@@ -1242,6 +1349,7 @@ class BackupService:
         A file-level rollback directory protects the current installation if an
         overwrite fails midway.
         """
+        self._require_offline()
         archive_path = archive_path.resolve()
         with self._lock, tempfile.TemporaryDirectory(prefix="restore-stage-", dir=self.backup_root) as stage_name:
             stage = Path(stage_name) / "payload"
@@ -1250,6 +1358,12 @@ class BackupService:
             manifest, relatives = self._extract_verified(archive_path, stage)
             self._preflight_restore_targets(manifest)
             self._validate_staged_payload(manifest, stage)
+            if any(backup_codex_profiles.allowed(relative) for relative in relatives):
+                self._require_codex_home()
+                try:
+                    backup_codex_profiles.prepare_restore(stage, relatives, self.codex_runtime_home)
+                except (ValueError, OSError, KeyError) as exc:
+                    raise BackupError(f"Profile 恢复预检失败: {exc}") from exc
 
             safety_backup = None
             if create_safety_backup:
@@ -1265,6 +1379,7 @@ class BackupService:
                         include_diagnostics=bool(manifest_options.get("include_diagnostics")),
                         include_machine_bound=bool(manifest_options.get("include_machine_bound")),
                         include_generated=bool(manifest_options.get("include_generated", True)),
+                        include_codex_profiles=any(backup_codex_profiles.allowed(relative) for relative in relatives),
                     ),
                 )
 
@@ -1273,6 +1388,20 @@ class BackupService:
             applied: List[str] = []
             removed: List[str] = []
             try:
+                # A newer WAL must never be replayed against the restored DB.
+                # Retain sidecars in rollback until every replacement succeeds.
+                for record in manifest["files"]:
+                    if not str(record.get("consistency", "")).startswith("sqlite_online_backup"):
+                        continue
+                    for suffix in ("-wal", "-shm", "-journal"):
+                        relative = record["path"] + suffix
+                        target = self._restore_target(relative)
+                        if target.exists():
+                            previous = rollback / Path(*PurePosixPath(relative).parts)
+                            previous.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(target, previous)
+                            target.unlink()
+                            removed.append(relative)
                 if "data/chat_archive/snapshot.json" in relatives:
                     # A journal snapshot replaces the archive as a unit. A
                     # later index/WAL or extra journal shard must not survive
@@ -1310,10 +1439,17 @@ class BackupService:
                     else:
                         created.append(relative)
                     target.parent.mkdir(parents=True, exist_ok=True)
-                    temporary = target.with_name(f".{target.name}.restore.tmp")
-                    shutil.copy2(source, temporary)
-                    os.replace(temporary, target)
-                    applied.append(relative)
+                    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.restore-", dir=target.parent)
+                    os.close(descriptor)
+                    temporary = Path(temporary_name)
+                    try:
+                        shutil.copy2(source, temporary)
+                        os.replace(temporary, target)
+                        applied.append(relative)
+                    finally:
+                        temporary.unlink(missing_ok=True)
+                if any(backup_codex_profiles.allowed(relative) for relative in relatives):
+                    backup_codex_profiles.apply_runtime_permissions(self.codex_user_home, self.codex_runtime_home, relatives)
             except Exception:
                 for relative in reversed(applied):
                     target = self._restore_target(relative)
@@ -1327,7 +1463,7 @@ class BackupService:
                             pass
                 for relative in removed:
                     previous = rollback / Path(*PurePosixPath(relative).parts)
-                    target = self.project_root / Path(*PurePosixPath(relative).parts)
+                    target = self._restore_target(relative)
                     target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(previous, target)
                 raise
@@ -1374,11 +1510,32 @@ class BackupService:
                 pass
             raise
 
+    def latest_restore_result(self) -> Optional[Dict[str, Any]]:
+        reports = sorted(
+            [*self.backup_root.glob("restore-applied-*.json"), *self.backup_root.glob("restore-failed-*.json")],
+            key=lambda path: path.name.rsplit("-", 2)[-2:], reverse=True,
+        )
+        for path in reports:
+            try:
+                report = json.loads(path.read_text(encoding="utf-8"))
+                return {
+                    "status": "failed" if path.name.startswith("restore-failed-") else "completed",
+                    "archive_name": Path(str(report.get("archive_name") or report.get("archive") or "")).name,
+                    "time": report.get("failed_at") or report.get("restored_at"),
+                    "error": report.get("error"),
+                    "safety_backup": (report.get("safety_backup") or {}).get("name") if isinstance(report.get("safety_backup"), dict) else report.get("safety_backup"),
+                }
+            except (OSError, ValueError, AttributeError):
+                continue
+        return None
+
     def overview(self) -> Dict[str, Any]:
         pending = None
         if self.pending_path().exists():
             try:
                 pending = json.loads(self.pending_path().read_text(encoding="utf-8"))
+                if not isinstance(pending, dict) or not pending.get("archive_name"):
+                    pending = {"invalid": True}
             except (OSError, json.JSONDecodeError):
                 pending = {"invalid": True}
         backups = self.list_backups()
@@ -1390,10 +1547,11 @@ class BackupService:
             "security": {
                 "encrypted": False,
                 "env_included": True,
-                "warning": "当前备份格式未加密；.env、聊天附件和 Codex 工作区应按敏感文件保管。",
+                "warning": "当前备份格式未加密；.env、聊天附件、Codex Profile 登录凭据及工作区应按敏感文件保管。",
                 "encryption_planned": True,
             },
             "pending_restore": pending,
+            "last_restore": self.latest_restore_result(),
             "backups": backups,
             "counts": {
                 "total": len(backups),
@@ -1401,8 +1559,8 @@ class BackupService:
                 "migration": sum(item.get("profile") == "migration" for item in backups),
             },
             "profiles": [
-                {"id": "state", "title": "状态备份", "description": "数据库、配置、聊天、附件与插件状态"},
-                {"id": "migration", "title": "完整迁移", "description": "状态、mabowx 当前代码、插件、Codex 技能和生成内容"},
+                {"id": "state", "title": "状态备份", "description": "数据库、助手配置、聊天附件、插件状态与独立 Codex Profile/Skill"},
+                {"id": "migration", "title": "完整迁移", "description": "状态、当前代码与独立 Profile/Skill；需预装目标机器运行环境"},
             ],
         }
 

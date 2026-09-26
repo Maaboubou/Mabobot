@@ -309,6 +309,27 @@ def get_root_window_at_point(x: int, y: int) -> int | None:
     return int(root) if root else None
 
 
+def get_hit_test_at_point(x: int, y: int) -> dict[str, object]:
+    """限时读取点击点的原生窗口和非客户区命中码，不发送鼠标输入。"""
+    win32api, win32con, win32gui, _ = _require_win32()
+    hwnd = int(win32gui.WindowFromPoint((int(x), int(y))) or 0)
+    if not hwnd:
+        return {"hwnd": None, "hit_test": None}
+    result = win32gui.SendMessageTimeout(
+        hwnd,
+        win32con.WM_NCHITTEST,
+        0,
+        win32api.MAKELONG(int(x), int(y)),
+        win32con.SMTO_ABORTIFHUNG | win32con.SMTO_BLOCK,
+        100,
+    )
+    return {
+        "hwnd": hwnd,
+        "class_name": win32gui.GetClassName(hwnd),
+        "hit_test": int(result[1]) if result and result[0] else None,
+    }
+
+
 def get_cursor_position() -> tuple[int, int]:
     _, _, win32gui, _ = _require_win32()
     return win32gui.GetCursorPos()

@@ -893,6 +893,37 @@ class WeChatBrowser(BaseUISubWnd):
     _ui_cls_name = "Chrome_WidgetWin_0"
     _ui_name = "微信"
 
+    @staticmethod
+    def native_window_snapshot() -> dict:
+        """失败时列出 WeChatAppEx 顶层窗口，不记录网页标题。"""
+        try:
+            import psutil
+
+            pids = sorted(
+                int(process.info["pid"])
+                for process in psutil.process_iter(attrs=["pid", "name"])
+                if str(process.info.get("name") or "").casefold() == "wechatappex.exe"
+            )
+            windows = [window for pid in pids for window in enum_windows_by_pid(pid)]
+            return {
+                "process_count": len(pids),
+                "window_count": len(windows),
+                "visible_window_count": sum(window.visible for window in windows),
+                "windows": [
+                    {
+                        "hwnd": window.hwnd,
+                        "pid": window.pid,
+                        "class_name": window.class_name,
+                        "visible": window.visible,
+                        "title_is_wechat": window.title == "微信",
+                        "rect": window.rect,
+                    }
+                    for window in windows[:12]
+                ],
+            }
+        except Exception as exc:
+            return {"probe_error": f"{type(exc).__name__}: {exc}"[:160]}
+
     def __init__(self, timeout: float = 10.0) -> None:
         self.root = None
         self.parent = None
@@ -942,11 +973,17 @@ class WeChatBrowser(BaseUISubWnd):
                     if detail not in observed and len(observed) < 12:
                         observed.append(detail)
             time.sleep(0.25)
+        try:
+            foreground = get_foreground_window()
+        except Exception:
+            foreground = None
         wxlog.warning(
             f"链接浏览器识别超时: timeout={timeout} attempts={attempts} "
             f"elapsed={time.monotonic() - started_at:.3f}s "
             f"expected_class={self._ui_cls_name!r} expected_name={self._ui_name!r} "
-            f"max_candidates={max_candidates} observed={observed}"
+            f"max_candidates={max_candidates} observed={observed} "
+            f"native_windows={self.native_window_snapshot()} "
+            f"foreground={foreground}"
         )
         return None
 

@@ -14,7 +14,10 @@ from mabowx.core import uia
 from mabowx.core.clipboard import clear, get_text, read_files, set_text
 from mabowx.core.win32 import (
     force_foreground,
+    get_cursor_position,
     get_foreground_window,
+    get_hit_test_at_point,
+    get_root_window_at_point,
     is_window,
     get_window_info,
     post_close_message,
@@ -1576,7 +1579,7 @@ class CardMessage(HumanMessage):
         except Exception:
             return point
 
-    def _log_card_ui(self, stage: str, *, point=None) -> None:
+    def _log_card_ui(self, stage: str, *, point=None) -> dict | None:
         """只读、尽力记录点击证据；诊断失败不能影响原有操作。"""
         try:
             from mabowx.core.win32 import get_window_geometry
@@ -1590,6 +1593,18 @@ class CardMessage(HumanMessage):
             def rect(control):
                 value = control.BoundingRectangle
                 return tuple(int(getattr(value, key)) for key in ("left", "top", "right", "bottom"))
+
+            def point_window():
+                hit_hwnd = get_root_window_at_point(*point)
+                info = get_window_info(hit_hwnd) if hit_hwnd else None
+                if info is None:
+                    return {"hwnd": hit_hwnd}
+                return {
+                    "hwnd": info.hwnd,
+                    "pid": info.pid,
+                    "class_name": info.class_name,
+                    "rect": info.rect,
+                }
 
             parent = getattr(self, "parent", None)
             window = getattr(parent, "root", None)
@@ -1605,9 +1620,15 @@ class CardMessage(HumanMessage):
                 "chat_geometry": probe(lambda: get_window_geometry(hwnd)) if isinstance(hwnd, int) and hwnd else None,
                 "foreground": media_foreground_snapshot(),
             }
+            if point is not None:
+                details["point_window"] = probe(point_window)
+                details["cursor"] = probe(get_cursor_position)
+                if stage == "before_click":
+                    details["point_hit_test"] = probe(lambda: get_hit_test_at_point(*point))
             wxlog.info(f"链接卡片 UI 诊断: {details}")
+            return details
         except Exception:
-            pass
+            return None
 
     @uilock
     def _click_visible_card(self) -> None:
@@ -1617,9 +1638,30 @@ class CardMessage(HumanMessage):
         point = self._visible_click_point()
         if point is None:
             raise RuntimeError("卡片当前没有可点击的可见区域")
-        self._log_card_ui("before_click", point=point)
-        uia.click_screen(point[0], point[1], wait=0.5)
-        self._log_card_ui("after_click", point=point)
+        before = self._log_card_ui("before_click", point=point)
+        click_started = time.monotonic()
+        try:
+            uia.click_screen(point[0], point[1], wait=0.5)
+        finally:
+            click_ms = round((time.monotonic() - click_started) * 1000)
+            after = self._log_card_ui("after_click", point=point)
+            if isinstance(before, dict) and isinstance(after, dict):
+                old_geometry = before.get("chat_geometry") or {}
+                new_geometry = after.get("chat_geometry") or {}
+                old_rect = old_geometry.get("window_rect") if isinstance(old_geometry, dict) else None
+                new_rect = new_geometry.get("window_rect") if isinstance(new_geometry, dict) else None
+                if old_rect and new_rect and old_rect != new_rect:
+                    from mabowx.ui.component import WeChatBrowser
+
+                    wxlog.warning(
+                        "链接卡片点击期间聊天窗口位置或尺寸变化: "
+                        f"delivery_id={getattr(self, 'delivery_id', None)} "
+                        f"click_ms={click_ms} point={point} "
+                        f"before={old_rect} after={new_rect} "
+                        f"point_window_before={before.get('point_window')} "
+                        f"point_hit_test_before={before.get('point_hit_test')} "
+                        f"browser_windows={WeChatBrowser.native_window_snapshot()}"
+                    )
 
     def get_url(self, timeout: float = 15.0) -> str:
         """Serialize link requests separately from short desktop transactions."""

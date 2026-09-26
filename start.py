@@ -11,7 +11,7 @@ from pathlib import Path
 from dotenv import dotenv_values, load_dotenv
 
 from app.utils.network_env import configure_startup_network_environment
-from app.utils.logging_utils import create_rotating_file_handler
+from mabobot_logging import configure_process_logging, configured_level
 
 
 # 先读取当前环境以定位备份目录；待恢复计划必须在 uvicorn 导入
@@ -36,20 +36,10 @@ configure_startup_network_environment()
 import uvicorn
 
 
-def setup_logging():
+def setup_logging(level=None):
     """配置日志"""
-    # 创建日志目录
-    os.makedirs("logs", exist_ok=True)
     os.makedirs("data", exist_ok=True)
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        handlers=[
-            create_rotating_file_handler("logs/app.log"),
-            logging.StreamHandler(sys.stdout)
-        ]
-    )
+    configure_process_logging("app", level=level)
 
     # 配置第三方库日志级别，减少噪音
     logging.getLogger("werkzeug").setLevel(logging.WARNING)  # 只记录警告以上
@@ -95,13 +85,6 @@ def main():
     print("基于FastAPI + 事件总线 + 插件化架构")
     print("=" * 60)
 
-    # 设置日志
-    setup_logging()
-    logger = logging.getLogger(__name__)
-
-    # 检查环境
-    check_environment()
-
     # 解析命令行参数
     import argparse
     parser = argparse.ArgumentParser(description="Mabobot")
@@ -123,10 +106,15 @@ def main():
         metavar="ARCHIVE",
         help="离线恢复指定 .mabobot-backup.zip 后退出（项目必须处于停止状态）",
     )
-    parser.add_argument("--log-level", default="info", choices=["debug", "info", "warning", "error"],
+    parser.add_argument("--log-level", default=None, choices=["debug", "info", "warning", "error"],
                        help="Log level")
 
     args = parser.parse_args()
+    if args.workers > 1 and not args.reload:
+        os.environ["MABOBOT_WEB_MULTI_WORKER"] = "1"
+    setup_logging(args.log_level)
+    logger = logging.getLogger(__name__)
+    check_environment()
 
     if args.restore:
         from app.services.backup_service import BackupService
@@ -140,7 +128,8 @@ def main():
         return
 
     logger.info(f"Starting server on {args.host}:{args.port}")
-    logger.info(f"Log level: {args.log_level}")
+    effective_level = logging.getLevelName(configured_level(args.log_level)).lower()
+    logger.info("Log level: %s", effective_level)
     logger.info(f"Reload mode: {args.reload}")
 
     try:
@@ -151,7 +140,7 @@ def main():
             port=args.port,
             reload=args.reload,
             workers=args.workers if not args.reload else 1,
-            log_level=args.log_level,
+            log_level=effective_level,
             access_log=False  # 关闭uvicorn访问日志，减少噪音
         )
     except KeyboardInterrupt:

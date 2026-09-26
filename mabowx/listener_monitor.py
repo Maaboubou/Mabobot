@@ -369,7 +369,8 @@ class ListenerWindowMonitor:
                 self._last_repair_at = time.time()
                 result["status"] = "recovered"
                 wxlog.warning(
-                    f"监听窗口位置/尺寸已恢复: who={name!r} hwnd={repair.get('hwnd')}"
+                    f"监听窗口位置/尺寸已恢复: who={name!r} hwnd={repair.get('hwnd')} "
+                    f"before={target.get('window_rect')} target={recovery}"
                 )
             else:
                 state["last_error"] = repair.get("reason")

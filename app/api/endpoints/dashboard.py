@@ -25,6 +25,8 @@ from app.utils.dashboard_events import (
     get_recent_dashboard_events,
     get_recent_events,
 )
+from app.utils.logging_utils import read_log_lines
+from app.utils.runtime_logs import read_runtime_logs, source_path
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -79,34 +81,33 @@ def _get_recent_activities(limit: int = 20) -> List[Dict[str, Any]]:
         for log_file in logs_dir.glob("*.jsonl"):
             try:
                 chat_name = log_file.stem
-                with open(log_file, 'r', encoding='utf-8') as f:
-                    lines = f.readlines()
-                    # 从后往前读取最近的几条
-                    for line in reversed(lines[-50:]):  # 每个文件最多取50条
-                        try:
-                            entry = json.loads(line.strip())
-                            time_str = entry.get('time', '')
-                            sender = entry.get('sender', '')
-                            content = entry.get('content', '')
+                lines = read_log_lines(log_file, max_lines=50).lines
+                # 从后往前读取最近的几条
+                for line in reversed(lines):  # 每个文件最多取50条
+                    try:
+                        entry = json.loads(line.strip())
+                        time_str = entry.get('time', '')
+                        sender = entry.get('sender', '')
+                        content = entry.get('content', '')
 
-                            if not time_str:
-                                continue
-
-                            # 判断是用户消息还是机器人回复
-                            is_bot = sender == bot_name
-
-                            # 生成预览文本（简化处理，都当文本）
-                            preview = content[:50] + '...' if len(content) > 50 else content
-
-                            activities.append({
-                                'time': time_str,
-                                'chat_name': chat_name,
-                                'sender': sender,
-                                'is_bot': is_bot,
-                                'preview': preview
-                            })
-                        except (json.JSONDecodeError, ValueError, KeyError):
+                        if not time_str:
                             continue
+
+                        # 判断是用户消息还是机器人回复
+                        is_bot = sender == bot_name
+
+                        # 生成预览文本（简化处理，都当文本）
+                        preview = content[:50] + '...' if len(content) > 50 else content
+
+                        activities.append({
+                            'time': time_str,
+                            'chat_name': chat_name,
+                            'sender': sender,
+                            'is_bot': is_bot,
+                            'preview': preview
+                        })
+                    except (json.JSONDecodeError, ValueError, KeyError):
+                        continue
             except Exception:
                 continue
 
@@ -626,7 +627,7 @@ async def get_latest_judge():
 
         # 兼容旧版本：回退到日志解析
         # 读取应用日志文件
-        log_file = Path("logs/app.log")
+        log_file = source_path("app")
         if not log_file.exists():
             return {
                 "judge_output": None,
@@ -638,9 +639,7 @@ async def get_latest_judge():
             }
 
         # 读取最后 2000 行日志（避免读取整个文件）
-        with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
-            lines = f.readlines()
-            recent_lines = lines[-2000:] if len(lines) > 2000 else lines
+        recent_lines = read_runtime_logs("app", max_lines=2000)[0].splitlines(keepends=True)
 
         # 查找最新的 judge 输出
         # 日志格式: 2026-01-29 10:32:50,163 [INFO] app.assistant.handler: ⚖️ Judge decided to STAY SILENT: reason
@@ -741,7 +740,7 @@ async def get_latest_search():
 
         # 兼容旧版本：回退到日志解析
         # 读取应用日志文件
-        log_file = Path("logs/app.log")
+        log_file = source_path("app")
         if not log_file.exists():
             return {
                 "search_output": None,
@@ -753,9 +752,7 @@ async def get_latest_search():
             }
 
         # 读取最后 2000 行日志（避免读取整个文件）
-        with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
-            lines = f.readlines()
-            recent_lines = lines[-2000:] if len(lines) > 2000 else lines
+        recent_lines = read_runtime_logs("app", max_lines=2000)[0].splitlines(keepends=True)
 
         # 查找最新的 search 输出
         # 新格式: 🔍 Web Search Success | Query: "query" | Length: 1234 | Content: actual content...

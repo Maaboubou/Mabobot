@@ -6,7 +6,7 @@
   日志 handler，避免嵌入 Mabobot 时破坏其自身日志；
 - 控制台默认 INFO，开启 debug 后显示 DEBUG；
 - 文件日志始终记录 DEBUG，方便部署后定位问题；
-- 文件日志按天滚动、自动保留最近 N 份；
+- 文件日志按大小滚动，并限制备份份数与保留天数；
 - 文件日志包含 PID / 线程 / 模块 / 行号；
 - 超长消息自动截断，避免 UIA 树 dump 等把日志文件撑爆。
 """
@@ -16,9 +16,9 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from datetime import datetime
-from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
+
+from mabobot_logging import ManagedRotatingFileHandler, configured_level, create_json_handler
 
 try:
     import colorama
@@ -39,12 +39,6 @@ LOG_COLORS = {
 }
 
 CONSOLE_FORMAT = "%(asctime)s [%(name)s] [%(levelname)s] %(message)s"
-FILE_FORMAT = (
-    "%(asctime)s [%(levelname)s] [%(name)s] [PID %(process)d] [T%(thread)d] "
-    "%(module)s:%(funcName)s:%(lineno)d %(message)s"
-)
-
-
 class ColoredFormatter(logging.Formatter):
     """控制台彩色日志格式；无 colorama 时退化为纯文本。"""
 
@@ -86,7 +80,7 @@ class MabowxLogger:
         self.console_handler.setLevel(logging.INFO)
         self.logger.addHandler(self.console_handler)
 
-        self.file_handler: TimedRotatingFileHandler | None = None
+        self.file_handler: ManagedRotatingFileHandler | None = None
         self._file_setup_failed = False
         self._debug_enabled = False
 
@@ -157,14 +151,8 @@ class MabowxLogger:
         try:
             log_dir = self._log_dir()
             log_dir.mkdir(parents=True, exist_ok=True)
-            handler = TimedRotatingFileHandler(
-                log_dir / "mabowx.log",
-                when="midnight",
-                backupCount=int(WxParam.LOG_BACKUP_COUNT),
-                encoding="utf-8",
-            )
-            handler.setFormatter(logging.Formatter(FILE_FORMAT))
-            handler.setLevel(logging.DEBUG)
+            handler = create_json_handler("mabowx", log_dir / "mabowx.jsonl")
+            handler.setLevel(configured_level(os.getenv("MABOWX_FILE_LOG_LEVEL", "DEBUG")))
             self.logger.addHandler(handler)
             self.file_handler = handler
         except Exception as exc:  # pragma: no cover - 文件系统异常

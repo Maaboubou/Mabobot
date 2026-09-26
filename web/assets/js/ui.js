@@ -35,6 +35,7 @@ const UI = {
         '/system/operations': 'settings',
         '/system/tools': 'settings',
         '/system/backups': 'settings',
+        '/system/storage': 'settings',
         '/assistant/roles': 'roles',
         '/assistant/chats': 'users',
         '/assistant/judges': 'roles',
@@ -1542,13 +1543,14 @@ const UI = {
     getSystemSettingsGroupFromPath() {
         const path = this.normalizePath(window.location.pathname);
         return {
-            '/system/providers': 'integrations',
-            '/system/integrations': 'integrations',
+            '/system/providers': 'identity',
+            '/system/integrations': 'identity',
             '/system/notifications': 'notifications',
-            '/system/runtime': 'runtime',
+            '/system/runtime': 'developer',
             '/system/developer': 'developer',
-            '/system/operations': 'operations',
+            '/system/operations': 'developer',
             '/system/tools': 'tools',
+            '/system/storage': 'storage',
             '/system/backups': 'backups'
         }[path] || 'identity';
     },
@@ -1556,25 +1558,25 @@ const UI = {
     renderSystemSettings(consoleData) {
         const container = document.getElementById('settings');
         if (!container) return;
-        const groups = consoleData.groups || [];
-        const primaryGroups = groups.filter(group => group.id !== 'developer');
-        const extensionGroups = groups.filter(group => group.id === 'developer');
+        const originalGroups = consoleData.groups || [];
+        const fields = originalGroups.flatMap(group => group.fields || []);
+        const advanced = field => ['runtime', 'developer'].includes(field.group)
+            || field.key === 'CODEX_PROXY_KEY' || !field.editable;
+        const groups = [
+            { id: 'identity', title: '常规设置', icon: 'bi-sliders',
+              description: '全局备用身份与共享服务连接；聊天身份优先使用自动识别结果。',
+              fields: fields.filter(field => !advanced(field)) },
+            { id: 'developer', title: '高级与诊断', icon: 'bi-tools',
+              description: '排查运行问题、查看启动参数与管理扩展配置。',
+              fields: fields.filter(advanced) }
+        ];
         const platformGroups = [
-            ...primaryGroups,
-            {id: 'notifications', title: '通知提醒', icon: 'bi-envelope', description: '使用自己的邮箱接收提醒'},
-            {
-                id: 'operations', title: '运行状态', icon: 'bi-heart-pulse',
-                description: '统一任务、插件状态和组件健康'
-            },
-            {
-                id: 'tools', title: '工具与更新', icon: 'bi-box-arrow-up',
-                description: '升级必要组件并修复媒体与浏览器运行时'
-            },
-            {
-                id: 'backups', title: '备份与迁移', icon: 'bi-shield-check',
-                description: '状态备份、完整迁移和安全恢复'
-            },
-            ...extensionGroups
+            groups[0],
+            { id: 'notifications', title: '通知提醒', icon: 'bi-envelope', description: '使用自己的邮箱接收提醒' },
+            { id: 'tools', title: '工具与更新', icon: 'bi-box-arrow-up', description: '更新组件与修复运行环境' },
+            { id: 'storage', title: '存储空间', icon: 'bi-device-hdd', description: '查看空间占用、清理缓存与管理回收区' },
+            { id: 'backups', title: '备份与恢复', icon: 'bi-shield-check', description: '创建备份、恢复数据与迁移' },
+            groups[1]
         ];
         const identity = consoleData.identity || {};
         const requested = this.getSystemSettingsGroupFromPath();
@@ -1643,7 +1645,7 @@ const UI = {
                         <div class="system-setting-copy">
                             <div><label for="${inputId}">${this.escapeHtml(field.title)}</label>${restart}</div>
                             <p>${this.escapeHtml(field.description || '')}</p>
-                            ${group.id === 'developer' ? `<div class="system-setting-meta"><code>${this.escapeHtml(field.key)}</code></div>` : ''}
+                            ${group.id === 'developer' ? `<div class="system-setting-meta"><code>${this.escapeHtml(field.key)}</code> · ${this.escapeHtml(field.source || '')}</div>` : ''}
                         </div>
                         <div>${control}</div>
                     </div>`;
@@ -1660,10 +1662,10 @@ const UI = {
                 fieldsBySection[name].push(field);
             });
             const fields = sectionNames.map(name => `
-                <div class="system-setting-subsection">
-                    ${sectionNames.length > 1 ? `<div class="system-setting-subsection-title"><span>${this.escapeHtml(name)}</span></div>` : ''}
+                <${group.id === 'developer' ? 'details' : 'div'} class="system-setting-subsection">
+                    ${group.id === 'developer' ? `<summary class="system-setting-subsection-title">${this.escapeHtml(name)}</summary>` : (sectionNames.length > 1 ? `<div class="system-setting-subsection-title"><span>${this.escapeHtml(name)}</span></div>` : '')}
                     ${fieldsBySection[name].map(field => renderField(field, group)).join('')}
-                </div>`).join('') || '<div class="system-settings-empty">当前没有此类设置。</div>';
+                </${group.id === 'developer' ? 'details' : 'div'}>`).join('') || '<div class="system-settings-empty">当前没有此类设置。</div>';
             const editable = (group.fields || []).some(field => field.editable);
             const developerActions = group.id === 'developer' ? `
                 <div class="system-developer-actions">
@@ -1672,24 +1674,25 @@ const UI = {
                     <button class="btn btn-sm btn-light border" onclick="App.reloadSettingsFromEnv()"><i class="bi bi-arrow-clockwise me-1"></i>导入 .env 到数据库</button>
                 </div>` : '';
             const description = group.id === 'identity'
-                ? `已识别 ${Number(identity.detected_count || 0)} / ${Number(identity.group_count || 0)} 个群聊昵称；全局名称仅在没有聊天级名称时使用。`
+                ? `已识别 ${Number(identity.detected_count || 0)} / ${Number(identity.group_count || 0)} 个群聊昵称；管理备用身份与共享服务连接。`
                 : group.description;
             const contextAction = group.id === 'identity'
                 ? '<a class="btn btn-sm btn-light" href="/assistant/chats">各聊天身份<i class="bi bi-arrow-right ms-1"></i></a>'
                 : '';
             return `
                 <section class="system-settings-section ${group.id === activeId ? '' : 'd-none'}" data-system-section="${this.escapeHtml(group.id)}">
-                    <div class="system-settings-section-head"><div><h3>${this.escapeHtml(group.title)}</h3><p>${this.escapeHtml(description)}</p></div><div class="system-settings-section-actions">${contextAction}${editable ? '<button class="btn btn-primary btn-sm" onclick="App.saveSettings()"><i class="bi bi-check-lg me-1"></i>保存</button>' : ''}</div></div>
+                    <div class="system-settings-section-head"><div><h3>${this.escapeHtml(group.title)}</h3><p>${this.escapeHtml(description)}</p></div><div class="system-settings-section-actions">${contextAction}${editable ? '<span data-system-dirty class="text-warning small" hidden>有未保存的修改</span><button data-system-save class="btn btn-primary btn-sm" onclick="App.saveSettings()" disabled><i class="bi bi-check-lg me-1"></i>保存</button>' : ''}</div></div>
+                    ${group.id === 'developer' ? '<div id="systemOperationsConsole" class="system-platform-console"><div class="loading-wrapper">正在读取运行状态…</div></div>' : ''}
                     <div class="system-settings-fields">${fields}</div>
                     ${developerActions}
                 </section>`;
         }).join('');
         const platformSections = `
+            <section class="system-settings-section ${activeId === 'storage' ? '' : 'd-none'}" data-system-section="storage">
+                <div id="systemStorageConsole" class="system-platform-console"></div>
+            </section>
             <section class="system-settings-section ${activeId === 'notifications' ? '' : 'd-none'}" data-system-section="notifications">
                 <div id="systemEmailConsole"></div>
-            </section>
-            <section class="system-settings-section ${activeId === 'operations' ? '' : 'd-none'}" data-system-section="operations">
-                <div id="systemOperationsConsole" class="system-platform-console"><div class="loading-wrapper">正在读取运行状态…</div></div>
             </section>
             <section class="system-settings-section ${activeId === 'tools' ? '' : 'd-none'}" data-system-section="tools">
                 <div id="systemToolsConsole" class="system-platform-console"><div class="loading-wrapper">正在读取工具状态…</div></div>
@@ -1705,6 +1708,10 @@ const UI = {
                 <main class="system-settings-main">${sections}${platformSections}</main>
             </div>`;
         container.dataset.activeSystemGroup = activeId || '';
+        container.querySelectorAll('.system-setting-input').forEach(input => {
+            input.addEventListener('input', () => this.updateSystemSettingsDirty());
+            input.addEventListener('change', () => this.updateSystemSettingsDirty());
+        });
         container.querySelectorAll('[data-system-group]').forEach(button => button.addEventListener('click', () => {
             this.switchSystemSettingsGroup(button.dataset.systemGroup);
         }));
@@ -1735,7 +1742,20 @@ const UI = {
         }));
     },
 
+    updateSystemSettingsDirty() {
+        document.querySelectorAll('[data-system-section]').forEach(section => {
+            const dirty = Array.from(section.querySelectorAll('.system-setting-input')).some(input =>
+                !input.disabled && !input.readOnly && input.value !== input.dataset.original
+                && !(input.dataset.sensitive === 'true' && input.value === ''));
+            const note = section.querySelector('[data-system-dirty]');
+            const save = section.querySelector('[data-system-save]');
+            if (note) note.hidden = !dirty;
+            if (save) save.disabled = !dirty;
+        });
+    },
+
     switchSystemSettingsGroup(groupId, options = {}) {
+        groupId = ({ integrations: 'identity', runtime: 'developer', operations: 'developer' })[groupId] || groupId;
         const container = document.getElementById('settings');
         if (!container) return;
         container.dataset.activeSystemGroup = groupId;
@@ -1769,7 +1789,7 @@ const UI = {
             const paths = {
                 identity: '/system', integrations: '/system/integrations', notifications: '/system/notifications',
                 runtime: '/system/runtime', developer: '/system/developer',
-                operations: '/system/operations', tools: '/system/tools', backups: '/system/backups'
+                operations: '/system/operations', tools: '/system/tools', backups: '/system/backups', storage: '/system/storage'
             };
             const path = paths[groupId] || '/system';
             if (this.normalizePath(window.location.pathname) !== path) {
@@ -1777,8 +1797,9 @@ const UI = {
             }
         }
         if (groupId === 'notifications') window.EmailNotifications?.load();
-        if (groupId === 'operations') window.SystemOperations?.loadRuntime();
+        if (groupId === 'developer') window.SystemOperations?.loadRuntime();
         if (groupId === 'tools') window.SystemTools?.load();
+        if (groupId === 'storage') window.SystemStorage?.load();
         if (groupId === 'backups') window.SystemOperations?.loadBackups();
         if (options.mobile && this.isMobileViewport()) {
             const main = container.querySelector('.system-settings-main');

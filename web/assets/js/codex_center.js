@@ -13,6 +13,7 @@ const CodexCenter = {
     oauthSetupDraft: false,
     oauthAuthSource: '',
     oauthPollTimer: null,
+    oauthRequestId: 0,
     oauthModels: [],
     oauthEditingProfile: false,
     profileProviderBases: {
@@ -770,11 +771,21 @@ const CodexCenter = {
         this.oauthPollTimer = null;
         this.oauthModels = [];
         document.getElementById('codexOAuthAlert')?.classList.add('d-none');
-        document.getElementById('codexOAuthPending')?.classList.remove('d-none');
+        document.getElementById('codexOAuthLoading')?.classList.remove('d-none');
+        document.getElementById('codexOAuthPending')?.classList.add('d-none');
         document.getElementById('codexOAuthConnected')?.classList.add('d-none');
         document.getElementById('codexOAuthFinish')?.classList.add('d-none');
+        const localLogin = this.oauthAuthSource === 'local_cache';
+        const loadingText = document.getElementById('codexOAuthLoadingText');
+        if (loadingText) loadingText.textContent = localLogin
+            ? '正在验证本机登录并加载模型目录…'
+            : (this.oauthEditingProfile ? '正在加载账号模型目录…' : '正在准备 ChatGPT 授权…');
+        const loadingHint = document.getElementById('codexOAuthLoadingHint');
+        if (loadingHint) loadingHint.textContent = localLogin
+            ? '读取当前登录副本，完成后即可选择模型'
+            : '正在连接 Codex 服务，请稍候';
         const cancel = document.getElementById('codexOAuthCancel');
-        if (cancel) cancel.textContent = '取消授权';
+        if (cancel) cancel.textContent = this.oauthEditingProfile ? '取消' : '取消授权';
         const finish = document.getElementById('codexOAuthFinish');
         if (finish) finish.textContent = this.oauthSetupDraft
             ? '完成创建'
@@ -803,9 +814,10 @@ const CodexCenter = {
         this.oauthMakeDefault = Boolean(makeDefault);
         this.oauthSetupDraft = Boolean(setupDraft);
         this.oauthEditingProfile = Boolean(editingConfiguration);
-        this.resetOAuthView();
         const profile = this.profiles.find(item => item.name === profileName);
         this.oauthAuthSource = authSource || profile?.auth_source || 'device_code';
+        const requestId = ++this.oauthRequestId;
+        this.resetOAuthView();
         const importedLogin = this.oauthAuthSource === 'local_cache';
         const title = document.getElementById('codexOAuthModalTitle');
         if (title) title.textContent = this.oauthSetupDraft
@@ -820,15 +832,19 @@ const CodexCenter = {
         bootstrap.Modal.getOrCreateInstance(document.getElementById('codexOAuthModal')).show();
         try {
             const status = initialStatus || await API.codexProfiles.startOAuth(profileName, force);
+            if (requestId !== this.oauthRequestId) return;
             this.renderOAuthStatus(status);
         } catch (error) {
+            if (requestId !== this.oauthRequestId) return;
             this.showOAuthError(error.message);
         }
     },
 
     renderOAuthStatus(status) {
+        document.getElementById('codexOAuthLoading')?.classList.add('d-none');
         const state = String(status?.status || 'idle');
         if (state === 'pending') {
+            document.getElementById('codexOAuthPending')?.classList.remove('d-none');
             const loginId = String(status.login_id || '');
             const link = document.getElementById('codexOAuthLink');
             if (link) link.href = status.verification_url || '#';
@@ -884,9 +900,14 @@ const CodexCenter = {
 
     async pollOAuth() {
         if (!this.oauthProfile) return;
+        const requestId = this.oauthRequestId;
+        const profileName = this.oauthProfile;
         try {
-            this.renderOAuthStatus(await API.codexProfiles.getOAuth(this.oauthProfile));
+            const status = await API.codexProfiles.getOAuth(profileName);
+            if (requestId !== this.oauthRequestId) return;
+            this.renderOAuthStatus(status);
         } catch (error) {
+            if (requestId !== this.oauthRequestId) return;
             this.showOAuthError(error.message);
         }
     },
@@ -894,6 +915,7 @@ const CodexCenter = {
     showOAuthError(message) {
         clearTimeout(this.oauthPollTimer);
         this.oauthPollTimer = null;
+        document.getElementById('codexOAuthLoading')?.classList.add('d-none');
         const alert = document.getElementById('codexOAuthAlert');
         if (alert) {
             alert.textContent = message || 'ChatGPT 授权失败';
@@ -955,11 +977,14 @@ const CodexCenter = {
     },
 
     async cancelOAuth() {
+        ++this.oauthRequestId;
         clearTimeout(this.oauthPollTimer);
         this.oauthPollTimer = null;
         const profileName = this.oauthProfile;
         const setupDraft = this.oauthSetupDraft;
-        const pending = !document.getElementById('codexOAuthPending')?.classList.contains('d-none');
+        const loading = !document.getElementById('codexOAuthLoading')?.classList.contains('d-none');
+        const pending = !document.getElementById('codexOAuthPending')?.classList.contains('d-none')
+            || (loading && this.oauthAuthSource !== 'local_cache');
         if (profileName) {
             try {
                 if (setupDraft) {
