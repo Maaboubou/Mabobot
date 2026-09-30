@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import quote, urljoin
 
-from app.services.shared_chrome import get_shared_chrome_operation_lock, load_shared_chrome_settings
+from app.services.shared_chrome import get_shared_chrome_operation_lock
 
 from .models import BookCandidate, compact_text, normalize_doi, normalize_isbn
 
@@ -73,22 +73,26 @@ class EbookBrowserService:
             rating=cls._float(element.get_attribute("rating")),
         )
 
-    @staticmethod
-    def _attach_driver():
-        from selenium import webdriver
+    def _attach_driver(self):
+        from app.services.shared_chrome_runtime import get_shared_chrome_runtime
 
-        settings = load_shared_chrome_settings()
-        options = webdriver.ChromeOptions()
-        options.debugger_address = f"127.0.0.1:{settings.debug_port}"
-        driver = webdriver.Chrome(options=options)
-        return driver
+        runtime = get_shared_chrome_runtime(
+            logger=logger,
+            page_load_timeout=self.page_timeout,
+        )
+        try:
+            return runtime.connect_driver()
+        except RuntimeError as exc:
+            raise EbookBrowserError(
+                "共享 Chrome 启动或连接失败，已尝试自动恢复，请检查摘要插件的浏览器配置和浏览器日志"
+            ) from exc
 
     @staticmethod
     def _stop_driver_service(driver: Any) -> None:
+        from app.services.shared_chrome_runtime import stop_shared_driver_service
+
         try:
-            service = getattr(driver, "service", None)
-            if service:
-                service.stop()
+            stop_shared_driver_service(driver)
         except Exception:
             logger.debug("停止临时 ChromeDriver 服务失败", exc_info=True)
 

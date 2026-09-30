@@ -2797,6 +2797,9 @@ class LLMManager:
                            connection=connection, logical_id=context["id"] if context else (metadata or {}).get("billing_logical_id"),
                            provider_request_id=str(read(response, "id") or "")[:200],
                            scope=(metadata or {}).get("billing_scope") or ("codex_turn" if codex else "request"))
+            if codex and pricing.get("snapshot", {}).get("source") == "none":
+                from app.services.openai_pricing_discovery import schedule_unknown_model
+                schedule_unknown_model(actual)
         except Exception:
             logger.exception("Failed to record LLM request usage")
 

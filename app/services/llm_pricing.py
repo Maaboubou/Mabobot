@@ -1,6 +1,6 @@
 """Usage normalization and reproducible, route-specific token pricing.
 
-GPT-6 additions were verified 2026-09-23; earlier prices were verified 2026-09-07.
+GPT-6.1 Sol pricing was verified 2026-09-30; earlier prices were verified 2026-09-23.
 No network calls on the request path.
 Amounts and rates are decimal strings; unknown is never coerced to zero.
 """
@@ -10,7 +10,7 @@ import hashlib
 import json
 from urllib.parse import urlsplit
 
-VERSION = '2026-09-23'
+VERSION = '2026-09-30'
 OPENAI_URL = 'https://developers.openai.com/api/docs/pricing'
 DEEPSEEK_URL = 'https://api-docs.deepseek.com/zh-cn/quick_start/pricing/'
 # USD / million tokens: uncached input, output, cache read, cache write.
@@ -20,6 +20,7 @@ OPENAI = {
     'gpt-5.6-luna': ('.2', '1.2', '.02', '.25'),
     'gpt-6-astra': ('10', '50', '1', '12.5'),
     'gpt-6-sol': ('2', '10', '.2', '2.5'),
+    'gpt-6.1-sol': ('2', '10', '.1', '2.5'),
     'gpt-6-luna': ('.1', '.5', '.01', '.125'),
 }
 RATE_KEYS = ('input_cost_per_token', 'output_cost_per_token',
@@ -124,19 +125,35 @@ def pricing_snapshot(config, model, usage, *, codex=False, at=None, catalog=None
         snapshot['version'] = hashlib.sha256(json.dumps(snapshot['rates'], sort_keys=True).encode()).hexdigest()[:12]
         return snapshot
     official_openai = codex or host == 'api.openai.com' or (not base and provider in {'openai', model})
-    if official_openai and model in OPENAI:
-        rates = list(map(Decimal, OPENAI[model]))
-        if usage.get('prompt_tokens', 0) > 272_000:
-            rates = [rates[0] * 2, rates[1] * Decimal('1.5'), rates[2] * 2, rates[3] * 2]
-            snapshot['tier'] = 'long_context'
+    discovered = None
+    if codex and model not in OPENAI:
+        from app.services.openai_pricing_discovery import get_quote
+        discovered = get_quote(model)
+    if official_openai and (model in OPENAI or discovered):
+        if discovered:
+            fields = ('input', 'output', 'cached_input', 'cache_write')
+            selected = discovered['standard']
+            threshold = discovered['long_context_threshold']
+            if threshold and usage.get('prompt_tokens', 0) > threshold:
+                selected = discovered['long_context']
+                snapshot['tier'] = 'long_context'
+            rates = [Decimal(selected[key]) if selected[key] is not None else None for key in fields]
+        else:
+            rates = list(map(Decimal, OPENAI[model]))
+            if usage.get('prompt_tokens', 0) > 272_000:
+                rates = [rates[0] * 2, rates[1] * Decimal('1.5'), rates[2] * 2, rates[3] * 2]
+                snapshot['tier'] = 'long_context'
         if not codex:
             service_tier = config.get('service_tier')
             factor = Decimal('2') if service_tier in {'fast', 'priority'} else Decimal('.5') if service_tier == 'flex' else Decimal('1')
-            rates = [rate * factor for rate in rates]
+            rates = [rate * factor if rate is not None else None for rate in rates]
             if service_tier:
                 snapshot['service_tier'] = service_tier
-        snapshot.update(currency='USD', source='official_snapshot', source_url=OPENAI_URL,
-                        rates={b: str(r / 1_000_000) for b, r in zip(BUCKETS, rates)})
+        snapshot.update(currency='USD', source='official_codex_discovery' if discovered else 'official_snapshot',
+                        source_url=discovered['source_url'] if discovered else OPENAI_URL,
+                        rates={b: str(r / 1_000_000) for b, r in zip(BUCKETS, rates) if r is not None})
+        if discovered:
+            snapshot['version'] = discovered['checked_at']
         return snapshot
     if codex:
         return snapshot  # No invented mapping from an unknown subscription model.

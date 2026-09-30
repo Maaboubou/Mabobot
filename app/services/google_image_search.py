@@ -11,18 +11,16 @@ Google 以图搜图服务（基于 Chrome + Selenium）
 
 import os
 import time
-import subprocess
 import logging
 from typing import List, Tuple, Optional
 
-import requests
-from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 
-from app.utils.subprocess_utils import hidden_process_kwargs
+from app.services.shared_chrome import SharedChromeSettings, get_shared_chrome_operation_lock
+from app.services.shared_chrome_runtime import get_shared_chrome_runtime
 
 
 logger = logging.getLogger(__name__)
@@ -45,9 +43,22 @@ class GoogleImageReverseSearchService:
         self.chrome_profile_dir = chrome_profile_dir
         self.connect_retries = connect_retries
         self.connect_retry_sleep = connect_retry_sleep
+        self.browser_runtime = get_shared_chrome_runtime(
+            settings=SharedChromeSettings(
+                self.chrome_debug_port, self.chrome_path,
+                self.chrome_user_data_dir, self.chrome_profile_dir,
+            ),
+            logger=logger,
+        )
+        self.browser_runtime.connect_retries = connect_retries
+        self.browser_runtime.WINDOW_HANDLE_STABILIZE_DELAY = connect_retry_sleep
 
     # ---------- Public ----------
     def search(self, image_path: str, max_results: int = 10, wait_seconds: int = 6) -> Tuple[List[str], List[str], str]:
+        with get_shared_chrome_operation_lock():
+            return self._search_locked(image_path, max_results, wait_seconds)
+
+    def _search_locked(self, image_path: str, max_results: int, wait_seconds: int) -> Tuple[List[str], List[str], str]:
         """以图搜图主流程：先尝试 images.google.com，相机上传；失败再用 Lens 上传。
         返回 (titles, urls, page_text)
         """
@@ -96,7 +107,7 @@ class GoogleImageReverseSearchService:
                     except Exception:
                         pass
                     # 不关闭远程 Chrome，只结束本次会话
-                    driver.quit()
+                    self.browser_runtime.release_driver(driver)
             except Exception:
                 pass
 
@@ -253,60 +264,10 @@ class GoogleImageReverseSearchService:
         logger.info("Lens 提取完成: %s 个标题, %s 个链接", len(titles), len(urls))
         return titles, urls
     def _ensure_chrome_ready(self) -> None:
-        def _is_debug_port_ready() -> bool:
-            try:
-                r = requests.get(f"http://127.0.0.1:{self.chrome_debug_port}/json/version", timeout=1.0)
-                return r.ok
-            except Exception:
-                return False
-
-        if _is_debug_port_ready():
-            return
-
-        # 尝试拉起 Chrome
-        try:
-            os.makedirs(self.chrome_user_data_dir, exist_ok=True)
-        except Exception:
-            pass
-
-        args = [
-            self.chrome_path,
-            f"--remote-debugging-port={self.chrome_debug_port}",
-            f"--user-data-dir={self.chrome_user_data_dir}",
-            "--no-first-run",
-            "--no-default-browser-check",
-        ]
-        if isinstance(self.chrome_profile_dir, str) and self.chrome_profile_dir.strip():
-            args.append(f"--profile-directory={self.chrome_profile_dir.strip()}")
-
-        try:
-            subprocess.Popen(
-                args,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.STDOUT,
-                **hidden_process_kwargs(),
-            )
-        except Exception as e:
-            logger.warning("尝试启动 Chrome 失败: %s", e)
-
-        # 等待端口就绪
-        for _ in range(40):
-            if _is_debug_port_ready():
-                return
-            time.sleep(0.25)
-        raise RuntimeError(f"无法连接到 Chrome 调试端口 127.0.0.1:{self.chrome_debug_port}")
+        self.browser_runtime.ensure_browser()
 
     def _connect_driver(self):
-        opts = webdriver.ChromeOptions()
-        opts.debugger_address = f"127.0.0.1:{self.chrome_debug_port}"
-        last_err = None
-        for _ in range(self.connect_retries):
-            try:
-                return webdriver.Chrome(options=opts)
-            except Exception as e:
-                last_err = e
-                time.sleep(self.connect_retry_sleep)
-        raise RuntimeError(f"无法连接到调试端口的 Chrome: {last_err}")
+        return self.browser_runtime.connect_driver()
 
     def _get_or_create_worker_tab(self, driver) -> str:
         WORKER_TITLE = "IMAGE_SEARCH_WORKER"

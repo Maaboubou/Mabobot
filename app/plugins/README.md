@@ -344,7 +344,47 @@ event_bus.release_session_permission(chat_name, "my_plugin")
 
 必须设置有限时长，并在完成、取消和异常清理时主动释放。插件仍需维护自己的会话状态；临时权限不等于自动消费消息。
 
-## 7. 质量要求与升级清单
+## 7. 共享 Chrome
+
+需要复用登录状态的插件统一使用 `app.services.shared_chrome_runtime`，不要自行探测端口、启动进程或实现连接重试。公共服务负责端口检查、启动、连接恢复、浏览器重启后的旧会话重连，以及受管进程清理。为兼容现有安装，公共配置仍由 `load_shared_chrome_settings()` 从 `summary_plus` 读取。
+
+插件无需先启用或调用摘要插件。新插件不另设调试端口、Chrome 路径、用户目录和 Profile 字段，也不把这些共享资源复制到聊天配置。公共服务负责浏览器连接；网站账号仍由用户在受管 Chrome 中登录，普通 Chrome 的登录状态不会自动同步。
+
+整个浏览器操作持有 `get_shared_chrome_operation_lock()`，包括连接、页面操作和清理，避免其他插件在任务中途重启浏览器。只操作插件自己创建的标签页或上下文，结束时恢复原标签页；不要导航、关闭或复用用户正在浏览的页面。临时 Selenium 会话示例：
+
+```python
+from app.services.shared_chrome import get_shared_chrome_operation_lock
+from app.services.shared_chrome_runtime import get_shared_chrome_runtime
+
+with get_shared_chrome_operation_lock():
+    runtime = get_shared_chrome_runtime(logger=logger, page_load_timeout=20)
+    driver = runtime.connect_driver()
+    original = worker = None
+    try:
+        original = driver.current_window_handle
+        driver.switch_to.new_window("tab")
+        worker = driver.current_window_handle
+        driver.get("https://example.com/")
+        # 在自己的标签页中完成业务处理。
+    finally:
+        try:
+            if worker and worker in driver.window_handles:
+                driver.switch_to.window(worker)
+                driver.close()
+            if original and original in driver.window_handles:
+                driver.switch_to.window(original)
+        finally:
+            # 即使标签页清理失败，也要停止临时驱动服务。
+            runtime.release_driver(driver)
+```
+
+CDP/WebSocket 和 Playwright 使用 `runtime.connect_cdp(connector)`；`connector` 只建立连接，接收本机浏览器 WebSocket 地址。页面导航、下载和内容处理在连接后执行，业务错误不会触发浏览器重启。连接失败只尝试一次重启恢复。
+
+CDP/WebSocket 连接在 `finally` 中关闭，并清理自己的目标标签页；Playwright 关闭自己创建的 context。连接后的浏览器操作同样持有公共锁，不能只锁住连接阶段。耗时任务通过托管任务执行；可取消任务等待公共锁时应保留取消检查和有限等待时间。
+
+共享浏览器不随插件停止而关闭；禁止对附着到共享 Chrome 的驱动调用 `driver.quit()`。需要长期保存 Selenium 会话的插件可复用 `SharedChromeRuntimeMixin`，使用统一健康检查和会话清理方法。公共服务只清理同时匹配调试端口与用户目录的受管 Chrome，保留普通浏览器实例。文件渲染等临时无头浏览器使用独立实例和自己的退出流程，不接入共享登录会话。
+
+## 8. 质量要求与升级清单
 
 - 处理器未命中时返回 `False`，成功消费时才返回 `True`。
 - 网络、浏览器和模型异常不得错误返回已消费。
@@ -355,7 +395,8 @@ event_bus.release_session_permission(chat_name, "my_plugin")
 - 使用统一 LLM 路由的每个 `call_type` 都在 `ui.llm_tasks` 声明用户可读名称和用途。
 - Manifest 中每个监听器与 `register()` 逐一对应，定时任务放入 `jobs`。
 - 新插件声明 `plugin_api_version: 2`，并通过 `PluginContext` 管理任务、存储、健康和清理。
-- 插件停止或重载后不得残留线程、HTTP session、浏览器进程、计划任务或临时文件。
+- 插件停止或重载后不得残留线程、HTTP session、临时驱动、独立浏览器进程、计划任务或临时文件；共享 Chrome 由公共服务管理并保留。
+- 共享浏览器插件验收覆盖：已有浏览器复用、未启动时自动启动、连接失败恢复、恢复失败退出、重启后旧会话重连、并发启动，以及成功和异常结束时仅清理自己的资源。网站登录或内容错误不能触发浏览器重启。
 - 不写 `priority`、`routing_overrides`、`block_after_handling`，也不假设目录扫描顺序。
 - 修改后至少运行插件管理、路由服务、Web 契约和插件自身测试；再重启 Web 进程确认所有插件加载成功。
 

@@ -17,10 +17,13 @@ from selenium import webdriver
 
 from app.core.event_bus import Event, EventType
 from app.services.llm_manager import get_llm_manager
-from app.services.shared_chrome import get_shared_chrome_operation_lock
 from app.services.email_service import get_email_service
 from app.services.plugin_runtime import PluginContext
 from app.services.runtime_operations import OperationContext
+from app.services.shared_chrome import (
+    get_shared_chrome_operation_lock,
+    load_shared_chrome_settings,
+)
 from app.services.plugin_config_context import ScopedConfigAttribute
 from app.utils.plugin_config import get_config
 from .asr_service import bili_transcribe_local, douyin_transcribe_local
@@ -224,6 +227,7 @@ class SummaryService(BrowserRuntimeMixin, MediaPipelineMixin, XiaohongshuMixin):
 
         # Load config
         plugin_name = "summary_plus"
+        shared_chrome = load_shared_chrome_settings()
         self.max_pending_tasks = max(
             1,
             int(get_config("max_pending_tasks", plugin_name=plugin_name, default=12)),
@@ -252,14 +256,7 @@ class SummaryService(BrowserRuntimeMixin, MediaPipelineMixin, XiaohongshuMixin):
             "cookies.txt",
         )
 
-        configured_chrome_data_dir = str(
-            get_config(
-                "chrome_user_data_dir",
-                plugin_name=plugin_name,
-                default="tmp/chrome_data",
-            )
-            or "tmp/chrome_data"
-        )
+        configured_chrome_data_dir = shared_chrome.user_data_dir
         if context is not None:
             migrator = StorageMigrator(context.storage, self.logger)
             persistent_cookie = context.storage.persistent_path("bilibili/cookies.txt")
@@ -300,10 +297,10 @@ class SummaryService(BrowserRuntimeMixin, MediaPipelineMixin, XiaohongshuMixin):
             )
 
         # Chrome settings
-        self.chrome_debug_port = int(get_config("chrome_debug_port", plugin_name=plugin_name))
-        self.chrome_path = get_config("chrome_path", plugin_name=plugin_name)
+        self.chrome_debug_port = shared_chrome.debug_port
+        self.chrome_path = shared_chrome.executable
         self.chrome_user_data_dir = configured_chrome_data_dir
-        self.chrome_profile_dir = get_config("chrome_profile_dir", plugin_name=plugin_name)
+        self.chrome_profile_dir = shared_chrome.profile_dir
         self.page_load_timeout = int(get_config("page_load_timeout", plugin_name=plugin_name))
         self.webdriver_command_timeout_sec = int(
             get_config("webdriver_command_timeout_sec", plugin_name=plugin_name, default=8)
@@ -478,11 +475,13 @@ class SummaryService(BrowserRuntimeMixin, MediaPipelineMixin, XiaohongshuMixin):
 
         # WebDriver 单例管理
         self.driver: Optional[webdriver.Chrome] = None
+        self.driver_browser_identity: Optional[str] = None
         self.driver_lock = threading.RLock()
         self.driver_operation_lock = get_shared_chrome_operation_lock()
         self.background_operation_lock = threading.RLock()
-        with self.driver_lock:
-            self._init_webdriver()
+        with self.driver_operation_lock:
+            with self.driver_lock:
+                self._init_webdriver()
 
     # -------------------------
     # 资源管理
@@ -1105,8 +1104,7 @@ class SummaryService(BrowserRuntimeMixin, MediaPipelineMixin, XiaohongshuMixin):
         chat_name: str = "",
         sender: str = "",
     ) -> Optional[str]:
-        operation_lock = self.background_operation_lock
-        with operation_lock:
+        with self.background_operation_lock, self.driver_operation_lock:
             return browser_summarize(
                 self,
                 url,

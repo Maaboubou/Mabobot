@@ -10,8 +10,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Sequence
 
-import requests
 import websocket
+
+from app.services.shared_chrome import get_shared_chrome_operation_lock
+from app.services.shared_chrome_runtime import get_shared_chrome_runtime
 
 
 _PLATFORM_COOKIE_DOMAINS = {
@@ -24,47 +26,38 @@ def _read_debug_browser_cookies(
     debug_port: int,
     domains: Sequence[str],
 ) -> List[Dict[str, Any]]:
-    response = requests.get(
-        f"http://127.0.0.1:{debug_port}/json/version",
-        timeout=3,
-    )
-    response.raise_for_status()
-    socket_url = response.json().get("webSocketDebuggerUrl")
-    if not isinstance(socket_url, str) or not socket_url.startswith("ws://"):
-        raise RuntimeError("Chrome DevTools did not return a browser WebSocket URL")
-
-    connection = websocket.create_connection(
-        socket_url,
-        timeout=5,
-        suppress_origin=True,
-    )
-    try:
-        connection.send(json.dumps({"id": 1, "method": "Storage.getCookies"}))
-        while True:
-            payload = json.loads(connection.recv())
-            if payload.get("id") != 1:
-                continue
-            if payload.get("error"):
-                raise RuntimeError(str(payload["error"]))
-            cookies = payload.get("result", {}).get("cookies", [])
-            if not isinstance(cookies, list):
-                return []
-            return [
-                cookie
-                for cookie in cookies
-                if isinstance(cookie, dict)
-                and any(
-                    (
-                        cookie_domain := str(cookie.get("domain") or "")
-                        .lstrip(".")
-                        .casefold()
-                    ) == domain
-                    or cookie_domain.endswith(f".{domain}")
-                    for domain in domains
-                )
-            ]
-    finally:
-        connection.close()
+    with get_shared_chrome_operation_lock():
+        runtime = get_shared_chrome_runtime(debug_port=debug_port)
+        connection = runtime.connect_cdp(
+            lambda endpoint: websocket.create_connection(endpoint, timeout=5, suppress_origin=True)
+        )
+        try:
+            connection.send(json.dumps({"id": 1, "method": "Storage.getCookies"}))
+            while True:
+                payload = json.loads(connection.recv())
+                if payload.get("id") != 1:
+                    continue
+                if payload.get("error"):
+                    raise RuntimeError(str(payload["error"]))
+                cookies = payload.get("result", {}).get("cookies", [])
+                if not isinstance(cookies, list):
+                    return []
+                return [
+                    cookie
+                    for cookie in cookies
+                    if isinstance(cookie, dict)
+                    and any(
+                        (
+                            cookie_domain := str(cookie.get("domain") or "")
+                            .lstrip(".")
+                            .casefold()
+                        ) == domain
+                        or cookie_domain.endswith(f".{domain}")
+                        for domain in domains
+                    )
+                ]
+        finally:
+            connection.close()
 
 
 def _write_netscape_cookie_file(cookies: Sequence[Dict[str, Any]], path: str) -> None:

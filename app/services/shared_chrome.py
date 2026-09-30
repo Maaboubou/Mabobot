@@ -74,3 +74,15 @@ def load_shared_chrome_settings() -> SharedChromeSettings:
             or DEFAULT_CHROME_PROFILE_DIR
         ),
     )
+
+
+def _argument_value(arguments: list[str], option: str) -> str:
+    option_lower = option.casefold()
+    for index, argument in enumerate(arguments):
+        normalized = str(argument or "").strip()
+        lowered = normalized.casefold()
+        if lowered.startswith(f"{option_lower}="):
+            return normalized.split("=", 1)[1].strip().strip('"')
+        if lowered == option_lower and index + 1 < len(arguments):
+            return str(arguments[index + 1] or "").strip().strip('"')
+    return ""

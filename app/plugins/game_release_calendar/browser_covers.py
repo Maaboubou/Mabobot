@@ -67,7 +67,8 @@ def _read_image(context, url, guard, cancelled):
 def fetch_browser_cover(url, cancelled=None):
     from playwright.sync_api import sync_playwright
     from app.services.codex_browser_tool import PublicUrlGuard
-    from app.services.shared_chrome import get_shared_chrome_operation_lock, load_shared_chrome_settings
+    from app.services.shared_chrome import get_shared_chrome_operation_lock
+    from app.services.shared_chrome_runtime import get_shared_chrome_runtime
 
     _check_cancelled(cancelled)
     guard = PublicUrlGuard()
@@ -80,10 +81,10 @@ def fetch_browser_cover(url, cancelled=None):
             raise TimeoutError("shared Chrome is busy")
     try:
         _check_cancelled(cancelled)
-        settings = load_shared_chrome_settings()
+        runtime = get_shared_chrome_runtime()
         with sync_playwright() as playwright:
-            browser = playwright.chromium.connect_over_cdp(
-                f"http://127.0.0.1:{settings.debug_port}", timeout=10000,
+            browser = runtime.connect_cdp(
+                lambda endpoint: playwright.chromium.connect_over_cdp(endpoint, timeout=10000)
             )
             context = browser.new_context(
                 accept_downloads=False, service_workers="block", java_script_enabled=False,
@@ -91,7 +92,7 @@ def fetch_browser_cover(url, cancelled=None):
             try:
                 return _read_image(context, url, guard, cancelled)
             finally:
-                # Close only our context. Never close/restart the shared browser.
+                # Close only our context; the common runtime owns browser recovery.
                 context.close()
     finally:
         lock.release()

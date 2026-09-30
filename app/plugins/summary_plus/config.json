@@ -94,7 +94,7 @@
   "config_schema": {
     "chrome_debug_port": {
       "type": "integer",
-      "description": "Summary Plus 独占的 Chrome 远程调试端口，避免与其他插件共享浏览器会话",
+      "description": "Mabobot 浏览器自动化插件共用的 Chrome 远程调试端口",
       "default": 19223,
       "scope": "global",
       "level": "hidden"
@@ -108,7 +108,7 @@
     },
     "chrome_user_data_dir": {
       "type": "string",
-      "description": "Summary Plus 独占的受管 Chrome 用户数据目录",
+      "description": "浏览器自动化插件共用的受管 Chrome 用户数据目录",
       "default": "data/plugins/summary_plus/machine_bound/chrome_profile",
       "scope": "global",
       "level": "hidden"

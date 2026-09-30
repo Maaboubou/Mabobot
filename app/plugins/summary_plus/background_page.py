@@ -4,10 +4,9 @@ import json
 import logging
 import threading
 import time
-from urllib.parse import urlparse
-
-import requests
 import websocket
+
+from app.services.shared_chrome_runtime import get_shared_chrome_runtime
 
 
 class BackgroundPage:
@@ -19,13 +18,12 @@ class BackgroundPage:
         self._lock = threading.RLock()
         self._timeout = float(command_timeout)
         try:
-            response = requests.get(f"http://127.0.0.1:{int(debug_port)}/json/version", timeout=2)
-            response.raise_for_status()
-            endpoint = response.json().get("webSocketDebuggerUrl", "")
-            parsed = urlparse(endpoint)
-            if parsed.scheme != "ws" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
-                raise RuntimeError("Chrome 未提供本机 CDP 接口")
-            self._socket = websocket.create_connection(endpoint, timeout=self._timeout, suppress_origin=True)
+            runtime = get_shared_chrome_runtime(debug_port=int(debug_port))
+            self._socket = runtime.connect_cdp(
+                lambda endpoint: websocket.create_connection(
+                    endpoint, timeout=self._timeout, suppress_origin=True,
+                )
+            )
             self._target = self._call("Target.createTarget", {
                 "url": "about:blank", "background": True,
             })["targetId"]
