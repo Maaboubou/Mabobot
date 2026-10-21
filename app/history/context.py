@@ -16,6 +16,10 @@ def message_content(message):
             content = content.replace(prefix + description, observation)
         if description not in content and observation not in content:
             content += "\n" + observation
+    from app.history.attachments import attachment_text
+    attachment = attachment_text(message)
+    if attachment and attachment not in content:
+        content += "\n" + attachment
     if message.get("correction"):
         correction = "人工更正：" + json.dumps(message["correction"], ensure_ascii=False)
         if correction not in content:

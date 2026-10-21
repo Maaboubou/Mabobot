@@ -17,6 +17,8 @@ lxml
 selenium
 websocket-client>=1.8,<2
 playwright>=1.58,<2
+# Lens uses the same browser driver version as the verified sbigg integration.
+patchright==1.63.0
 ddgs>=9.15,<10
 
 # LLM providers

@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 from zipfile import ZipFile, ZIP_DEFLATED
 
-from .runner import CodexRunner
+from .runner import CalendarRunner
 
 
 def obj(properties):
@@ -206,7 +206,7 @@ def generate_calendar(output_dir: Path, month: str, runner=None, progress=None, 
     directory.mkdir(parents=True, exist_ok=True)
     cancelled = cancelled or (lambda: False)
     progress = progress or (lambda percent, message: None)
-    runner = runner or CodexRunner(cancelled=cancelled)
+    runner = runner or CalendarRunner(cancelled=cancelled)
     as_of = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds")
     existing = directory / "run.json"
     if resume and existing.exists():
@@ -361,10 +361,12 @@ def restyle_calendar(source_dir, output_dir, progress=None, cancelled=None):
     prior = json.loads((source / "calendar.json").read_text(encoding="utf-8"))
     month, as_of = prior["month"], prior["as_of"]
     validate_month(month)
-    state = {"month": month, "as_of": as_of, "status": "running", "source_run": str(source), "design_version": 2}
+    runner = CalendarRunner(cancelled=cancelled)
+    state = {"month": month, "as_of": as_of, "model": runner.model,
+             "status": "running", "source_run": str(source), "design_version": 2}
     write_json(target / "run.json", state)
     try:
-        cards = prepare_cards(prior["events"], target, CodexRunner(cancelled=cancelled), as_of,
+        cards = prepare_cards(prior["events"], target, runner, as_of,
                               progress=progress, cancelled=cancelled)
         images = render_calendar(cards, target, month, as_of, title=prior.get("title", "刘局推荐"),
                                  subtitle=f"{int(month[5:])}月重磅游戏发售信息")

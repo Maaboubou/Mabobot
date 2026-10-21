@@ -10,7 +10,7 @@ import sqlite3
 import time
 from typing import Any
 
-from app.history.store import ArchiveStore, encode
+from app.history.store import ArchiveStore, encode, search_terms
 
 
 from app.assistant.prompt_defaults import DEFAULT_RULES
@@ -71,10 +71,16 @@ def dynamic_tool_specs() -> list[dict]:
                       {'nickname':{'type':'string','maxLength':160},'member_ref':{'type':'string'},'alias':{'type':'string','minLength':1,'maxLength':160}},('alias',)),
                  tool('merge_member','When a rename is clearly established, set the new current nickname and merge its existing member entry. Preserve all old names and original messages. Specify nickname or member_ref and a concise reason.',
                       {'nickname':{'type':'string','maxLength':160},'member_ref':{'type':'string'},'new_name':{'type':'string','minLength':1,'maxLength':160},'reason':{'type':'string','minLength':2,'maxLength':300}},('new_name','reason')),
-                 tool("search", "Search literal text; defaults to 6 excerpts, increase limit/chars as needed. Use files for batch queries and statistics.",
-                      {**common, "query": {"type": "string", "minLength": 1, "maxLength": 200}}, ("query",)),
+                 tool("search", "Search literal keywords within this chat. Use a keyword array for alternative wording in one call; filter sender for authorship, not mentions. Defaults to 6 excerpts; use read for evidence and files for broad research.",
+                      {**common,
+                       "query": {"description": "Required unless continuing a cursor: one literal phrase or 1–6 keywords; no automatic synonym expansion.",
+                                 "anyOf": [{"type": "string", "minLength": 1, "maxLength": 200},
+                                           {"type": "array", "minItems": 1, "maxItems": 6,
+                                            "items": {"type": "string", "minLength": 1, "maxLength": 200}}]},
+                       "match": {"type": "string", "enum": ["any", "all"], "description": "any (default): at least one keyword; all: every keyword in the same message, including its image description."},
+                       "order": {"type": "string", "enum": ["recent", "relevance"], "description": "recent (default): newest first; relevance: most distinct keyword matches first, then newest. This is not a confidence score."}}),
                  tool("range", "Browse a date range in pages, newest first. A page is not a complete summary.", common),
-                 tool("read", "Expand a short message reference and nearby messages. Long content has a next_offset.",
+                 tool("read", "Expand a short message reference. For brief replies, quotes or corrections, request before=2 and after=2 to verify context; neighbors are not necessarily replies to the target. Defaults to the target only. Long content has a next_offset.",
                       {"ref": {"type": "string"}, "before": {"type": "integer", "minimum": 0, "maximum": 50},
                        "after": {"type": "integer", "minimum": 0, "maximum": 50},
                        "chars": common['chars'], "offset": {"type": "integer", "minimum": 0}}, ("ref",)),
@@ -107,11 +113,12 @@ class HistorySession:
         return self.refs[identity]
 
     def execute(self, name: str, arguments: Any) -> dict:
+        started = time.monotonic()
         if isinstance(arguments, str):
             arguments = json.loads(arguments)
         if not isinstance(arguments, dict):
             raise ValueError("history arguments must be an object")
-        allowed = {"search": {"query", "sender", "sender_ref", "start", "end", "cursor", "limit", "chars"},
+        allowed = {"search": {"query", "match", "order", "sender", "sender_ref", "start", "end", "cursor", "limit", "chars"},
                    "range": {"sender", "sender_ref", "start", "end", "cursor", "limit", "chars"},
                    "read": {"ref", "before", "after", "offset", "chars"},
                    'files':set(), 'people':{'query','offset','limit'},'add_alias':{'nickname','member_ref','alias'},
@@ -171,13 +178,16 @@ class HistorySession:
                     options = dict(saved_options)
                 else:
                     page = 0
-                if name == "search" and not str(options.get("query", "")).strip():
+                if name == "search" and not search_terms(options.get("query", "")):
                     raise ValueError("search query is required")
                 try:
                     search = store.search(self.chat, **options, offset=page, limit=limit)
                 except sqlite3.OperationalError as exc:
                     if "interrupted" not in str(exc):
                         raise
+                    store.record_lookup(self.chat, self.request_id, name,
+                                        {"filters": arguments, "status": "query_too_broad", "source_ids": [],
+                                         "elapsed_ms": round((time.monotonic() - started) * 1000, 2)})
                     return {"status": "query_too_broad", "coverage": "unknown", "message": "Narrow the date range or sender; the scan budget was reached."}
                 result.update(cache_hit=search["cache_hit"], incremental=search.get("incremental", False), coverage=search["coverage"])
                 if search.get('status')=='ambiguous_sender':
@@ -190,13 +200,16 @@ class HistorySession:
             if name != 'read':
                 result['next_cursor'] = None
             delivered = []
+            terms = search_terms(options.get("query", "")) if name == "search" else []
             for row in rows:
                 ref = self._ref(row["id"])
                 content_offset = offset if name == "read" and ref == arguments.get("ref") else 0
-                text = row["content"]
+                from app.history.context import message_content
+                text = message_content(row)
                 if name != "read":
-                    query = str(options.get("query", ""))
-                    hit = text.lower().find(query.lower()) if query else 0
+                    lowered = text.lower()
+                    positions = [lowered.find(term.lower()) for term in terms]
+                    hit = min((pos for pos in positions if pos >= 0), default=0)
                     content_offset = max(0, hit - 60)
                 max_chars = max(80, min(12000, int(chars))) if chars is not None else (1200 if name == 'read' else 180)
                 excerpt = text[content_offset:content_offset + max_chars]
@@ -252,12 +265,15 @@ class HistorySession:
                 result['message'] = 'Some neighbors did not fit; use history.files for complete local context.'
             if not rows and result['status']=='ok':
                 result["status"] = "no_match"
+                if name == "search":
+                    result["message"] = "No literal match under these filters. Try alternative keywords in one query array, or check the member's aliases/date range; this does not prove the event never happened."
             size = len(encode(result).encode())
             self.used_bytes += size
             store.record_lookup(self.chat, self.request_id, name,
                                 {"filters": arguments, "source_ids": delivered, "status":result['status'],
                                  "returned_bytes": size, "calls": self.calls,
-                                 "cache_hit": result.get("cache_hit", False), "truncated": result.get("truncated", False)})
+                                 "cache_hit": result.get("cache_hit", False), "truncated": result.get("truncated", False),
+                                 "elapsed_ms": round((time.monotonic() - started) * 1000, 2)})
             return result
 
     def _output_budget(self):

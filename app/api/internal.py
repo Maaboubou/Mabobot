@@ -17,6 +17,7 @@ from app.core.wechat_manager import WeChatManager
 from app.models.base import SessionLocal
 from app.models.user_permission import WeChatUser, UserPermission
 from mabobot_logging import current_log_context
+from app.utils.source_message_policy import source_is_fresh, valid_source_time
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -96,7 +97,11 @@ async def receive_wechat_message(
 
     # Old deliveries are archived directly, before even the generic quote event.
     # Do not invoke logger plugin handlers: image enrichment can download media.
-    if message.archive_only or (message.sent_at is not None and time.time() - message.sent_at > 600):
+    message.sent_at = valid_source_time(message.sent_at)
+    if message.archive_only or not source_is_fresh(message.sent_at):
+        from app.services.chat_logging_policy import is_chat_logging_enabled
+        if not is_chat_logging_enabled(message.chat_name):
+            return {"status": "success", "archive_only": True, "recorded": False}
         from app.assistant.chat_log import ChatLogManager
         row_id = ChatLogManager().save_message(
             message.chat_name, message.sender, message.content,
@@ -109,6 +114,8 @@ async def receive_wechat_message(
             metadata={"archive_only": True, "quote_nickname": message.quote_nickname,
                       "quote_content": message.quote_content},
         )
+        if not row_id and not is_chat_logging_enabled(message.chat_name):
+            return {"status": "success", "archive_only": True, "recorded": False}
         if not row_id:
             from fastapi import HTTPException
             raise HTTPException(status_code=500, detail='积压消息存档失败')
@@ -179,7 +186,8 @@ async def receive_wechat_message(
                 "quoted_file_status": message.quoted_file_status,
                 "quoted_file_candidate_count": message.quoted_file_candidate_count,
                 "quoted_file_error": message.quoted_file_error,
-                "timestamp": message.timestamp
+                "timestamp": message.timestamp,
+                "source_sent_at": message.sent_at, "source_time_policy": "wechat_v1",
             },
             context={
                 "wx": wechat_manager
@@ -254,7 +262,8 @@ async def receive_wechat_message(
             "tickle_from": message.tickle_from,
             "tickle_to": message.tickle_to,
             "tickle_suffix": message.tickle_suffix,
-            "timestamp": message.timestamp
+            "timestamp": message.timestamp,
+            "source_sent_at": message.sent_at, "source_time_policy": "wechat_v1",
         },
         context={
             "wx": wechat_manager

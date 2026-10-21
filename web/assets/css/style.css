@@ -6804,43 +6804,20 @@ body.automation-pointer-sorting * {
 
 .chat-policy-pane { display: none; }
 .chat-policy-pane.active { display: block; }
-.chat-assistant-columns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.chat-assistant-columns.is-private { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.chat-assistant-columns > .chat-policy-block { min-width: 0; border-top: 0; }
+/* Two natural-height columns: identity (including nickname) and behavior. */
+.chat-assistant-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+.chat-assistant-columns > .chat-policy-block { min-width: 0; border-top: 0; padding: 1.5rem; }
 .chat-assistant-columns > .chat-policy-block + .chat-policy-block { border-top: 0; border-left: 1px solid var(--border-soft); }
-.chat-assistant-columns .chat-policy-field-grid.two { grid-template-columns: minmax(0, 1fr); }
-.chat-assistant-columns .chat-policy-dependent { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-/* Labels and controls share a horizontal row, including switch settings. */
-.chat-assistant-columns .chat-horizontal-field {
-    grid-template-columns: 112px minmax(0, 1fr);
-    align-items: center;
-    align-content: center;
-    align-self: start;
-    min-height: 64px;
-    column-gap: .75rem;
-}
-.chat-assistant-columns .chat-horizontal-field .chat-field-label { flex-wrap: wrap; }
-.chat-horizontal-copy { min-width: 0; }
-.chat-horizontal-copy small { display: block; margin-top: .2rem; color: var(--text-soft); font-size: var(--chat-font-meta); font-weight: 400; overflow-wrap: anywhere; }
-.chat-assistant-columns .chat-behavior-toggle { min-height: 64px; align-self: start; align-items: center; padding-top: 0; padding-bottom: 0; }
-.chat-assistant-columns .chat-horizontal-field > .form-control,
-.chat-assistant-columns .chat-horizontal-field > .form-select { min-width: 0; }
-@media (max-width: 575px) {
-    .chat-assistant-columns .chat-horizontal-field { grid-template-columns: minmax(0, 1fr); min-height: 0; }
-}
-/* Share row tracks across the three sections so labels and second settings align. */
+.chat-assistant-columns .chat-policy-field-grid.two { grid-template-columns: minmax(0, 1fr); gap: 1.1rem; }
+.chat-assistant-columns .chat-horizontal-field { grid-template-columns: minmax(0, 1fr); min-width: 0; align-content: start; }
+.chat-assistant-columns .chat-field-label { justify-content: space-between; flex-wrap: wrap; }
+.chat-assistant-columns .chat-policy-dependent { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: .85rem; border-radius: var(--radius-sm); background: var(--bg-soft); }
+.chat-assistant-columns .chat-behavior-toggle { align-items: center; min-height: 48px; }
+.chat-nickname-group { margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid var(--border-soft); }
+.chat-nickname-group .chat-setting-row { margin-bottom: 1rem; }
 .chat-inline-plugins { border-top: 1px solid var(--border-soft); }
-@media (min-width: 1200px) {
-    .chat-assistant-columns { grid-template-rows: auto auto auto; }
-    .chat-assistant-columns > .chat-policy-block { display: grid; grid-row: span 3; grid-template-rows: subgrid; row-gap: .75rem; }
-    .chat-assistant-columns .chat-policy-block-head { margin-bottom: 0; }
-    .chat-assistant-columns > .chat-policy-block > .chat-policy-field-grid,
-    .chat-assistant-columns > .chat-policy-block > .chat-setting-list { display: contents; }
-    .chat-assistant-columns .chat-setting-group + .chat-setting-group { margin-top: 0; padding-top: 0; border-top: 0; }
-
-}
-@media (max-width: 1199px) {
-    .chat-assistant-columns, .chat-assistant-columns.is-private { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 767.98px) {
+    .chat-assistant-columns { grid-template-columns: minmax(0, 1fr); }
     .chat-assistant-columns > .chat-policy-block + .chat-policy-block { border-left: 0; border-top: 1px solid var(--border-soft); }
 }
 
@@ -7674,3 +7651,67 @@ details.system-setting-subsection[open] > summary::before { transform: rotate(90
 }
 
 #systemStorageConsole .system-platform-block-head p { white-space: normal; overflow: visible; text-overflow: clip; }
+
+/* Per-chat permissions: short choices, explicit status, expandable reference text. */
+.chat-permission-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; padding-bottom: 1rem; border-bottom: 1px solid var(--border-soft); }
+.chat-permission-status { color: var(--text-secondary); font-size: var(--chat-font-meta); }
+.chat-permission-compact .chat-permission-segment { display: flex; flex-wrap: nowrap; gap: .15rem; margin: 0; padding: .2rem; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--bg-soft); }
+.chat-permission-compact .chat-permission-segment label { position: relative; flex: 1 1 auto; min-height: 34px; padding: .35rem .8rem; border: 0; justify-content: center; white-space: nowrap; color: var(--text-secondary); background: transparent; }
+.chat-permission-segment label:has(input:checked) { color: var(--primary); background: var(--accent-soft); }
+.chat-permission-segment input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.chat-permission-compact fieldset:disabled .chat-permission-segment label { background: transparent; }
+.chat-permission-compact fieldset:disabled .chat-permission-segment label:has(input:checked) { color: var(--text-main); background: var(--bg-card); }
+.chat-permission-row { display: flex; align-items: center; justify-content: space-between; gap: 1.25rem; padding: 1.2rem 0; border-bottom: 1px solid var(--border-soft); }
+.chat-permission-copy { min-width: 0; color: var(--text-main); font-size: var(--chat-font-control); }
+.chat-permission-copy > small:not(.chat-permission-source) { display: block; margin-top: .2rem; color: var(--text-secondary); font-size: var(--chat-font-meta); }
+.chat-permission-copy .chat-permission-source { margin-left: .5rem; color: var(--text-soft); font-size: var(--chat-font-meta); }
+.chat-permission-caveat { margin: .5rem 0 0; color: var(--text-secondary); font-size: var(--chat-font-meta); }
+.chat-permission-details { margin-top: 1rem; color: var(--text-secondary); font-size: var(--chat-font-meta); }
+.chat-permission-details p { margin: .65rem 0; }
+@media (max-width: 575.98px) {
+    .chat-permission-row { align-items: stretch; flex-direction: column; gap: .75rem; }
+    .chat-permission-compact .chat-permission-segment label { min-height: 44px; padding: .4rem .6rem; }
+}
+
+/* Call history: aligned summary with on-demand detail. */
+#callHistoryDetail { container-type: inline-size; container-name: call-history; min-width: 0; }
+.call-history-date { padding: 16px 12px 12px; color: var(--text-secondary); font-size: 12px; }
+.call-history-grid { display: grid; grid-template-columns: 82px minmax(120px, 1fr) 92px 76px 72px 72px 76px; gap: 12px; align-items: center; }
+.call-history-head { padding: 0 12px 10px; color: var(--text-secondary); font-size: 12px; }
+.call-history-head > :nth-child(n+3), .call-history-metric { text-align: right; }
+.call-history-entry { border-top: 1px solid var(--border-color); color: var(--text-body); font-variant-numeric: tabular-nums; }
+.call-history-entry > summary { list-style: none; padding: 16px 12px; cursor: pointer; font-size: 13px; }
+.call-history-entry > summary::-webkit-details-marker { display: none; }
+.call-history-entry > summary:hover, .call-history-entry[open] > summary { background: var(--bg-soft); }
+.call-history-entry > summary:focus-visible, .call-history-tabs button:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.call-history-identity { min-width: 0; }
+.call-history-identity strong { display: block; font-weight: 600; color: var(--text-main); overflow-wrap: anywhere; }
+.call-history-chat, .call-history-secondary, .call-history-status { display: block; margin-top: 4px; font-size: 12px; color: var(--text-secondary); }
+.call-history-chat { overflow-wrap: anywhere; }
+.call-history-metric { white-space: nowrap; }
+.call-history-mobile-label { display: none; }
+.call-history-expanded { padding: 16px; background: var(--bg-soft); border-top: 1px dashed var(--border-color); }
+.call-history-tabs { display: flex; flex-wrap: wrap; gap: 8px 20px; border-bottom: 1px solid var(--border-color); margin-bottom: 18px; }
+.call-history-tabs button { background: transparent; color: var(--text-secondary); border: 0; border-bottom: 2px solid transparent; padding: 8px 0; font: inherit; font-size: 13px; cursor: pointer; }
+.call-history-tabs button[aria-pressed="true"] { color: var(--text-main); border-bottom-color: var(--primary); }
+.call-history-fields { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; margin: 0; }
+.call-history-fields dt { font-size: 12px; font-weight: 400; color: var(--text-secondary); margin-bottom: 4px; }
+.call-history-fields dd { font-size: 14px; color: var(--text-main); margin: 0; }
+.call-history-provider, .call-history-explanation { font-size: 12px; margin: 18px 0 0; color: var(--text-secondary); overflow-wrap: anywhere; }
+.call-history-payload { margin: 8px 0; padding: 12px; max-height: 350px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg-card); color: var(--text-body); font-size: 13px; }
+.call-history-entry .history-error-body { margin-top: 18px; }
+@container call-history (max-width: 720px) {
+    .call-history-head { display: none; }
+    .call-history-entry > summary { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px 8px; }
+    .call-history-identity { grid-column: 1 / 5; grid-row: 1; }
+    .call-history-time { grid-column: 5; grid-row: 1; text-align: right; }
+    .call-history-metric { text-align: left; white-space: normal; }
+    .call-history-mobile-label { display: block; font-size: 11px; color: var(--text-secondary); margin-bottom: 3px; }
+    .call-history-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container call-history (max-width: 380px) {
+    .call-history-entry > summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .call-history-identity { grid-column: 1 / 3; }
+    .call-history-time { grid-column: 3; }
+}
+@media (pointer: coarse) { .call-history-tabs button { min-height: 44px; } }

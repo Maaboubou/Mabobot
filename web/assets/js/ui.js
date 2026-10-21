@@ -1826,19 +1826,19 @@ const UI = {
         const roles = assistantOverview.roles || [];
         const judges = assistantOverview.judges || [];
         const selectedProfile = assistant.codex_profile_id || '';
-        const selectedPluginCount = new Set(grants.map(item => String(item.plugin_name).split('#')[0])).size;
+        const selectedPluginCount = new Set(grants.map(item => String(item.plugin_name).split('#')[0]).filter(name => name.split('/').pop() !== 'builtin_chat_logger')).size;
         const chatLogCapability = (capabilities || []).find(item => item.id === 'builtin_chat_logger');
-        const chatLogEnabled = Boolean(chatLogCapability?.enabled);
-        const chatLogStatus = !chatLogCapability
-            ? '插件不可用'
-            : (chatLogEnabled
-                ? (chatLogCapability.loaded ? '持续记录新消息' : '已启用，但加载异常')
-                : '已关闭，助手仍可正常回复');
+        const isLoggerGrant = name => String(name || '').split('/').pop() === 'builtin_chat_logger';
+        const chatLogEnabled = chat.chat_log_enabled ?? grants.some(item => isLoggerGrant(item.plugin_name));
+        const chatLogAvailable = Boolean(chatLogCapability?.enabled && chatLogCapability?.loaded);
+        const chatLogStatus = !chatLogCapability?.enabled ? '请先启用聊天记录插件'
+            : !chatLogCapability.loaded ? '聊天记录插件未正常加载'
+            : '关闭后保留已有记录';
         const formatLines = values => (values || []).join('\n');
         const roleOptions = roles.map(item => `<option value="${Number(item.id)}" ${Number(assistant.role_id) === Number(item.id) ? 'selected' : ''}>${this.escapeHtml(item.display_name || item.name)}</option>`).join('');
         const judgeOptions = judges.map(item => `<option value="${Number(item.id)}" ${Number(assistant.judge_id) === Number(item.id) ? 'selected' : ''}>${this.escapeHtml(item.display_name || item.name)}</option>`).join('');
         const profileOptions = this.renderCodexProfileOptions(profilesData, selectedProfile);
-        const pluginCards = [...(capabilities || [])]
+        const pluginCards = [...(capabilities || [])].filter(item => item.id !== 'builtin_chat_logger')
             .sort((a, b) => Number(Boolean(grantByName[b.id])) - Number(Boolean(grantByName[a.id]))
                 || Number(b.featured) - Number(a.featured)
                 || String(a.display_name || a.id).localeCompare(String(b.display_name || b.id)))
@@ -1888,8 +1888,8 @@ const UI = {
                         <input class="form-check-input" type="checkbox" role="switch" name="assistant_enabled" ${assistant.enabled ? 'checked' : ''}>
                     </label>
                     <label class="chat-policy-state-toggle form-switch">
-                        <span><i class="bi bi-journal-text"></i><span><strong>聊天记录</strong><small data-chat-log-plugin-status>全局 · 立即生效 · ${this.escapeHtml(chatLogStatus)}</small></span></span>
-                        <input class="form-check-input" type="checkbox" role="switch" data-chat-log-plugin-toggle ${chatLogEnabled ? 'checked' : ''} ${chatLogCapability ? '' : 'disabled'} aria-label="启用聊天记录插件">
+                        <span><i class="bi bi-journal-text"></i><span><strong>记录本聊天</strong><small>${this.escapeHtml(chatLogStatus)}${!chatLogAvailable ? ' · <a href="/plugins" onclick="event.preventDefault(); UI.switchTab(&quot;plugins&quot;)">查看插件</a>' : ''}</small>${chatLogCapability?.configurable ? '<button type="button" class="chat-policy-inline-action" data-plugin-config="builtin_chat_logger" data-chat-configurable="true">记录设置</button>' : ''}</span></span>
+                        <input class="form-check-input" type="checkbox" role="switch" name="chat_log_enabled" ${chatLogEnabled ? 'checked' : ''} ${chatLogAvailable ? '' : 'disabled'} aria-label="记录本聊天">
                     </label>
                 </section>
 
@@ -1908,6 +1908,13 @@ const UI = {
                             <label class="chat-horizontal-field"><span class="chat-field-label"><span>角色</span><a href="/assistant/roles" onclick="event.preventDefault(); App.openAssistantRoleManager()">管理</a></span><select class="form-select" name="role_id"><option value="">继承全局默认角色</option>${roleOptions}</select></label>
 
                         </div>
+                        ${chat.is_group ? `<div class="chat-nickname-group">
+                            <div class="chat-policy-block-head"><h4>群内昵称</h4></div>
+                            <label class="chat-setting-row chat-behavior-toggle form-switch"><span><strong>自动同步微信昵称</strong><small data-nickname-status data-detected="${this.escapeHtml(chat.bot_group_nickname_detected || '')}"></small></span><input class="form-check-input" type="checkbox" role="switch" name="bot_group_nickname_auto_enabled" ${chat.bot_group_nickname_auto_enabled ? 'checked' : ''}></label>
+                            <div class="chat-policy-field-grid two">
+                                <label class="chat-horizontal-field"><span data-nickname-label>备用昵称</span><input class="form-control" name="bot_group_nickname" value="${this.escapeHtml(chat.bot_group_nickname || '')}" maxlength="128" placeholder="输入昵称，无需填写 @"><small data-nickname-help>用于补充 @ 匹配</small></label>
+                            </div>
+                        </div>` : ''}
                     </section>
 
                     <section class="chat-policy-block">
@@ -1930,13 +1937,7 @@ const UI = {
                         </div>
                     </section>
 
-                    ${chat.is_group ? `<section class="chat-policy-block chat-nickname-group">
-                        <div class="chat-policy-block-head"><h4>群内昵称</h4></div>
-                                <div class="chat-policy-field-grid two">
-                                    <label class="chat-horizontal-field"><span class="chat-horizontal-copy"><span>手动昵称</span><small data-nickname-status data-detected="${this.escapeHtml(chat.bot_group_nickname_detected || '')}"></small></span><input class="form-control" name="bot_group_nickname" value="${this.escapeHtml(chat.bot_group_nickname || '')}" maxlength="128" placeholder="无需填写 @"></label>
-                                    <label class="chat-setting-row chat-behavior-toggle form-switch"><span><strong>自动从微信同步</strong><small>优先使用识别昵称，手动昵称仍可用于 @ 匹配</small></span><input class="form-check-input" type="checkbox" role="switch" name="bot_group_nickname_auto_enabled" ${chat.bot_group_nickname_auto_enabled ? 'checked' : ''}></label>
-                                </div>
-                            </section>` : ''}
+
                     </div>
                     <section class="chat-policy-block chat-inline-plugins">
                         <div class="chat-policy-block-head"><div class="chat-policy-title-row"><h4>功能插件</h4><span class="chat-count-pill" data-plugin-tab-count>${selectedPluginCount}</span></div><div class="chat-policy-block-actions"><a class="chat-policy-head-action" href="/plugins" onclick="event.preventDefault(); UI.switchTab('plugins')"><i class="bi bi-box-arrow-up-right"></i>管理功能插件</a></div></div>
@@ -1952,7 +1953,7 @@ const UI = {
                 <div id="chat-permissions-panel" role="tabpanel" aria-labelledby="chat-permissions-tab" class="chat-policy-pane ${activePane === 'permissions' ? 'active' : ''}" data-chat-policy-pane="permissions">
                     <section class="chat-policy-block">
                         <label class="chat-setting-row">
-                            <span><strong>附件内容审核</strong><small>审核本聊天 AI 生成或下载的附件。关闭后跳过内容审核，保留基础文件检查。</small></span>
+                            <span><strong>附件内容审核</strong><small>审核生成或下载的附件；关闭仍保留基础文件检查。</small></span>
                             <input class="form-check-input" type="checkbox" role="switch" name="attachment_content_review_enabled" ${chat.attachment_content_review_enabled !== false ? 'checked' : ''}>
                         </label>
                     </section>
@@ -2064,22 +2065,6 @@ const UI = {
                 }
             });
         });
-        const chatLogPluginToggle = form.querySelector('[data-chat-log-plugin-toggle]');
-        chatLogPluginToggle?.addEventListener('change', async event => {
-            event.stopPropagation();
-            const requested = Boolean(chatLogPluginToggle.checked);
-            chatLogPluginToggle.disabled = true;
-            const applied = await App.togglePlugin('builtin_chat_logger', requested, {
-                displayName: '聊天记录',
-                refreshWorkbench: false
-            });
-            if (!applied) chatLogPluginToggle.checked = !requested;
-            const enabled = Boolean(chatLogPluginToggle.checked);
-            const status = form.querySelector('[data-chat-log-plugin-status]');
-            if (status) status.textContent = `全局 · 立即生效 · ${enabled ? '持续记录新消息' : '已关闭，助手仍可正常回复'}`;
-            chatLogPluginToggle.disabled = false;
-        });
-
         const syncDependentControls = () => {
             const followupEnabled = form.elements.followup_enabled.checked;
             form.querySelector('[data-followup-settings]')?.classList.toggle('is-collapsed', !followupEnabled);
@@ -2097,6 +2082,8 @@ const UI = {
             if (nicknameStatus) {
                 const automatic = form.elements.bot_group_nickname_auto_enabled.checked;
                 const detected = nicknameStatus.dataset.detected;
+                form.querySelector('[data-nickname-label]').textContent = automatic ? '备用昵称' : '手动昵称';
+                form.querySelector('[data-nickname-help]').textContent = automatic ? '用于补充 @ 匹配' : '未填写时使用账号名称';
                 nicknameStatus.textContent = automatic && detected ? `当前优先使用：${detected}`
                     : automatic ? '尚未识别，暂用手动昵称或账号名称' : '自动同步已关闭，使用手动昵称或账号名称';
             }

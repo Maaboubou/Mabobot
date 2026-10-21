@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 import requests
 from mabobot_logging import current_log_context
+from app.utils.source_message_policy import require_current_source_fresh
 
 from .event_bus import EventBus, get_event_bus, Event, EventType
 from ..utils.health_state import ConsecutiveHealthGate, should_resync_connection
@@ -84,6 +85,7 @@ class WeChatManager:
         单次 UI 事务、目标校验和重试均由 mabowx 内部负责。
         """
         with self._outbound_send_lock:
+            require_current_source_fresh()
             trace_headers = _trace_headers(str(payload.get("request_id") or ""))
             self.logger.debug(
                 "Acquired WeChat outbound send lock: endpoint=%s chat=%s",

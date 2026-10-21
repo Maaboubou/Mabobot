@@ -897,7 +897,7 @@ class QuoteMessage(HumanMessage):
             )
         )
 
-    def _refresh_visible_control(self) -> bool:
+    def _refresh_visible_control(self, *, probe_avatar_direction: bool = True) -> bool:
         """Rebind a delayed quote download to the exact visible quote row.
 
         Message controls are virtualized by WeChat.  If the cached control is
@@ -909,9 +909,13 @@ class QuoteMessage(HumanMessage):
         if not callable(getter):
             return self._control_is_clickable(self.control)
         try:
+            visible = (
+                getter() if probe_avatar_direction else
+                getter(resolve_group_senders=False, probe_avatar_direction=False)
+            )
             candidates = [
                 candidate
-                for candidate in getter()
+                for candidate in visible
                 if self._same_quote(candidate)
                 and self._control_is_clickable(getattr(candidate, "control", None))
             ]
@@ -972,7 +976,22 @@ class QuoteMessage(HumanMessage):
         return True
 
     def download_quote_media(self, dir_path: str | Path | None = None, timeout: int = 30) -> Path:
-        """下载引用消息中的图片/视频。"""
+        """下载引用媒体；MP4 文件引用定位原文件后读取文件剪贴板。"""
+        names = [
+            line.strip() for line in str(self.quote_content or "").splitlines()
+            if line.strip() and line.strip().casefold() not in {
+                "文件", "[文件]", "未下载", "下载", "暂停下载",
+                "微信电脑版", "wechat for windows",
+            }
+        ]
+        file_name = names[0] if len(names) == 1 else ""
+        if Path(file_name).suffix.casefold() == ".mp4":
+            return _run_ordered_media_operation(
+                self,
+                lambda: self._download_quote_file_unlocked(
+                    file_name, dir_path=dir_path, timeout=timeout,
+                ),
+            )
         return _run_ordered_media_operation(
             self,
             lambda: self._download_quote_image_unlocked(
@@ -980,6 +999,85 @@ class QuoteMessage(HumanMessage):
                 timeout=timeout,
             ),
         )
+
+    def _download_quote_file_unlocked(
+        self, file_name: str, dir_path: str | Path | None = None, timeout: int = 30,
+    ) -> Path:
+        """定位并复制原文件，成功或失败都回到最新页，不重置监听基线。"""
+        try:
+            return self._copy_quote_file_unlocked(file_name, dir_path=dir_path, timeout=timeout)
+        finally:
+            # Still inside the ordered UI transaction: the listener must not
+            # observe our temporary historical page. Keep its previous anchor
+            # so messages arriving during the copy remain eligible for delivery.
+            self.parent._return_to_latest(wait_time=0.15)
+
+    def _copy_quote_file_unlocked(
+        self, file_name: str, dir_path: str | Path | None = None, timeout: int = 30,
+    ) -> Path:
+        """缓存未命中时定位原文，只接受当前聊天内唯一的可见原文件。"""
+        deadline = time.monotonic() + max(0.1, float(timeout))
+        # Finding an absent original must not hold the global UI lock for the
+        # video's full download budget (up to 120 seconds).
+        lookup_deadline = min(deadline, time.monotonic() + 5.0)
+        if not self._locate_quote_file():
+            raise MediaIdentityError("无法定位被引用的文件原消息")
+        getter = getattr(self.parent, "get_messages", None)
+        if not callable(getter):
+            raise MediaIdentityError("文件引用所属聊天不支持重新枚举消息")
+        while time.monotonic() < lookup_deadline:
+            candidates = [
+                candidate for candidate in getter(
+                    resolve_group_senders=False, probe_avatar_direction=False,
+                )
+                if getattr(candidate, "type", "") == "file"
+                and str(getattr(candidate, "content", "")).strip().casefold() == file_name.casefold()
+                and self._control_is_clickable(getattr(candidate, "control", None))
+            ]
+            if len(candidates) > 1:
+                raise MediaIdentityError("存在多个同名文件，无法确认被引用的原文件")
+            if candidates:
+                candidate = candidates[0]
+                # Identify only the matched file once. Polling the complete
+                # page with default get_messages repeatedly right-clicked
+                # every avatar while waiting for the original to appear.
+                identified = getter(controls=[candidate.control])
+                if len(identified) != 1 or (
+                    getattr(identified[0], "type", "") != "file"
+                    or str(getattr(identified[0], "content", "")).strip().casefold() != file_name.casefold()
+                ):
+                    raise MediaIdentityError("被引用原文件在身份校验期间发生变化")
+                candidate = identified[0]
+                quoted_sender = str(getattr(self, "quote_nickname", "") or "").strip()
+                file_sender = str(getattr(candidate, "sender", "") or "").strip()
+                if quoted_sender and file_sender and quoted_sender != file_sender:
+                    raise MediaIdentityError("被引用文件的发送者与原消息不一致")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                return candidate.download(dir_path=dir_path, timeout=remaining)
+            time.sleep(min(0.1, max(0.0, lookup_deadline - time.monotonic())))
+        raise MediaIdentityError("定位后没有找到被引用的可见文件原消息")
+
+    def _locate_quote_file(self) -> bool:
+        """通过引用卡片菜单明确定位原文，不尝试打开视频预览。"""
+        from mabowx.ui.component import Menu
+
+        if not self._refresh_visible_control(probe_avatar_direction=False):
+            return False
+        if not self._activate_source_window():
+            raise MediaIdentityError("文件引用所属聊天窗口未能安全激活")
+        point = find_quote_media_center(self.control, self.direction)
+        if point is None:
+            point = quote_media_fallback_point(self.control, self.direction)
+        if point is None:
+            return False
+        uia.right_click_screen(point[0], point[1], wait=0.05)
+        menu = Menu(self.parent, timeout=1.5, anchor=point)
+        try:
+            return bool(menu.select("定位到原文位置").is_success)
+        finally:
+            menu.close()
 
     def download_quote_image(self, dir_path: str | Path | None = None, timeout: int = 30) -> Path:
         """保留旧公开 API；底层与引用视频共用媒体下载路径。"""

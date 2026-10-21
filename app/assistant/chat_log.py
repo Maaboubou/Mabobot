@@ -215,7 +215,10 @@ class ChatLogManager:
         metadata: Optional[Dict[str, Any]] = None,
         image_enrichment: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
-        """保存聊天消息到 jsonl 文件"""
+        """保存获准记录的新消息；不影响历史查询或手动导入。"""
+        from app.services.chat_logging_policy import is_chat_logging_enabled
+        if not is_chat_logging_enabled(chat_name):
+            return None
         log_path = self.log_dir / f"{chat_name}.jsonl"
         timestamp = received_at or time.strftime("%Y-%m-%d %H:%M:%S")
         row_id = uuid.uuid4().hex
@@ -267,6 +270,39 @@ class ChatLogManager:
             except Exception as e:
                 logger.error(f"❌ 保存聊天记录失败: {e}")
                 return None
+
+    def update_attachment(self, chat_name: str, row_id: str, attachment: Dict) -> bool:
+        """Revise attachment metadata without replacing image observations or order."""
+        log_path = self.log_dir / f"{chat_name}.jsonl"
+        temp_path = log_path.with_name(f"{log_path.name}.{uuid.uuid4().hex}.tmp")
+        with _COUNTS_LOCK:
+            try:
+                if not log_path.exists():
+                    return False
+                updated = False
+                with log_path.open(encoding="utf-8") as source, temp_path.open("w", encoding="utf-8") as target:
+                    for line in source:
+                        try:
+                            row = json.loads(line)
+                        except (ValueError, TypeError):
+                            target.write(line)
+                            continue
+                        if str(row.get("id") or "") == str(row_id):
+                            metadata = dict(row.get("metadata") or {})
+                            metadata["attachment"] = dict(attachment)
+                            if not self.archive.revise(chat_name, row_id, metadata=metadata):
+                                return False
+                            row["metadata"] = metadata
+                            line = json.dumps(row, ensure_ascii=False) + "\n"
+                            updated = True
+                        target.write(line)
+                    target.flush()
+                    os.fsync(target.fileno())
+                if updated:
+                    os.replace(temp_path, log_path)
+                return updated
+            finally:
+                temp_path.unlink(missing_ok=True)
 
     def update_image_enrichment(
         self,
@@ -381,6 +417,8 @@ class ChatLogManager:
 
     def get_context_messages(self, chat_name: str, limit: int = 100) -> List[Dict]:
         """获取上下文消息"""
+        from app.history.attachments import wait_for_attachments
+        wait_for_attachments(chat_name)
         archived = self.archive.recent(chat_name, limit)
         if archived:
             from app.history.context import message_content

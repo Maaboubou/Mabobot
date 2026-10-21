@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from app.services.codex_job_manager import codex_job_manager
+from app.services.generation_timing import GenerationTiming
 from app.services.codex_delivery import (
     DeliveryError, collect_selected_files, delivery_instructions, delivery_schema, parse_delivery,
 )
@@ -116,6 +117,8 @@ class _TurnTracker:
     usage_source: str = ""
     usage_segments: List[Dict[str, Any]] = field(default_factory=list)
     usage_signatures: Dict[str, int] = field(default_factory=dict)
+    generation: GenerationTiming = field(default_factory=GenerationTiming)
+    generation_segments: List[GenerationTiming] = field(default_factory=list)
     compacted: bool = False
     status: str = "running"
     error: Optional[str] = None
@@ -123,6 +126,55 @@ class _TurnTracker:
     thread_id: str = ""
     started_recorded: bool = False
     network_wait_since: Optional[float] = None
+
+
+def _measured_usage_segments(tracker, model, *, complete=True):
+    segments = []
+    for index, usage in enumerate(tracker.usage_segments):
+        entry = dict(usage)
+        if index < len(tracker.generation_segments):
+            measured = tracker.generation_segments[index].snapshot(
+                usage=usage, complete=complete,
+            )
+            if index:
+                # There is no reliable request-start event for subsequent model calls.
+                measured['first_token_seconds'] = None
+                measured['last_token_seconds'] = None
+                measured['first_output_seconds'] = None
+            entry['generation_timing'] = measured
+        segments.append(entry)
+    return segments
+
+
+def _turn_generation_timing(trackers, segments):
+    observed = [timing for tracker in trackers
+                for timing in [*tracker.generation_segments, tracker.generation]
+                if timing.first is not None]
+    if len(segments) == 1 and segments[0].get('generation_timing'):
+        return segments[0]['generation_timing']
+    if not observed and not segments:
+        return None
+    first_tracker = trackers[0]
+    initial = (first_tracker.generation_segments or [first_tracker.generation])[0]
+    result = {
+        'source': 'client_stream',
+        'method': 'provider_output_over_decode_window',
+        'first_token_seconds': max(0, observed[0].first - initial.started) if observed else None,
+        'last_token_seconds': max(0, observed[-1].last - initial.started) if observed else None,
+        'generation_seconds': None,
+        'generation_tokens_per_second': None,
+        'reason': 'multiple_model_requests' if len(segments) > 1 else 'missing_usage',
+    }
+    timings = [segment.get('generation_timing') for segment in segments]
+    # Require every segment to be measured; never present a partial average as a turn rate.
+    if timings and all(t and t.get('generation_tokens_per_second') is not None for t in timings):
+        seconds = sum(t['generation_seconds'] for t in timings)
+        tokens = sum(t['generation_tokens'] for t in timings)
+        result.update(generation_seconds=seconds, generation_tokens=tokens,
+                      generation_tokens_per_second=round(tokens / seconds, 2),
+                      token_count_source='provider_usage', estimated=True,
+                      estimation_reason='client_stream_timing', reason=None)
+    return result
 
 
 @dataclass
@@ -142,6 +194,7 @@ class _ActiveDynamicToolContext:
     call_ids: set[str] = field(default_factory=set)
     history: Any = None
     history_exports: List[Path] = field(default_factory=list)
+    lens: Any = None
 
 
 def _positive_int(value: Any, default: int) -> int:
@@ -822,7 +875,12 @@ class CodexAppServerManager:
         )
         from app.history.tools import dynamic_tool_specs as history_specs
         self.dynamic_tool_specs += history_specs()
-        self.dynamic_tool_signature = self.browser_tool.tool_signature() + ":history-v4-local-files"
+        self.dynamic_tool_signature = self.browser_tool.tool_signature() + ":history-v5-keywords"
+        from app.services.codex_lens_tool import VERSION as lens_version, dynamic_tool_specs as lens_specs
+        from app.services.lens_management import LensSettings
+        lens_tools = lens_specs(LensSettings())
+        self.dynamic_tool_specs += lens_tools
+        self.dynamic_tool_signature += ":" + lens_version + (":enabled" if lens_tools else ":disabled")
         self.managed_profile_id = managed_profile_id
         self.model_supports_web_search = model_supports_web_search
 
@@ -1413,7 +1471,11 @@ class CodexAppServerManager:
                 ),
             )
             normalized_tool = str(tool or "")
-            if str(namespace or "") == "history" or normalized_tool.startswith("history."):
+            if str(namespace or "") == "wx_lens" or normalized_tool.startswith("wx_lens."):
+                if active.lens is None:
+                    raise CodexBrowserToolError("Lens is unavailable for this task")
+                result = active.lens.execute(normalized_tool.removeprefix("wx_lens."), params.get("arguments"))
+            elif str(namespace or "") == "history" or normalized_tool.startswith("history."):
                 if active.history is None:
                     raise CodexBrowserToolError("history is unavailable for this task")
                 try:
@@ -1820,8 +1882,15 @@ class CodexAppServerManager:
                     status="running",
                     current_item_type=None,
                 )
+        elif method == "item/agentMessage/delta":
+            tracker.generation.observe(params.get("delta"))
+        elif method.startswith("item/reasoning") and method.lower().endswith("delta"):
+            if params.get("delta"):
+                tracker.generation.observe_output()
         elif method == "item/started":
             item = params.get("item") if isinstance(params.get("item"), dict) else {}
+            if tracker.generation.first_output is not None and item.get("type") not in {"agentMessage", "reasoning", "userMessage"}:
+                tracker.generation.interrupted = True
             public_item = self._public_item_event(item)
             self._record_turn_event(
                 tracker,
@@ -1879,7 +1948,12 @@ class CodexAppServerManager:
                 existing = tracker.usage_signatures.get(signature)
                 if existing is None:
                     tracker.usage_signatures[signature] = len(tracker.usage_segments)
+                    # A usage notification closes one observed model segment. Do not
+                    # join intervals across tool execution or repeated notifications.
+                    tracker.generation.finish()
+                    tracker.generation_segments.append(tracker.generation)
                     tracker.usage_segments.append(segment)
+                    tracker.generation = GenerationTiming()
                 else:
                     tracker.usage_segments[existing] = segment
             self._record_turn_event(
@@ -2038,6 +2112,8 @@ class CodexAppServerManager:
         history_request_id: str = "",
         history_max_calls: int = 0,
         history_max_bytes: int = 0,
+        lens_bindings: Optional[dict] = None,
+        lens_settings=None,
     ) -> str:
         if not self.dynamic_tool_specs:
             return ""
@@ -2048,6 +2124,20 @@ class CodexAppServerManager:
             self._dynamic_tool_contexts[thread_id] = _ActiveDynamicToolContext(
                 token=token,
                 browser=browser_context,
+            )
+            from app.services.codex_lens_tool import LensSession
+
+            def lens_progress(stage):
+                logger.info("Lens request=%s %s", browser_context.request_id, stage,
+                            extra={"request_id": browser_context.request_id})
+                codex_job_manager.record_event(
+                    browser_context.request_id, "lens_progress", {"stage": stage, "summary": "Lens：" + stage},
+                    current_item_type="dynamicToolCall", current_item_status="in_progress",
+                    current_item_summary="Lens：" + stage,
+                )
+
+            self._dynamic_tool_contexts[thread_id].lens = LensSession(
+                browser_context, lens_bindings or {}, progress=lens_progress, settings=lens_settings,
             )
             if history_enabled:
                 from app.history.tools import history_session_for
@@ -2088,6 +2178,8 @@ class CodexAppServerManager:
                 self._dynamic_tool_condition.notify_all()
         if active is None:
             return
+        if active.lens is not None:
+            active.lens.close()
         for folder in active.history_exports:
             try:
                 if (_artifact_request_dir_is_safe(active.browser.request_dir)
@@ -2171,6 +2263,7 @@ class CodexAppServerManager:
         runtime_workspace_roots: Optional[List[Path]] = None,
         developer_instructions: str = "",
         online_research: bool = True,
+        lens_settings=None,
     ) -> str:
         runtime_workdir = _as_runtime_path(Path(workdir or self.workdir), self.use_wsl)
         thread_config = self._thread_config(
@@ -2197,7 +2290,7 @@ class CodexAppServerManager:
                 "ephemeral": bool(ephemeral),
                 "config": thread_config,
                 "developerInstructions": developer_instructions,
-                **({"dynamicTools": self._permission_tool_specs(online_research)} if self.dynamic_tool_specs else {}),
+                **({"dynamicTools": self._permission_tool_specs(online_research, lens_settings)} if self.dynamic_tool_specs else {}),
                 **execution_policy,
             },
             timeout=min(timeout, 120),
@@ -2216,8 +2309,12 @@ class CodexAppServerManager:
         )
         return thread_id
 
-    def _permission_tool_specs(self, online_research: bool):
-        return [spec for spec in self.dynamic_tool_specs if online_research or spec.get("name") != "wx_browser"]
+    def _permission_tool_specs(self, online_research: bool, lens_settings=None):
+        from app.services.lens_management import defaults
+        settings = lens_settings or defaults()
+        return [spec for spec in self.dynamic_tool_specs
+                if (online_research or spec.get("name") not in {"wx_browser", "wx_lens"})
+                and (settings.enabled or spec.get("name") != "wx_lens")]
 
     def _verify_thread_permissions(self, result, profile, approval, roots, *, sandbox=None):
         if profile == ":danger-full-access" or not profile and sandbox == "danger-full-access":
@@ -2314,6 +2411,7 @@ class CodexAppServerManager:
         assistant_task=None,
     ) -> Tuple[str, _TurnTracker]:
         """Start one App Server turn and wait for its terminal notification."""
+        generation_started = time.monotonic()
         result = self._request(
             "turn/start",
             {
@@ -2330,6 +2428,8 @@ class CodexAppServerManager:
         self._bind_dynamic_tool_turn(thread_id, turn_id)
 
         tracker = self._tracker(turn_id)
+        initial_generation = (tracker.generation_segments or [tracker.generation])[0]
+        initial_generation.started = generation_started
         tracker.request_id = request_id
         tracker.thread_id = thread_id
         task = assistant_task
@@ -2610,11 +2710,19 @@ class CodexAppServerManager:
         if task and time.monotonic() >= task.deadline:
             raise CodexAppServerError("Assistant task execution limit reached")
         state = task.load_state(self.state_store) if task else self.state_store.get(chat_id)
+        from app.services.lens_management import LensSettings, read_settings, policy_blocks
+        from app.services.assistant_prompt_service import read_rules
+        lens_state = read_settings()
+        lens_settings = LensSettings(**lens_state["settings"])
+        lens_rules = read_rules()
+        effective_tool_signature = self.dynamic_tool_signature + (":lens-on" if lens_settings.enabled else ":lens-off")
         developer_instructions = "\n\n".join(
             text for message in messages
             if message.get("role") in {"system", "developer"}
             if (text := _content_to_text(message.get("content")))
         )
+        developer_instructions += "\n\n" + "\n\n".join(b["content"] for b in policy_blocks(lens_rules["texts"]))
+        developer_instructions += "\n\n【本轮 Lens 运行参数】" + json.dumps(lens_state["settings"], ensure_ascii=False)
         if request.get("codex_chat_user_id"):
             # This field was rebuilt from the database at the start of this turn.
             # Keep host authority separate from chat text and persona prompts.
@@ -2687,7 +2795,7 @@ class CodexAppServerManager:
             max_turns=max_turns,
             runtime_profile=runtime_profile,
             access_signature=access_signature,
-            dynamic_tool_signature=self.dynamic_tool_signature,
+            dynamic_tool_signature=effective_tool_signature,
             max_compactions=0 if incremental_context else self.max_compactions,
             idle_rotate_seconds=self.idle_rotate_seconds,
             incremental_context=incremental_context,
@@ -2797,6 +2905,7 @@ class CodexAppServerManager:
                 runtime_workspace_roots=runtime_workspace_roots,
                 developer_instructions=developer_instructions,
                 online_research=bool(request.get("codex_online_research", True)),
+                lens_settings=lens_settings,
             )
             logger.info(
                 "Codex persistent thread started: chat=%s thread=%s reason=%s",
@@ -2861,6 +2970,7 @@ class CodexAppServerManager:
         image_request_mode = None
         temporary_image_paths: List[Path] = []
         runtime_image_paths: List[str] = []
+        host_image_paths: List[Path] = []
         image_staging_dir = (
             request_dir / "inputs"
             if is_isolated_profile(permission_profile)
@@ -2874,6 +2984,10 @@ class CodexAppServerManager:
             if image_staging_dir is None and image_url.startswith("data:"):
                 temporary_image_paths.append(image_path)
             runtime_image_paths.append(_as_runtime_path(image_path, self.use_wsl))
+            host_image_paths.append(image_path)
+
+        from app.services.codex_lens_tool import image_bindings, prompt_for as lens_prompt
+        lens_bindings = image_bindings(delta.messages, host_image_paths)
 
         prompt = render_chat_prompt(
             # Native instructions are configured on the thread, never quoted as user input.
@@ -2888,6 +3002,8 @@ class CodexAppServerManager:
         )
         if structured_delivery:
             prompt += "\n" + delivery_instructions(reply_is_json=reply_is_json)
+        if browser_context is not None and browser_context.online_research_allowed:
+            prompt += lens_prompt(lens_bindings, lens_settings)
         if delta.resume:
             prompt = (
                 "Continue the existing conversation. The conversation block below contains only "
@@ -2907,7 +3023,9 @@ class CodexAppServerManager:
             "developer_instructions": developer_instructions,
             "instruction_fingerprint": hashlib.sha256(developer_instructions.encode()).hexdigest(),
             "turn_input": turn_input, "output_schema": output_schema,
-            "tools": self._permission_tool_specs(bool(request.get("codex_online_research", True))),
+            "tools": self._permission_tool_specs(bool(request.get("codex_online_research", True)), lens_settings),
+            "lens_policy": {"version": lens_state["version"], "settings": lens_state["settings"],
+                            "rules_version": lens_rules["version"], "scope": "所有 App Server Profiles 继承全局配置"},
             "model": model, "role": role_name,
             "notice": "仅含本系统可观测输入；复用线程只展示本轮新增资料，旧工具结果及供应商内置指令不在此快照内。",
         })
@@ -3002,6 +3120,8 @@ class CodexAppServerManager:
                     history_request_id=str(request.get("mabobot_history_request_id") or ""),
                     history_max_calls=int(request.get("mabobot_history_max_calls") or 0),
                     history_max_bytes=int(request.get("mabobot_history_max_bytes") or 0),
+                    lens_bindings=lens_bindings,
+                    lens_settings=lens_settings,
                 )
             turn_id, tracker = self._start_tracked_turn(
                 request_id=request_id,
@@ -3166,7 +3286,7 @@ class CodexAppServerManager:
 
             usage_segments = []
             for attempt_tracker in turn_trackers:
-                usage_segments.extend(attempt_tracker.usage_segments or [
+                usage_segments.extend(_measured_usage_segments(attempt_tracker, model) or [
                     _normalize_app_server_usage(attempt_tracker.usage,
                                                 source=attempt_tracker.usage_source or "codex_app_server.turn")])
             # Keep the latest model request independent of total billable usage.
@@ -3363,7 +3483,7 @@ class CodexAppServerManager:
                     permission_profile=permission_profile,
                     approval_policy=approval_policy,
                 ),
-                "dynamic_tool_signature": self.dynamic_tool_signature,
+                "dynamic_tool_signature": effective_tool_signature,
                 "access_signature": access_signature or None,
                 "access_mode": request.get("codex_access_mode"),
                 "created_at": (state or {}).get("created_at") or now_iso,
@@ -3443,6 +3563,8 @@ class CodexAppServerManager:
                 ],
                 "usage": usage,
                 "billing_usage_segments": usage_segments,
+                # Whole-turn speed is unavailable when tools/multiple requests intervene.
+                "generation_timing": _turn_generation_timing(turn_trackers, usage_segments),
                 "attachments": attachments,
             }
         except Exception as exc:
@@ -3456,7 +3578,7 @@ class CodexAppServerManager:
                     self.invalidate_chat(chat_id, reason="incomplete_turn")
             partial = []
             for tracker in turn_trackers:
-                partial.extend(tracker.usage_segments or [_normalize_app_server_usage(tracker.usage)])
+                partial.extend(_measured_usage_segments(tracker, model, complete=False) or [_normalize_app_server_usage(tracker.usage)])
             if any(partial):
                 exc.billing_response = {"model": model, "usage": _merge_attempt_usage(partial),
                                         "billing_usage_segments": partial}

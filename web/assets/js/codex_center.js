@@ -456,8 +456,8 @@ const CodexCenter = {
             [visionInput, item?.supports_vision],
             [webSearchInput, item?.supports_web_search]
         ].forEach(([input, supported]) => {
-            if (!input) return;
-            input.checked = Boolean(supported);
+            if (!input || typeof supported !== 'boolean') return;
+            input.checked = supported;
             input.dataset.autoModel = modelId;
         });
         if (nameInput && !nameInput.value) {
@@ -1029,7 +1029,10 @@ const CodexCenter = {
         };
         if (Number(model.context_window || 0) >= 4096) payload.context_window = Number(model.context_window);
         payload.supports_vision = (model.input_modalities || []).includes('image');
-        payload.supports_web_search = Boolean(model.supports_web_search);
+        // Missing model metadata must not clear an existing capability setting.
+        if (typeof model.supports_web_search === 'boolean') {
+            payload.supports_web_search = model.supports_web_search;
+        }
         if (button) button.disabled = true;
         try {
             let result = null;

@@ -20,6 +20,13 @@ def _iso_now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def _search_support(model: dict[str, Any]) -> bool | None:
+    flags = [model.get(key) for key in (
+        "supportsSearchTool", "supportsWebSearch", "supports_search_tool", "supports_web_search"
+    ) if isinstance(model.get(key), bool)]
+    return any(flags) if flags else None
+
+
 def _public_models(result: Dict[str, Any]) -> list[dict[str, Any]]:
     """Expose account model metadata without leaking private app-server fields."""
     values = result.get("data") if isinstance(result.get("data"), list) else []
@@ -50,15 +57,8 @@ def _public_models(result: Dict[str, Any]) -> list[dict[str, Any]]:
                     for value in item.get("inputModalities") or ["text", "image"]
                     if str(value)
                 ],
-                "supports_web_search": any(
-                    item.get(key) is True
-                    for key in (
-                        "supportsSearchTool",
-                        "supportsWebSearch",
-                        "supports_search_tool",
-                        "supports_web_search",
-                    )
-                ),
+                # Omitted metadata is unknown, not an explicit rejection.
+                "supports_web_search": _search_support(item),
                 "is_default": bool(item.get("isDefault")),
             }
         )
@@ -173,9 +173,9 @@ class CodexOAuthService:
             update["supports_vision"] = "image" in (
                 selected_model.get("input_modalities") or []
             )
-            update["supports_web_search"] = bool(
-                selected_model.get("supports_web_search")
-            )
+            search_support = selected_model.get("supports_web_search")
+            if isinstance(search_support, bool):
+                update["supports_web_search"] = search_support
 
         profile_service = get_codex_profile_service()
         profile_service.update_profile(profile_name, update)
@@ -227,10 +227,12 @@ class CodexOAuthService:
             "model_verbosity": str(payload.get("model_verbosity") or "inherit"),
             "context_window": context_window,
             "supports_vision": "image" in (selected.get("input_modalities") or []),
-            "supports_web_search": bool(selected.get("supports_web_search")),
             "setup_status": "ready",
         }
         profile_service = get_codex_profile_service()
+        search_support = selected.get("supports_web_search")
+        if isinstance(search_support, bool):
+            update["supports_web_search"] = search_support
         ready_profile = profile_service.update_profile(profile_name, update)
         try:
             if bool(payload.get("make_default", True)):

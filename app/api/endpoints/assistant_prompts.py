@@ -27,6 +27,13 @@ from app.services.assistant_prompt_service import (
     read_rules,
     update_rules,
 )
+from app.services.lens_management import (
+    LensSettings,
+    policy_blocks,
+    read_settings,
+    runtime_status,
+    update_settings,
+)
 
 router = APIRouter()
 
@@ -34,6 +41,41 @@ router = APIRouter()
 class RuleUpdate(BaseModel):
     version: int = Field(ge=0)
     changes: dict[str, str | None]
+
+
+class LensUpdate(BaseModel):
+    version: int = Field(ge=0)
+    settings: LensSettings | None
+
+
+@router.get("/lens")
+def lens_config(db: Annotated[Session, Depends(get_db)], chat_id: int | None = None):
+    scope = {
+        "profiles": "所有 App Server Profiles 继承全局配置，无独立覆盖",
+        "chat": None,
+    }
+    if chat_id is not None:
+        from app.services.codex_permission_service import CodexPermissionService
+
+        user = chat(db, chat_id)
+        permissions = CodexPermissionService(db).resolve(user)
+        scope["chat"] = {
+            "name": user.chat_name,
+            "online_research": permissions.online_research,
+            "workspace_access": permissions.workspace_access,
+        }
+    return {**read_settings(db), "status": runtime_status(), "scope": scope}
+
+
+@router.put("/lens")
+def save_lens(request: LensUpdate, db: Annotated[Session, Depends(get_db)]):
+    try:
+        return {
+            **update_settings(db, request.settings, request.version),
+            "message": "已保存；新请求生效，进行中的请求保留原配置",
+        }
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 class PreviewRequest(BaseModel):
@@ -44,6 +86,7 @@ class PreviewRequest(BaseModel):
     # Drafts are validated using the same CRUD models below.
     draft: dict[str, Any] = Field(default_factory=dict)
     rule_draft: dict[str, str] = Field(default_factory=dict)
+    lens_draft: LensSettings | None = None
     history: str = Field(default="", max_length=60000)
     content: str = Field(default="你好，聊聊最近的游戏？", max_length=20000)
     sender: str = Field(default="测试用户", max_length=160)
@@ -179,6 +222,34 @@ def build_preview(request, db):
             history,
             f"[{datetime.now(timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M:%S')}] [{request.sender}]: {request.content}",
             rules=texts,
+        )
+        from app.services.codex_lens_tool import dynamic_tool_specs as lens_specs
+
+        lens_state = read_settings(db)
+        lens_settings = request.lens_draft or LensSettings(**lens_state["settings"])
+        lens_allowed = (
+            not user or CodexPermissionService(db).resolve(user).online_research
+        )
+        blocks.extend(policy_blocks(texts))
+        blocks.append(
+            block(
+                "lens_policy",
+                "Lens 运行参数（所有 Profiles）",
+                json.dumps(lens_settings.model_dump(), ensure_ascii=False, indent=2),
+                role="reference",
+            )
+        )
+        blocks.append(
+            block(
+                "lens_tools",
+                "Lens 工具定义（实际可用性取决于聊天权限）",
+                json.dumps(
+                    lens_specs(lens_settings) if lens_allowed else [],
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                role="reference",
+            )
         )
         from app.assistant.prompt_composer import output_contract
         from app.services.codex_delivery import delivery_instructions, delivery_schema

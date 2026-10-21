@@ -41,7 +41,13 @@ def message_timestamp(value: str, now: datetime) -> float | None:
         parsed = datetime.strptime(normalized, '%Y-%m-%d %H:%M:%S')
     except ValueError:
         return None
+    if now.tzinfo is not None:
+        parsed = parsed.replace(tzinfo=now.tzinfo)
     # A bare clock just after midnight may belong to the previous day.
-    if re.fullmatch(r'\d{1,2}:\d{2}', value) and parsed > now:
+    # A slightly ahead clock can come from client/server skew at a minute
+    # boundary. It is not evidence of yesterday: caching that date would
+    # suppress every following message until another separator appears.
+    if (re.fullmatch(r'\d{1,2}:\d{2}', value)
+            and parsed - now > timedelta(hours=12)):
         parsed -= timedelta(days=1)
     return parsed.timestamp() if parsed <= now else None

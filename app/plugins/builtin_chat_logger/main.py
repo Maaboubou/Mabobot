@@ -34,12 +34,15 @@ class ChatLoggerPlugin:
         kind = str(data.get("message_type") or event.type.value.removesuffix("_message_received"))
         if not data.get("chat_name"):
             return False
-        self.chat_log_manager.save_message(
+        row_id = self.chat_log_manager.save_message(
             data["chat_name"], str(data.get("sender") or "系统"),
             str(data.get("message") or f"[{kind}]"),
             sender_id=str(data.get("sender_id") or ""), message_type=kind,
             metadata={key: data[key] for key in ("file_id", "file_name", "file_path", "file_size", "file_sha256", "file_status") if data.get(key) is not None},
             **self._archive_fields(event))
+        if kind == "file" and row_id and self.is_attachment_path_enabled(chat_id=(event.context or {}).get("chat_id")):
+            self._save_attachment(data["chat_name"], row_id, str(data.get("file_path") or ""),
+                                  str(data.get("file_name") or ""))
         return False
 
     @ScopedConfigAttribute
@@ -89,6 +92,25 @@ class ChatLoggerPlugin:
         if isinstance(value, str):
             return value.strip().lower() in {"1", "true", "yes", "on"}
         return bool(value)
+
+    def is_attachment_path_enabled(self, *, chat_id=None):
+        try:
+            value = (self.context.config.resolve(chat_id=chat_id).get("attachment_path_enabled", False)
+                     if chat_id is not None else get_config(
+                         "attachment_path_enabled", False, plugin_name="builtin_chat_logger"))
+            return value.strip().lower() in {"1", "true", "yes", "on"} if isinstance(value, str) else bool(value)
+        except Exception:
+            logger.exception("无法读取附件路径设置")
+            return False
+
+    def _save_attachment(self, chat_name, row_id, file_path, name=""):
+        from app.history.attachments import attachment_metadata
+        try:
+            attachment = attachment_metadata(file_path, name=name)
+        except Exception:
+            logger.exception("附件路径获取失败: %s", chat_name)
+            attachment = {"status": "failed"}
+        self.chat_log_manager.update_attachment(chat_name, row_id, attachment)
 
     def describe_image_for_chat(self, image_base64: str, *, chat_id=None):
         """为不支持视觉输入的聊天模型复用聊天记录图片补充能力。"""
@@ -171,6 +193,8 @@ class ChatLoggerPlugin:
 
     def handle_image_message(self, event: Event):
         """处理图片消息事件"""
+        row_id = None
+        chat_name = ""
         try:
             if "image" not in self.log_message_types:
                 return False
@@ -186,6 +210,7 @@ class ChatLoggerPlugin:
 
             chat_id = (event.context or {}).get("chat_id")
             enrichment_enabled = self.is_image_enrichment_enabled(chat_id=chat_id)
+            path_enabled = self.is_attachment_path_enabled(chat_id=chat_id)
             message_id = event.data.get("message_id", "")
 
             # 先记录原始图片消息，再由后台任务原位补充其内容。这样不会制造
@@ -198,11 +223,15 @@ class ChatLoggerPlugin:
                 sender_remark=sender_remark,
                 message_type="image",
                 **self._archive_fields(event),
+                metadata={"attachment": {"status": "pending"}} if path_enabled else None,
                 image_enrichment={"status": "pending"} if enrichment_enabled else {"status": "disabled"},
             )
             logger.debug(f"📝 记录图片消息: {chat_name} - {sender}")
 
-            if enrichment_enabled and row_id:
+            if (enrichment_enabled or path_enabled) and row_id:
+                if path_enabled:
+                    from app.history.attachments import begin_attachment
+                    begin_attachment(chat_name, row_id)
                 data = dict(event.data or {})
                 data["_image_prefetch"] = (event.context or {}).get("image_prefetch")
                 wx_manager = (event.context or {}).get("wx")
@@ -215,6 +244,11 @@ class ChatLoggerPlugin:
             return False
         except Exception as e:
             logger.error(f"📝 记录图片消息失败: {e}")
+            if row_id:
+                from app.history.attachments import finish_attachment
+                finish_attachment(chat_name, row_id)
+                if path_enabled:
+                    self.chat_log_manager.update_attachment(chat_name, row_id, {"status": "failed"})
             return False
 
     def _process_image_enrichment(self, data, wx_manager, row_id: str, chat_id=None) -> None:
@@ -222,9 +256,15 @@ class ChatLoggerPlugin:
         chat_name = str(data.get("chat_name") or "")
         file_path = str(data.get("file_path") or "")
         message_id = data.get("message_id")
+        attachment_finished = False
         try:
-            if not self.is_image_enrichment_enabled(chat_id=chat_id):
+            enrichment_enabled = self.is_image_enrichment_enabled(chat_id=chat_id)
+            path_enabled = self.is_attachment_path_enabled(chat_id=chat_id)
+            if not enrichment_enabled:
                 self.chat_log_manager.update_image_enrichment(chat_name, row_id, status="disabled")
+            if not path_enabled:
+                self.chat_log_manager.update_attachment(chat_name, row_id, {"status": "disabled"})
+            if not enrichment_enabled and not path_enabled:
                 return
             prefetch = data.get("_image_prefetch")
             if prefetch is not None:
@@ -235,6 +275,13 @@ class ChatLoggerPlugin:
             if prefetch is None and (not file_path or not os.path.exists(file_path)) and wx_manager and message_id:
                 file_path = wx_manager.download_image_message(chat_name, message_id) or ""
 
+            if path_enabled:
+                self._save_attachment(chat_name, row_id, file_path)
+            from app.history.attachments import finish_attachment
+            finish_attachment(chat_name, row_id)
+            attachment_finished = True
+            if not enrichment_enabled:
+                return
             if not file_path or not os.path.exists(file_path):
                 self.chat_log_manager.update_image_enrichment(
                     chat_name,
@@ -273,6 +320,11 @@ class ChatLoggerPlugin:
                 error=str(e),
             )
             logger.error("📝 图片内容补充失败: %s", e)
+            if not attachment_finished and self.is_attachment_path_enabled(chat_id=chat_id):
+                self.chat_log_manager.update_attachment(chat_name, row_id, {"status": "failed"})
+        finally:
+            from app.history.attachments import finish_attachment
+            finish_attachment(chat_name, row_id)
 
     def handle_link_message(self, event: Event):
         """处理链接消息事件"""

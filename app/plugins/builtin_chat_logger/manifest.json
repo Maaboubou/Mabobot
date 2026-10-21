@@ -44,7 +44,8 @@
         "kind": "always",
         "summary": "记录图片，并按聊天记录设置在后台补充视觉内容与可见文字",
         "config_keys": [
-          "image_enrichment_enabled"
+          "image_enrichment_enabled",
+          "attachment_path_enabled"
         ],
         "conditions": []
       },
@@ -159,7 +160,9 @@
       "trigger": {
         "kind": "always",
         "summary": "保存原文与可用媒体信息",
-        "config_keys": [],
+        "config_keys": [
+          "attachment_path_enabled"
+        ],
         "conditions": []
       },
       "scope": {

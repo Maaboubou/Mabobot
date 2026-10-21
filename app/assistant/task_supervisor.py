@@ -17,6 +17,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from app.utils.source_message_policy import event_is_fresh, archive_expired_event
 
 logger = logging.getLogger(__name__)
 _task = ContextVar("assistant_task", default=None)
@@ -270,6 +271,9 @@ class AssistantTaskSupervisor:
         return text
 
     def dispatch(self, event, handler):
+        if not event_is_fresh(event):
+            archive_expired_event(event)
+            return False
         chat = str(event.data.get('chat_name') or '')
         if self._closed:
             return False
@@ -339,6 +343,10 @@ class AssistantTaskSupervisor:
             if self._closed:
                 self.store.update(task.id, status='interrupted', error='助手停止')
                 return False
+            if not event_is_fresh(event):
+                archive_expired_event(event)
+                self.store.update(task.id, status='skipped', error='源消息已过期或时间不明')
+                return False
             result = handler(event)
             status = 'failed' if task.error else 'completed' if result else 'delivery_failed' if task.result_ready else 'skipped'
             self.store.update(task.id, status=status, error=task.error or ('结果已生成，发送未确认' if status == 'delivery_failed' else None))
@@ -356,6 +364,9 @@ class AssistantTaskSupervisor:
 
     def submit_control(self, event, db_session_factory, handler):
         """Authorize control messages before a bounded, separate ingress lane."""
+        if not event_is_fresh(event):
+            archive_expired_event(event)
+            return
         from app.core.event_bus import EventType, _parse_sender_blacklist
         from app.models.user_permission import WeChatUser
         from app.models.assistant_policy import AssistantChatPolicy
@@ -389,6 +400,9 @@ class AssistantTaskSupervisor:
         event.data['_assistant_control_handled'] = True
 
     def _command(self, event, chat, silent=True):
+        if not event_is_fresh(event):
+            archive_expired_event(event)
+            return False
         match = re.fullmatch(r'任务\s+([0-9a-f]{8,32})\s+(状态|取消|补充\s+.+)', str(event.data.get('message') or '').strip(), re.S)
         if not match:
             return None

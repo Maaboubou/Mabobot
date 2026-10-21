@@ -179,7 +179,7 @@ class CodexPermissionService:
         version = row.version if row else 1
         effective = resolve_permission(values, {}, is_group=scope_type == "group", default_version=version, support=self.support)
         return {"scope_type": scope_type, "schema_version": 1, "version": version, "values": values,
-                "effective": effective.public(), "runtime_support": self.support, "apply_status": "unsupported" if effective.issues else "next_turn",
+                "effective": effective.public(), "runtime_support": self.support, "apply_status": "pending" if self.support.get("checked") is False else "unsupported" if effective.issues else "next_turn",
                 "updated_at": row.updated_at if row else None, "affected_chats": self.db.query(WeChatUser).filter(WeChatUser.is_group == (scope_type == "group")).count()}
 
     def update_defaults(self, scope_type, request):
@@ -211,16 +211,17 @@ class CodexPermissionService:
         row, defaults = self.defaults("group" if user.is_group else "private")
         override = self.db.get(CodexChatPermissionOverride, user.id)
         changes = _decode(override, "overrides_json") if override else {}
-        effective = self.resolve(user)
+        support = self.support_for(user)
+        effective = resolve_permission(defaults, changes, is_group=bool(user.is_group), default_version=row.version if row else 1, support=support)
         receipt = self.db.get(CodexPermissionReceipt, user.id)
         matched = receipt and receipt.runtime_instance in active_workers(self.db) and receipt.policy_signature == effective.policy_signature
-        status = "unsupported" if effective.issues else receipt.status if matched else "next_turn"
+        status = "pending" if support.get("checked") is False else "unsupported" if effective.issues else receipt.status if matched else "next_turn"
         return {"settings_mode": "custom" if changes else "inherit", "defaults": defaults, "default_version": row.version if row else 1,
                 "values": {**defaults, **changes}, "overrides": changes, "effective": effective.public(),
                 "sources": {key: "chat" if key in changes else "default" for key in FIELDS}, "fields": FIELD_SCHEMA,
                 "constraints": {"owner_full_allowed": not user.is_group, "boundaries": HARD_BOUNDARIES if effective.access_scope != "owner_full" else ["本机最大权限：可访问本机文件、命令及网络", "人工审批不会进入微信，残留审批立即拒绝"], "scope_display": "本机最大权限" if effective.access_scope == "owner_full" else "当前聊天独立空间"},
-                "runtime_support": self.support_for(user), "runtime": {"status": status, "policy_signature": effective.policy_signature,
-                "applied_at": receipt.applied_at if matched else None, "reason_codes": list(effective.issues) or ([receipt.reason_code] if matched and receipt.reason_code else [])}}
+                "runtime_support": support, "runtime": {"status": status, "policy_signature": effective.policy_signature,
+                "applied_at": receipt.applied_at if matched else None, "reason_codes": ["capability_check_pending"] if status == "pending" else list(effective.issues) or ([receipt.reason_code] if matched and receipt.reason_code else [])}}
 
     def apply_chat(self, user, patch):
         _, defaults = self.defaults("group" if user.is_group else "private")

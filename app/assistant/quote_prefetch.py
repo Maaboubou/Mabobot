@@ -11,6 +11,7 @@ import time
 from app.core.event_bus import EventType, _parse_sender_blacklist
 from app.models.assistant_policy import AssistantChatPolicy
 from app.models.user_permission import WeChatUser
+from app.utils.source_message_policy import event_is_fresh
 
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ class QuoteImagePrefetch:
     path_key = "quote_image_path"
     context_key = PREFETCH_CONTEXT_KEY
     download_method = "download_quote_image"
+    retain_original_path = False
 
     def __init__(self, handler, db_session_factory, directory=None):
         self.handler = handler
@@ -39,6 +41,8 @@ class QuoteImagePrefetch:
                 path.unlink(missing_ok=True)
 
     def _allowed(self, event):
+        if not event_is_fresh(event):
+            return False
         data = event.data
         chat = str(data.get("chat_name") or "")
         sender = str(data.get("sender") or "").strip()
@@ -103,6 +107,8 @@ class QuoteImagePrefetch:
             if not source or not Path(source).is_file():
                 raise RuntimeError("原引用图片未能下载")
             source = Path(source)
+            if self.retain_original_path:
+                return {"path": str(source), "status": "ready"}
             digest = hashlib.sha256("\x1f".join(key).encode()).hexdigest()
             suffix = source.suffix.lower()
             if suffix not in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}:
@@ -133,6 +139,7 @@ class ImagePrefetch(QuoteImagePrefetch):
     path_key = "file_path"
     context_key = "image_prefetch"
     download_method = "download_image_message"
+    retain_original_path = True
 
     def __init__(self, handler, db_session_factory, directory=None):
         super().__init__(handler, db_session_factory, directory or
@@ -140,6 +147,8 @@ class ImagePrefetch(QuoteImagePrefetch):
 
     def _allowed(self, event):
         from app.plugins.builtin_chat_logger.main import chat_logger_plugin
+        if not event_is_fresh(event):
+            return False
         if chat_logger_plugin is None or "image" not in chat_logger_plugin.log_message_types:
             return False
         with self.db_session_factory() as db:
@@ -152,7 +161,8 @@ class ImagePrefetch(QuoteImagePrefetch):
                 return False
             if permission.require_mention and event.data.get("chat_type") == "group" and not self.handler._event_mentions_bot(event):
                 return False
-            return chat_logger_plugin.is_image_enrichment_enabled(chat_id=user.id)
+            return (chat_logger_plugin.is_image_enrichment_enabled(chat_id=user.id)
+                    or chat_logger_plugin.is_attachment_path_enabled(chat_id=user.id))
 
 
 def resolve_quote_image_prefetch(event):

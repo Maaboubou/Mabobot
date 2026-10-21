@@ -33,6 +33,20 @@ def empty_metrics():
     return {**dict.fromkeys(SUM_FIELDS, 0), "costs": {}, "models": {}, "cost_statuses": {}, "cost_sources": {}, "last_call": None}
 
 
+def output_tokens_per_second(usage, duration):
+    """Average output throughput over the full request, including waiting time."""
+    usage = usage or {}
+    output = usage.get("completion_tokens", usage.get("output_tokens"))
+    try:
+        output, seconds = float(output), float(duration)
+        if math.isfinite(output) and output >= 0 and math.isfinite(seconds) and seconds > 0:
+            speed = output / seconds
+            return round(speed, 2) if math.isfinite(speed) else None
+    except (TypeError, ValueError, OverflowError):
+        pass
+    return None
+
+
 def merge_metrics(target, source):
     for field in SUM_FIELDS:
         target[field] += number(source.get(field))
@@ -129,7 +143,7 @@ class LLMUsageService:
 
     def record(self, *, task, subject, model, success, usage=None, duration=None, cost=None, currency=None,
                pricing=None, raw=None, connection=None, request_id=None, logical_id=None, provider_request_id=None,
-               recorded_at=None, scope="request"):
+               recorded_at=None, scope="request", generation_timing=None):
         now = recorded_at or self.clock()
         request_id = request_id or uuid.uuid4().hex
         pricing = pricing or {"amount": str(cost) if cost is not None else None, "currency": currency,
@@ -167,7 +181,8 @@ class LLMUsageService:
         payload = {"id": request_id, "logical_id": logical_id or request_id, "recorded_at": now.isoformat(),
                    "model": model, "connection": connection or {}, "success": bool(success), "usage": usage,
                    "raw_usage": raw or {}, "pricing": pricing, "duration": duration,
-                   "provider_request_id": provider_request_id, "scope": scope}
+                   "provider_request_id": provider_request_id, "scope": scope,
+                   "generation_timing": generation_timing}
         if duration is not None:
             metrics.update(duration_total=number(duration), duration_calls=1)
         with self._connect() as db:
@@ -226,6 +241,23 @@ class LLMUsageService:
                 FROM usage_aggregate a JOIN usage_subject s ON a.subject=s.key WHERE {where}""", params).fetchall()
             subject_row = db.execute("SELECT * FROM usage_subject WHERE key=?", (subject,)).fetchone() if subject else None
             earliest = db.execute("SELECT MIN(bucket) FROM usage_aggregate WHERE bucket LIKE 'day:%'").fetchone()[0]
+            # Derive business outcomes from durable history, including old data.
+            # Keep legacy aggregates unchanged: they also power billing charts.
+            request_where, request_params = [], []
+            if start:
+                request_where.extend(["recorded_at >= ?", "recorded_at < ?"])
+                request_params.extend([start, (now.date() + timedelta(days=1)).isoformat()])
+            elif period == "session":
+                request_where.append("run_id = ?")
+                request_params.append(meta.get("active_run", self.run_id))
+            if subject:
+                request_where.append("subject = ?")
+                request_params.append(subject)
+            outcomes = db.execute(f"""SELECT subject, task,
+                MAX(CASE WHEN json_extract(payload, '$.success') THEN 1 ELSE 0 END) AS succeeded,
+                MAX(CASE WHEN json_extract(payload, '$.success') THEN 0 ELSE 1 END) AS had_failure
+                FROM usage_request WHERE {' AND '.join(request_where) or '1=1'}
+                GROUP BY subject, task, logical_id""", request_params).fetchall()
         totals = empty_metrics()
         groups = {}
         for record in records:
@@ -237,7 +269,15 @@ class LLMUsageService:
                                "kind": record["kind"] if view == "chat" else "task", "metrics": empty_metrics()}
             merge_metrics(groups[key]["metrics"], metrics)
         for metrics in [totals, *(group["metrics"] for group in groups.values())]:
+            metrics.update(tasks=0, task_successes=0, task_unresolved=0, task_recovered=0)
             metrics["costs"] = {key: float(value) for key, value in metrics["costs"].items()}
+        for outcome in outcomes:
+            key = outcome["subject"] if view == "chat" else outcome["task"]
+            for metrics in (totals, groups[key]["metrics"]):
+                metrics["tasks"] += 1
+                metrics["task_successes"] += outcome["succeeded"]
+                metrics["task_unresolved"] += 1 - outcome["succeeded"]
+                metrics["task_recovered"] += int(bool(outcome["succeeded"] and outcome["had_failure"]))
         return {
             "period": period, "view": view, "subject": dict(subject_row) if subject_row else None,
             "totals": totals, "rows": list(groups.values()),
@@ -305,6 +345,9 @@ class LLMUsageService:
             unknown_count = sum(row["count"] for row in scopes if row["scope"] != "request")
             rows = db.execute(f"SELECT payload FROM usage_request WHERE {sql} ORDER BY recorded_at DESC, id DESC LIMIT ? OFFSET ?",
                               [*params, max(1, min(100, limit)), max(0, offset)]).fetchall()
-        return {"rows": [json.loads(row[0]) for row in rows], "total": total,
+        entries = [json.loads(row[0]) for row in rows]
+        for entry in entries:
+            entry["output_tokens_per_second"] = output_tokens_per_second(entry.get("usage"), entry.get("duration"))
+        return {"rows": entries, "total": total,
                 "request_count": request_count, "summary_count": unknown_count,
                 "request_count_exact": unknown_count == 0}

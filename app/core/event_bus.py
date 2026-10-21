@@ -18,6 +18,9 @@ import time
 from app.services.llm_usage_context import usage_context
 from app.services.plugin_activity import record_message_trigger
 from mabobot_logging import log_context
+from app.utils.source_message_policy import (
+    event_is_fresh, has_source_policy, archive_expired_event, SourceMessageActionProxy,
+)
 
 from sqlalchemy.orm import Session
 from app.models.assistant_policy import AssistantChatPolicy
@@ -258,6 +261,11 @@ class EventBus:
 
     def _enqueue_user_event(self, chat_name: str, event: Event) -> None:
         """Enqueue event to user-specific queue"""
+        if not event_is_fresh(event):
+            archive_expired_event(event)
+            return
+        if has_source_policy(event) and event.context.get("wx") is not None:
+            event.context["wx"] = SourceMessageActionProxy(event.context["wx"], event)
         if self._is_inbound_message_event(event):
             with self._lock:
                 sequence = self._chat_ingress_sequences.get(chat_name, 0) + 1
@@ -416,6 +424,9 @@ class EventBus:
 
     def _process_event_sync(self, event: Event) -> None:
         """同步处理事件（原publish方法的核心逻辑）"""
+        if not event_is_fresh(event):
+            archive_expired_event(event)
+            return
         # 获取对应事件类型的监听器
         with self._lock:
             listeners = self._listeners.get(event.type, [])
@@ -551,6 +562,9 @@ class EventBus:
         # or waits for a model. Keep configured order within each phase.
         final_listeners.sort(key=lambda item: item.propagation != "observe")
         for listener in final_listeners:
+            if not event_is_fresh(event):
+                archive_expired_event(event)
+                return
             # Consumption belongs to one listener. Only its propagation policy
             # can stop dispatch, including dispatch to the core assistant.
             for carrier in (getattr(event, "data", None), getattr(event, "context", None)):
@@ -562,6 +576,8 @@ class EventBus:
                 self.logger.debug(f"Executing handler for {listener.plugin_name} for user {chat_name}")
                 # 为本次调用注入 wx 代理：当插件调用发送相关方法时自动标记已消费
                 original_wx = event.context.get("wx")
+                guarded_wx = (SourceMessageActionProxy(original_wx, event)
+                              if original_wx is not None and has_source_policy(event) else original_wx)
                 proxy_installed = False
 
                 if original_wx is not None:
@@ -735,7 +751,7 @@ class EventBus:
 
                     try:
                         consume_proxy = _WxConsumeProxy(
-                            original_wx,
+                            guarded_wx,
                             event,
                             listener.plugin_name,
                             listener.owner_kind,

@@ -1800,6 +1800,11 @@ class AssistantHandler:
                     messages = self._attach_images_to_latest_user_message(
                         messages,
                         [str(item.get("base64") or "") for item in visual_inputs],
+                        media_metadata=[
+                            {"kind": "video_frame", "timestamp_seconds": item.get("timestamp_seconds"),
+                             "position_percent": item.get("position_percent")}
+                            for item in visual_inputs
+                        ] if is_video_quote else None,
                     )
                 elif is_video_quote:
                     messages, _ = self._strip_image_content_parts(
@@ -1941,6 +1946,8 @@ class AssistantHandler:
         cls,
         messages: List[Dict],
         images_base64: List[str],
+        *,
+        media_metadata: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict]:
         """在本轮最新用户消息上附加一张或多张隔离图片。"""
         image_values = [str(value or "").strip() for value in images_base64 if str(value or "").strip()]
@@ -1952,11 +1959,13 @@ class AssistantHandler:
             preserve_latest_user_annotation=True,
         )
         image_parts = []
-        for image_value in image_values:
+        for index, image_value in enumerate(image_values):
             image_url = image_value
             if not image_url.startswith("data:image/"):
                 image_url = f"data:image/jpeg;base64,{image_url}"
             image_parts.append({"type": "image_url", "image_url": {"url": image_url}})
+            if media_metadata and index < len(media_metadata):
+                image_parts[-1]["mabobot_media"] = copy.deepcopy(media_metadata[index])
 
         for msg in reversed(prepared):
             if msg.get("role") != "user" or msg.get("name") == "search_context":
@@ -2021,7 +2030,7 @@ class AssistantHandler:
         *,
         transcript: str = "",
     ) -> str:
-        """绑定当前视频的抽帧与不可靠的语音转写，并要求核查出处。"""
+        """绑定当前视频的抽帧与不可靠的语音转写，按问题需要核查出处。"""
         content = str(content or "").strip()
         if not visual_inputs:
             binding = (
@@ -2047,14 +2056,7 @@ class AssistantHandler:
             "【当前引用视频】本条消息附带的图片是同一个被引用视频的"
             f"四个时间分段中点抽帧（{frame_note}），按时间顺序排列。"
             "请结合四张图回答用户，但不要声称看到了抽帧之间的动作或听到了声音。"
-            "无论用户是否明确追问出处，都要主动检查画面中的水印、账号名、"
-            "标题、字幕、标志和地标等线索，并使用网页搜索尝试找到原始发布页或可靠出处。"
-            "核查用于提高回答准确性，最终仍按当前角色的口吻和聊天节奏回答。"
-            "只有用户本轮明确索要来源、出处或原文链接时，才附上可靠来源链接；"
-            "问视频里的地点、人物、内容或真假，本身不等于索要来源，默认不附链接。"
-            "找不到时不得编造，"
-            "也不要汇报检索步骤、缺少了哪些视觉线索，或追加模板化的免责说明。"
-            "只有当用户明确询问出处时，才需要直接回答当前的查证结果。"
+            "不得凭画面辨认真人身份；页面署名不能断言是画面中的人。"
             "历史聊天只作为语气和背景参考，不要借用历史中的其他图片猜测。"
         )
         if visual_inputs:

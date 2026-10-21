@@ -17,6 +17,7 @@ import uuid
 from contextvars import ContextVar
 from importlib.metadata import version as package_version
 from app.services.llm_pricing import normalize_usage, price_usage, raw_usage, read, decimal
+from app.services.generation_timing import GenerationTiming
 
 _usage_call = ContextVar("llm_billing_call", default=None)
 from typing import List, Dict, Optional, Any
@@ -2197,8 +2198,9 @@ class LLMManager:
                 usage = response.get("usage")
             else:
                 usage = getattr(response, "usage", None)
+        timing = read(response, "generation_timing")
         if not usage:
-            return {}
+            return {"generation_timing": timing} if timing else {}
 
         total_tokens = self._usage_value(usage, "total_tokens")
         prompt_tokens = self._usage_value(usage, "prompt_tokens")
@@ -2226,7 +2228,7 @@ class LLMManager:
             or self._usage_value(usage, "reasoning_tokens")
         )
 
-        result = {}
+        result = {"generation_timing": timing} if timing else {}
         for key, value in {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
@@ -2690,35 +2692,90 @@ class LLMManager:
         retries = int(params.get("max_retries", params.get("num_retries", 2)) or 0)
         params = {**params, "max_retries": 0, "num_retries": 0}
         params.pop("fallbacks", None)
+        # Buffer the stream to preserve the synchronous caller contract.
+        buffered = "stream" not in params and params.get("n", 1) == 1 and not params.get("modalities")
+        if buffered:
+            params["stream"] = True
         if params.get("stream"):
             params["stream_options"] = {**(params.get("stream_options") or {}), "include_usage": True}
-        for retry in range(retries + 1):
+        for retry in range(retries + 2):
             started, at = time.monotonic(), datetime.now().astimezone()
+            stream_recorded = False
             context["attempts"] += 1
             try:
                 response = litellm.completion(**params)
+                # Some compatible gateways ignore stream=True and return a full response.
+                if params.get("stream") and read(response, "choices") is None and not isinstance(response, dict):
+                    timing = GenerationTiming(started)
+                    timing.interrupted = params.get("n", 1) != 1
+                    measured = None
+                    upstream = response
+                    def tracked_stream():
+                        nonlocal stream_recorded, measured
+                        last_usage = None
+                        ok = False
+                        try:
+                            for chunk in upstream:
+                                for choice in read(chunk, "choices", []) or []:
+                                    delta = read(choice, "delta")
+                                    timing.observe(read(delta, "content"))
+                                    functions = [read(call, "function") for call in read(delta, "tool_calls", []) or []]
+                                    functions.append(read(delta, "function_call"))
+                                    if (read(delta, "reasoning_content") or read(delta, "reasoning")
+                                            or any(read(fn, "name") or read(fn, "arguments") for fn in functions)):
+                                        timing.observe_output()
+                                    if len(read(chunk, "choices", []) or []) > 1:
+                                        timing.interrupted = True
+                                if read(chunk, "usage") is not None:
+                                    last_usage = chunk
+                                yield chunk
+                            timing.finish()
+                            ok = True
+                        finally:
+                            finished = time.monotonic()
+                            close = getattr(upstream, "close", None)
+                            if callable(close):
+                                try:
+                                    close()
+                                except Exception:
+                                    pass
+                            measured = timing.snapshot(
+                                usage=raw_usage(read(last_usage, "usage")), complete=ok,
+                            )
+                            payload = {"usage": read(last_usage, "usage"), "model": read(last_usage, "model"),
+                                       "id": read(last_usage, "id"), "generation_timing": measured}
+                            stream_recorded = True
+                            self._record_usage(context["plugin"], context["task"], model_id, payload,
+                                               finished - started, success=ok, metadata=context["metadata"], config=config, at=at)
+                    if not buffered:
+                        return tracked_stream()
+                    chunks = list(tracked_stream())
+                    response = litellm.stream_chunk_builder(chunks, messages=params.get("messages"))
+                    if response is None:
+                        raise ValueError("Unable to assemble streamed model response")
+                    # Keep provider usage authoritative; the builder may synthesize counts.
+                    provider_usage = next((read(c, "usage") for c in reversed(chunks) if read(c, "usage") is not None), None)
+                    response.usage = provider_usage
+                    response.generation_timing = measured
+                    return response
             except Exception as exc:
-                self._record_usage(context["plugin"], context["task"], model_id, getattr(exc, "response", None),
-                                   time.monotonic() - started, success=False, metadata=context["metadata"], config=config, at=at, error=str(exc))
+                if not stream_recorded:
+                    self._record_usage(context["plugin"], context["task"], model_id, getattr(exc, "response", None),
+                                       time.monotonic() - started, success=False, metadata=context["metadata"], config=config, at=at, error=str(exc))
                 code = getattr(exc, "status_code", None)
+                message = str(exc).lower()
+                if (buffered and not stream_recorded and code in {400, 422}
+                        and "stream" in message and any(word in message for word in ("unsupported", "not support", "not allowed"))):
+                    # An explicit rejection may fall back once; never resubmit a
+                    # partially consumed stream just to obtain a speed measurement.
+                    buffered = False
+                    params["stream"] = False
+                    params.pop("stream_options", None)
+                    continue
                 if retry < retries and (self._is_network_error(exc) or code in {408, 409, 429} or isinstance(code, int) and code >= 500):
                     time.sleep(min(2 ** retry, 8))
                     continue
                 raise
-            if params.get("stream"):
-                def tracked_stream():
-                    last = None
-                    ok = False
-                    try:
-                        for chunk in response:
-                            if read(chunk, "usage") is not None:
-                                last = chunk
-                            yield chunk
-                        ok = True
-                    finally:
-                        self._record_usage(context["plugin"], context["task"], model_id, last,
-                                           time.monotonic() - started, success=ok, metadata=context["metadata"], config=config, at=at)
-                return tracked_stream()
             self._record_usage(context["plugin"], context["task"], model_id, response,
                                time.monotonic() - started, success=True, metadata=context["metadata"], config=config, at=at)
             return response
@@ -2766,7 +2823,7 @@ class LLMManager:
                 shared = {**(metadata or {}), "billing_logical_id": uuid.uuid4().hex, "billing_scope": "codex_turn"}
                 for index, segment in enumerate(segments):
                     self._record_usage(plugin_name, call_type, model_id,
-                                       {"model": actual, "usage": segment, "id": f"{read(response, 'id', '')}:{index}"},
+                                       {"model": actual, "usage": segment, "generation_timing": segment.get("generation_timing"), "id": f"{read(response, 'id', '')}:{index}"},
                                        duration if index == len(segments) - 1 else None,
                                        success=success, metadata={**shared, "billing_scope": segment.get("billing_scope", "codex_turn")}, config=config, at=at)
                 return
@@ -2794,6 +2851,7 @@ class LLMManager:
             connection = {"id": model_id, "provider": provider, "host": base.hostname or "", "codex": codex}
             service.record(task=f"{plugin_name}.{call_type}", subject=resolve_usage_subject(metadata), model=actual,
                            success=success, usage=usage, duration=duration, pricing=pricing, raw=raw_usage(raw),
+                           generation_timing=read(response, "generation_timing"),
                            connection=connection, logical_id=context["id"] if context else (metadata or {}).get("billing_logical_id"),
                            provider_request_id=str(read(response, "id") or "")[:200],
                            scope=(metadata or {}).get("billing_scope") or ("codex_turn" if codex else "request"))

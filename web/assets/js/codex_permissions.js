@@ -6,32 +6,41 @@ const CodexPermissions = {
     foldOpen: false,
     drafts: {},
     requestId: 0,
-    statuses: { effective: '已生效', next_turn: '下一轮生效', refreshing: '正在刷新', unsupported: '运行时不支持', failed: '应用失败' },
+    statuses: { effective: '已生效', next_turn: '下一轮生效', refreshing: '正在刷新', unsupported: '部分功能受限', failed: '应用失败' },
+    isPending(data) {
+        return data.runtime_support?.checked === false || (data.runtime?.status || data.apply_status) === 'pending';
+    },
     reasons: {
-        permission_profile_unavailable: '文件隔离尚未通过运行时验证，不能显示已生效。',
-        network_proxy_unavailable: '公共互联网暂不可用：网络代理尚未通过验证。',
-        auto_review_unavailable: '自动审阅暂不可用：审阅器尚未通过运行时验证，当前直接拒绝越界操作。',
-        online_research_partial: '在线研究仅部分可用，请查看下方各通道状态。',
-        online_research_unavailable: '在线研究工具尚未通过运行时验证。'
+        permission_profile_unavailable: '尚未确认聊天文件隔离已生效，请管理员检查服务配置。',
+        network_proxy_unavailable: '命令暂时无法连接公共互联网，联网通道尚未通过检查。',
+        auto_review_unavailable: '自动审阅尚未通过检查，超出权限的操作会直接拒绝。',
+        online_research_partial: '部分联网功能暂时无法使用。',
+        online_research_unavailable: '搜索、网页浏览和文件下载尚未通过检查。'
     },
 
     summary(effective = {}) {
         const e = UI.escapeHtml;
         return `<p class="mb-2">${effective.workspace_access === 'read_only' ? '工作区只读' : '工作区可读写'} · ${effective.public_network ? '可访问公共互联网' : '禁止公共互联网'} · ${effective.boundary_action === 'auto_review' ? '自动审阅越界操作' : '直接拒绝越界操作'}</p>
-            <p class="text-muted mb-2">原生搜索：${effective.web_search_mode === 'live' ? '允许' : '禁止'} · 浏览器：${effective.browser_allowed ? '允许' : '禁止'} · 审核下载：${effective.reviewed_download_allowed ? '允许' : '禁止'}</p>
+            <p class="text-muted mb-2">内置搜索：${effective.web_search_mode === 'live' ? '允许' : '禁止'} · 浏览器：${effective.browser_allowed ? '允许' : '禁止'} · 文件下载：${effective.reviewed_download_allowed ? '允许' : '禁止'}</p>
             ${effective.boundary_action === 'auto_review' ? '<p class="text-muted mb-2">越界请求由自动审阅判断，允许后继续执行，拒绝后停止该操作。模型审阅可能出错。</p>' : ''}
-            ${(effective.issues || []).map(code => `<p class="text-muted mb-1">${e(this.reasons[code] || '权限应用需要检查运行时')}</p>`).join('')}`;
+            ${(effective.issues || []).map(code => `<p class="text-muted mb-1">${e(this.issueText(code, effective))}</p>`).join('')}`;
     },
 
     researchDetail(effective = {}) {
-        return `原生搜索${effective.web_search_mode === 'live' ? '可用' : '不可用'}、浏览器${effective.browser_allowed ? '可用' : '不可用'}、审核下载${effective.reviewed_download_allowed ? '可用' : '不可用'}`;
+        const available = [], unavailable = [];
+        const capabilities = [
+            ['内置搜索', effective.web_search_mode === 'live'],
+            ['打开网页', effective.browser_allowed],
+            ['下载文件', effective.reviewed_download_allowed]
+        ];
+        capabilities.forEach(([label, enabled]) => (enabled ? available : unavailable).push(label));
+        return [unavailable.length ? `${unavailable.join('、')}暂不可用` : '',
+            available.length ? `仍可使用：${available.join('、')}` : '当前无法使用在线研究工具'].filter(Boolean).join('；') + '。';
     },
 
-    /** Issue copy has to stand on its own: the defaults card no longer lists derived channels. */
     issueText(code, effective = {}) {
-        if (code === 'online_research_partial') return `在线研究仅部分可用：${this.researchDetail(effective)}。`;
-        if (code === 'online_research_unavailable') return `在线研究工具尚未通过运行时验证：${this.researchDetail(effective)}。`;
-        return this.reasons[code] || '权限应用需要检查运行时';
+        if (code === 'online_research_partial' || code === 'online_research_unavailable') return this.researchDetail(effective);
+        return this.reasons[code] || '尚未确认权限已生效，请管理员检查服务状态';
     },
 
     /** Compact, single-card form for the Codex center defaults editor. */
@@ -39,14 +48,15 @@ const CodexPermissions = {
         const e = UI.escapeHtml;
         const values = data.values || {};
         const effective = data.effective || {};
-        const issues = (effective.issues || []).map(code => this.issueText(code, effective));
+        const pending = this.isPending(data);
+        const issues = pending ? [] : (effective.issues || []).map(code => this.issueText(code, effective));
         const boundaries = data.constraints?.boundaries || this.schema?.hard_boundaries || [];
         const scopeLabel = data.scope_type === 'group' ? '群聊' : '私聊';
         const runtime = this.statuses[data.apply_status] || '正在刷新';
         return `<form class="codex-permission-form">
             <div class="codex-permission-toolbar">
                 <div class="chat-policy-permission-options codex-permission-segment" role="radiogroup" aria-label="权限作用范围">${[['group', '群聊默认'], ['private', '私聊默认']].map(([scope, label]) => `<label><input type="radio" name="default_scope" value="${scope}" ${data.scope_type === scope ? 'checked' : ''}> ${label}</label>`).join('')}</div>
-                <div class="codex-permission-runtime" role="status" aria-live="polite">${data.apply_status && data.apply_status !== 'next_turn' ? `<strong>有效权限 · ${e(runtime)}</strong>` : ''}</div>
+                <div class="codex-permission-runtime" role="status" aria-live="polite">${!pending && data.apply_status && data.apply_status !== 'next_turn' ? `<strong>有效权限 · ${e(runtime)}</strong>` : ''}</div>
             </div>
             ${issues.length ? `<div class="codex-permission-issues" role="note"><i class="bi bi-exclamation-triangle" aria-hidden="true"></i><div>${issues.map(text => `<p>${e(text)}</p>`).join('')}</div></div>` : ''}
             <div class="chat-policy-field-grid two chat-policy-permission-grid codex-permission-grid">${fields.map(field => `<fieldset class="chat-policy-permission-field codex-permission-field" data-permission-field="${e(field.key)}">
@@ -61,13 +71,53 @@ const CodexPermissions = {
             <details class="system-fold codex-permission-boundaries"><summary>查看系统固定边界</summary><div class="mt-2">
                 <p>${e(data.constraints?.scope_display || '每个聊天使用独立空间')}</p>
                 ${boundaries.map(text => `<p class="mb-1">${e(text)}</p>`).join('')}
-                <p>${e(data.runtime_support?.reason || '运行时已完成能力检查')}</p>
+                ${!pending && data.runtime_support?.reason ? `<p>${e(data.runtime_support.reason)}</p>` : ''}
                 <p class="text-muted">插件网络和账号继续由“功能插件”授权管理。</p>
             </div></details>
         </form>`;
     },
 
+    renderChat(data, fields, prefix) {
+        const e = UI.escapeHtml;
+        const custom = data.settings_mode === 'custom';
+        const values = data.values || data.defaults || {};
+        const runtime = data.runtime || { status: data.apply_status };
+        const effective = data.effective || {};
+        const pending = this.isPending(data);
+        const boundaries = data.constraints?.boundaries || this.schema?.hard_boundaries || [];
+        const labels = { public_network: ['禁止', '允许'], online_research: ['禁止', '允许'], boundary_action: ['直接拒绝', '自动审阅'] };
+        const hints = { workspace_access: '仅限当前聊天空间', public_network: '命令执行时的联网权限', online_research: '搜索、浏览器与审核下载', boundary_action: '超出当前权限时' };
+        return `<section class="chat-policy-block chat-permission-compact" data-permission-editor="${e(prefix)}">
+            <div class="chat-permission-toolbar">
+                <fieldset class="chat-policy-permission-field"><legend class="visually-hidden">权限来源</legend><div class="chat-policy-permission-options chat-permission-segment">
+                    ${[['inherit', '跟随默认'], ['custom', '本聊天自定义']].map(([value, label]) => `<label><input type="radio" name="permission_mode" value="${value}" ${custom === (value === 'custom') ? 'checked' : ''}><span>${label}</span></label>`).join('')}
+                </div></fieldset>
+                <div class="chat-permission-status" role="status" aria-live="polite" ${pending ? 'hidden' : ''}>${pending ? '' : e(this.statuses[runtime.status] || '正在刷新')}</div>
+            </div>
+            ${!pending && (effective.issues || []).length ? `<div class="codex-permission-issues" role="note">${effective.issues.map(code => `<p>${e(this.issueText(code, effective))}</p>`).join('')}</div>` : ''}
+            <div class="chat-permission-rows">${fields.map(field => `<fieldset class="chat-policy-permission-field" data-permission-field="${e(field.key)}" ${custom ? '' : 'disabled'}>
+                <legend class="visually-hidden">${e(field.label)}</legend>
+                <div class="chat-permission-row"><div class="chat-permission-copy"><span>${e(field.label)}</span>${data.sources?.[field.key] === 'chat' ? '<small class="chat-permission-source">本聊天已自定义</small>' : ''}<small>${e(hints[field.key] || field.help)}</small></div>
+                <div><div class="chat-policy-permission-options chat-permission-segment">${field.options.map((option, index) => `<label for="${prefix}-${e(field.key)}-${index}"><input id="${prefix}-${e(field.key)}-${index}" type="radio" name="permission_${e(field.key)}" value="${e(JSON.stringify(option.value))}" ${values[field.key] === option.value ? 'checked' : ''}><span>${e(labels[field.key]?.[index] || option.label)}</span></label>`).join('')}</div>
+                ${field.key === 'boundary_action' ? `<p class="chat-permission-caveat" data-chat-permission-caveat ${values.boundary_action === 'auto_review' ? '' : 'hidden'}>模型审阅可能出错；获准后才执行。</p>` : ''}</div></div>
+            </fieldset>`).join('')}</div>
+            ${data.constraints?.owner_full_allowed ? `<details class="system-fold mt-3" ${values.access_scope === 'owner_full' ? 'open' : ''}><summary>管理员私聊访问范围${values.access_scope === 'owner_full' ? ' · 本机最大权限' : ''}</summary>
+                <label class="d-block mt-2">Codex 访问范围<select class="form-select" name="codex_mode" data-private-value="${e(values.access_scope || 'isolated')}"><option value="isolated">隔离空间</option><option value="owner_full" ${values.access_scope === 'owner_full' ? 'selected' : ''}>管理员 · 本机最大权限</option></select></label>
+                <p class="text-muted">仅可为本人可控的管理员私聊显式启用；文件和命令范围将扩大。</p></details>` : '<input type="hidden" name="codex_mode" value="isolated">'}
+            <details class="system-fold chat-permission-details"><summary>权限说明与固定边界</summary><div class="mt-2">
+                ${fields.map(field => `<p><strong>${e(field.label)}</strong>：${e(field.help)}</p>`).join('')}
+                <p>${e(data.constraints?.scope_display || '每个聊天使用独立空间')}</p>
+                ${boundaries.map(text => `<p>${e(text)}</p>`).join('')}
+                <p>插件网络和账号继续由“功能插件”授权管理。</p>
+                <p>保存后下一轮生效，进行中的轮次保持原权限。</p>
+                ${!pending ? `<details><summary>查看实际生效权限</summary>${this.summary(effective)}${runtime.applied_at ? `<p>${e(UI.formatDateTime(runtime.applied_at))}</p>` : ''}<p>${e(data.runtime_support?.reason || '')}</p></details>` : ''}
+            </div></details>
+            <button type="button" class="btn btn-outline-secondary mt-3" data-permission-reset>恢复默认</button>
+        </section>`;
+    },
+
     render(data, fields, { chat = false, prefix = 'codex-default' } = {}) {
+        if (chat) return this.renderChat(data, fields, prefix);
         const e = UI.escapeHtml;
         const custom = data.settings_mode === 'custom';
         const values = data.values || data.defaults || {};
@@ -112,6 +162,11 @@ const CodexPermissions = {
     bindChat(root, data) {
         if (!root || !data.fields) return;
         root._permissions = data;
+        const syncCaveat = () => {
+            const caveat = root.querySelector('[data-chat-permission-caveat]');
+            if (caveat) caveat.hidden = root.querySelector('[name="permission_boundary_action"]:checked')?.value !== JSON.stringify('auto_review');
+        };
+        root.addEventListener('change', syncCaveat);
         root.querySelectorAll('[name="permission_mode"]').forEach(input => input.addEventListener('change', () => {
             const custom = root.querySelector('[name="permission_mode"]:checked')?.value === 'custom';
             root.querySelectorAll('[data-permission-field]').forEach(field => {

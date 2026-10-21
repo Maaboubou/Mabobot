@@ -11,7 +11,7 @@ from .mattr import FriendMessage, SelfMessage
 
 TIME_RE = re.compile(r"^\d{1,2}:\d{2}$")
 DATE_TIME_RE = re.compile(
-    r"^(?:\d{1,4}[/-]\d{1,2}[/-]\d{1,2}|\d{1,2}月\d{1,2}日|昨天|前天|今天|星期[一二三四五六日天])\s+\d{1,2}:\d{2}$"
+    r"^(?:\d{1,4}[/-]\d{1,2}[/-]\d{1,2}|(?:\d{4}年)?\d{1,2}月\d{1,2}日|昨天|前天|今天|星期[一二三四五六日天])\s+\d{1,2}:\d{2}$"
 )
 VOICE_RE = re.compile(r"^\[语音\]|^语音\s*\d", re.IGNORECASE)
 IMAGE_RE = re.compile(r"^(?:\[图片\]|图片\b)", re.IGNORECASE)

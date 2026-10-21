@@ -12,6 +12,7 @@ class ChatSettingsPatch(BaseModel):
     is_group: Optional[bool] = None
     listening_enabled: Optional[bool] = None
     attachment_content_review_enabled: Optional[bool] = None
+    chat_log_enabled: Optional[bool] = None
     sender_blacklist: Optional[List[str]] = Field(default=None, max_length=200)
     bot_group_nickname: Optional[str] = Field(default=None, max_length=128)
     bot_group_nickname_auto_enabled: Optional[bool] = None

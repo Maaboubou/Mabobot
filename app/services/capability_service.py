@@ -231,6 +231,7 @@ FIELD_TITLE_OVERRIDES = {
     "search_max_results": "搜索结果上限",
     "search_fetch_max_pages": "深入读取网页数",
     "search_timeout_seconds": "搜索超时",
+    "attachment_path_enabled": "补充附件路径",
     "image_enrichment_enabled": "启用图片内容补充",
     "image_understanding_prompt": "图片理解提示词",
     "allow_mention_trigger": "允许群聊 @ 触发",

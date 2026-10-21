@@ -12,6 +12,14 @@ Mabobot includes a vendored copy of the following third-party project:
 
 Other dependencies installed from `requirements*.txt` remain subject to their own licenses and are not relicensed by Mabobot's MIT License.
 
+## Google Lens community browser profile
+
+- Location: `app/services/lens/browser_profile.py`
+- Source: the MIT community `google_lens_pro/core/config.py` bundled with the local sbigg integration.
+- Copyright: 2026 Google Lens Scraper Contributors.
+- License: MIT community core; see [license text](licenses/google-lens-community-MIT.txt).
+- Scope: browser profile constants and default consent cookies only. No proprietary modules or saved user sessions are included.
+
 ## Banned Books — Open Censorship Core
 
 - Location: `app/plugins/ebook_downloader/download_policy_rules.json`

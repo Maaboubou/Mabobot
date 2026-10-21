@@ -59,10 +59,12 @@ from app.services.wechat_file_store import (
     extract_file_name_from_message,
     get_wechat_file_store,
     looks_like_file_quote,
+    quoted_file_name,
     sha256_file,
 )
 from app.utils.inflight_deduplicator import InFlightDeduplicator
 from app.utils.health_state import OnlineProbeTracker
+from app.utils.source_message_policy import source_is_fresh, valid_source_time
 from mabobot_logging import configure_process_logging, log_context
 from app.utils.wechat_media import image_file_fingerprint
 
@@ -1125,15 +1127,8 @@ def _log_image_download_audit(
 def _download_inbound_file(msg, *, chat_name: str, sender: str, received_at: float) -> dict:
     """Download one live FileMessage into managed per-message storage."""
     original_filename = extract_file_name_from_message(getattr(msg, "content", ""))
-    # 微信可能把视频卡片暴露为 FileMessage；MP4 不做接收时预下载，
-    # 也不凭扩展名改变消息类型。必须在创建归档和任何 UI 操作之前返回。
-    if Path(original_filename).suffix.casefold() == ".mp4":
-        logger.info(
-            "跳过 MP4 文件预下载: chat=%s sender=%s name=%s raw_runtime_id=%s type=%s",
-            chat_name, sender, original_filename,
-            getattr(msg, "id", ""), getattr(msg, "type", ""),
-        )
-        return {}
+    # FileMessage.download 通过右键“复制”读取 CF_HDROP，再复制到缓存目录。
+    # MP4 文件卡片也在收到时缓存，引用时直接用索引路径，不打开视频预览。
     store = get_wechat_file_store()
     file_id = f"file_{uuid.uuid4().hex}"
     source_message_id = _message_identity(chat_name, msg)
@@ -1219,9 +1214,10 @@ def _download_inbound_file(msg, *, chat_name: str, sender: str, received_at: flo
 
 
 def _resolve_quoted_file(*, chat_name: str, quote_content: str, received_at: float) -> dict:
-    """Resolve only an exact filename match from the current chat."""
+    """Resolve exact filenames; MP4 quotes use on-demand video processing."""
     if not looks_like_file_quote(quote_content):
         return {}
+    is_video = Path(quoted_file_name(quote_content)).suffix.casefold() == ".mp4"
     try:
         resolution = get_wechat_file_store().resolve_quote(
             chat_name=chat_name,
@@ -1231,7 +1227,8 @@ def _resolve_quoted_file(*, chat_name: str, quote_content: str, received_at: flo
     except Exception as exc:
         logger.error("❌ 引用文件索引查询失败: chat=%s quote=%r error=%s", chat_name, quote_content, exc)
         return {
-            "has_quote_file": True,
+            "has_quote_file": not is_video,
+            "has_quote_video": is_video,
             "quoted_file_name": str(quote_content or "").strip(),
             "quoted_file_status": "index_error",
             "quoted_file_error": str(exc),
@@ -1239,7 +1236,9 @@ def _resolve_quoted_file(*, chat_name: str, quote_content: str, received_at: flo
 
     record = resolution.record or {}
     payload = {
-        "has_quote_file": resolution.status != "not_file",
+        "has_quote_file": not is_video and resolution.status != "not_file",
+        "has_quote_video": is_video,
+        "quote_video_path": record.get("saved_path") if is_video and resolution.status == "ready" else None,
         "quoted_file_id": record.get("file_id"),
         "quoted_file_name": resolution.file_name,
         "quoted_file_path": record.get("saved_path") if resolution.status == "ready" else None,
@@ -1327,10 +1326,8 @@ def message_callback(msg, chat):
         )
         
         received_at = time.time()
-        sent_at = getattr(msg, 'sent_at', None)
-        archive_only = (
-            sent_at is not None and received_at - sent_at > 600
-        ) or (sent_at is None and bool(getattr(msg, 'history_recovered', False)))
+        sent_at = valid_source_time(getattr(msg, 'sent_at', None))
+        archive_only = not source_is_fresh(sent_at, received_at)
         if archive_only:
             # Stop before file downloads, UI link resolution and plugin dispatch.
             logger.info("积压消息仅存档: chat=%r source_time=%r sent_at=%r", chat_name, getattr(msg, 'time', ''), sent_at)
@@ -1435,6 +1432,8 @@ def message_callback(msg, chat):
                     quote_content=quote_content,
                     received_at=received_at,
                 )
+                has_quote_video = bool(quoted_file.get("has_quote_video"))
+                quote_video_path = quoted_file.get("quote_video_path")
 
         # 为所有图片消息缓存消息对象
         if msg.type == "image":

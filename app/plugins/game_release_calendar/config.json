@@ -41,6 +41,14 @@
     "publish_time": "09:00"
   },
   "ui": {
-    "icon": "bi-calendar-event"
+    "icon": "bi-calendar-event",
+    "llm_tasks": {
+      "monthly_report": {
+        "label": "游戏发售月报",
+        "description": "联网采集并核实当月游戏发售，精选内容并整理中文名称与封面来源",
+        "category": "月报",
+        "order": 10
+      }
+    }
   }
 }

@@ -1333,7 +1333,11 @@ const App = {
             const approved = await UI.confirm('最大权限允许此私聊中的 Codex 访问本机文件。只应授予你本人可控的私聊。', { title: '确认 Codex 最大权限', confirmText: '确认授予', variant: 'warning' });
             if (!approved) return;
         }
-        const pluginGrants = [];
+        // The logger has a dedicated switch; preserve its existing grant details
+        // until the server applies that switch in the same transaction.
+        const pluginGrants = (this._selectedChatPolicy?.plugin_grants || [])
+            .filter(item => String(item.plugin_name || '').split('/').pop() === 'builtin_chat_logger')
+            .map(item => ({ ...item }));
         form.querySelectorAll('.chat-policy-plugin-toggle:checked').forEach(toggle => {
             const card = toggle.closest('.chat-policy-plugin');
             const mentionToggle = card.querySelector('.chat-policy-plugin-mention');
@@ -1359,6 +1363,7 @@ const App = {
             chat: {
                 is_group: isGroup,
                 listening_enabled: form.elements.listening_enabled.checked,
+                chat_log_enabled: form.elements.chat_log_enabled.checked,
                 attachment_content_review_enabled: form.elements.attachment_content_review_enabled.checked,
                 sender_blacklist: this.linesFromPolicyField(form, 'sender_blacklist'),
                 ...(isGroup && originalIsGroup ? {

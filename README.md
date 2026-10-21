@@ -2,7 +2,7 @@
 
 Mabobot 是运行在 Windows 上的本地微信自动化与 AI 助手。它使用内置 `mabowx` 连接微信，并提供 Web 控制台、AI 助手、插件、模型路由、聊天档案与文件处理能力。
 
-当前版本：`3.7.0`
+当前版本：`3.8.0`
 
 ## 启动
 
@@ -98,6 +98,7 @@ scripts/           安装、运维与文件工具
 
 进一步说明：
 
+- [内置图片与引用视频出处检索（Google Lens）](docs/google_lens.md)
 - [插件开发规范（Manifest / Runtime API v2）](app/plugins/README.md)
 - [每聊天插件配置与模板开发指南](docs/PLUGIN_CHAT_CONFIGURATION.md)
 - [翻译助手配置说明](docs/TRANSLATION_CHAT_CONFIG_UPGRADE.md)

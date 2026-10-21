@@ -41,18 +41,10 @@ SQLite 事务原子写入请求明细及每日、累计、运行聚合；请求 
 - `GET /api/llm/usage?period=7d&view=task&subject=wechat:123`
 - `GET /api/llm/usage/requests?period=7d&subject=wechat:123&task=assistant.chat&limit=20&offset=0`
 
-聊天对象优先按稳定 ID 归属，群改名不拆分统计；无 ID 时按名称，无法归属时记录为未归属。系统后台任务单列系统。
+请求明细的 `generation_timing` 保存客户端观测的 `first_token_seconds`（请求开始到首个可见文本块）、`last_token_seconds`、`generation_seconds` 和 `generation_tokens_per_second`。普通 API 默认内部流式接收后拼成完整响应；显式 `stream: false`、多候选和音频请求保留原调用方式，无法测得生成速度。供应商明确拒绝流式参数时可退回非流式。
 
-## 验证
+页面保留简洁的 `首字 3.73s 速度(估算) 41 t/s`。首字单独记录请求开始至首个正文文本块的时间；速度采用供应商输出 Token 除以首个正文、推理或工具调用输出至模型消息完成的时间，不再使用本地分词，不扣除首块或推理 Token。
 
-使用合成供应商响应测试缓存、推理、缺失用量、零费用、币种、时段、长上下文边界、重复通知、幂等写入、重试和回退。浏览器脚本 `tests/browser_llm_usage.py` 使用拦截请求验证中文名称、查询、下钻、计价明细和桌面/深色/手机布局，不消耗真实模型额度。
+普通 API 在流结束时冻结完成时间；Codex 在对应供应商用量事件到达时冻结分段结束时间。Codex 若检测到分段跨越实际工具执行，则不显示该段速度，避免混入工具耗时。多段均有效时按输出 Token 总数除以各段时间总和汇总。缺少供应商用量、用量为估算、输出边界缺失、中断或计时不足 0.1 秒时显示 `—`。该下限只保护过短采样，并不能识别全部缓冲情况。
 
-## 旧记忆任务
-
-事件提炼、人物画像、阶段摘要和向量维护已移除，不再产生记忆后台调用、失败冷却或记忆用量分组。文本归档与成员目录维护本身不调用模型；回答时的历史检索结果仍计入当前回复输入。图片理解、Judge 和独立插件继续单独记账。
-
-Codex 明确返回额度耗尽拒绝、且没有任何返回用量时，记为零费用（额度拒绝）；存在部分用量时仍按用量计价。网络中断等无法确认消耗的失败保持未知。
-
-## 上下文与缓存
-
-运行中心的上下文取最近一次模型请求的实际用量，不能用一轮内多个请求的累计计费输入代替。线程复用后，只追加新资料；已缓存内容仍占上下文，缓存命中不是免费调用，也不能直接换算成订阅额度的减少比例。压缩前后的上下文以服务端遥测为准，90% 是触发阈值，不是压缩后的目标大小。详见 [聊天档案](CHAT_ARCHIVE_OPERATIONS.md)。
+计时记录使用 `method=provider_output_over_decode_window`，保留 `first_output_seconds`、`generation_seconds`、`generation_tokens` 和 `token_count_source=provider_usage`，客户端速度仍标记 `estimated=true`。不会保存正文或改写供应商用量。旧记录缺少新的完成边界，保留首字时间，速度显示 `—`。旧 `output_tokens_per_second` 字段仅为兼容保留，不用于此展示。

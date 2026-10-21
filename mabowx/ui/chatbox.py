@@ -886,6 +886,7 @@ class ChatBox(BaseUISubWnd):
         self._send_btn = None
         self._message_list = None
         self._last_time = ""
+        self._source_time_cache = {}
         self._used_msg_ids: set[str] = set()
         self._last_signatures: dict[str, str] = {}
         self._recent_signatures: dict[str, float] = {}
@@ -903,6 +904,8 @@ class ChatBox(BaseUISubWnd):
         self._anchor_wait_control_snapshot = ()
         self._message_read_lock = threading.Lock()
         self._delivery_direction_snapshot = None
+        self._oversized_tail_scroll_at = float("-inf")
+        self._viewport_follow = None
         self._sent_texts: dict[str, float] = {}
         self._sent_filenames: dict[str, float] = {}
         self._cache_chat_name: str | None = None
@@ -1849,8 +1852,10 @@ class ChatBox(BaseUISubWnd):
         if not current and self._cache_chat_name:
             return
         if current != self._cache_chat_name:
+            self._viewport_follow = None
             self._cache_chat_name = current
             self._last_time = ""
+            self._source_time_cache.clear()
             self._used_msg_ids.clear()
             self._last_signatures.clear()
             self._recent_signatures.clear()
@@ -1910,7 +1915,7 @@ class ChatBox(BaseUISubWnd):
                 msg.ui_anchor_token = anchor_token
                 msg.direction_source = direction_source
                 if getattr(msg, "is_time", False):
-                    self._last_time = msg.content
+                    self._last_time = self._resolve_source_time_separator(msg.content, anchor_token)
                     msg.sender = "系统"
                 else:
                     if controls is not None and direction == "friend" and avatar_sender:
@@ -1933,6 +1938,26 @@ class ChatBox(BaseUISubWnd):
         if resolve_group_senders:
             self._resolve_group_senders(result)
         return result
+
+    def _resolve_source_time_separator(self, value, token):
+        """Freeze relative labels on first observation in the WeChat host's timezone.
+
+        Do not reinterpret a cached bare clock as today's time on later polls.
+        Unknown separators clear the inherited clock rather than using receipt time.
+        """
+        from datetime import datetime
+        from mabowx.utils.history_time import message_timestamp
+        cache = self._source_time_cache
+        if token not in cache:
+            stamp = message_timestamp(value, datetime.now())
+            # Retry unresolved/future labels on the next read. Freezing an
+            # unknown value would suppress the entire following segment.
+            if stamp is None:
+                return ""
+            cache[token] = datetime.fromtimestamp(stamp).strftime("%Y-%m-%d %H:%M:%S")
+            if len(cache) > 256:
+                cache.pop(next(iter(cache)))
+        return cache[token]
 
     def _consume_messages(self, messages: list) -> list:
         """更新缓存并返回本轮真正位于旧尾锚点之后的消息。"""
@@ -2107,11 +2132,17 @@ class ChatBox(BaseUISubWnd):
         missing = self._last_anchor_missing
         failures = self._anchor_recovery_failures
         since = getattr(self, "_anchor_missing_since", None)
+        follow = self._viewport_follow
+        viewport_stalled = bool(follow and follow["state"] == "viewport_stalled")
         return {
             "state": ("cooldown" if failures >= ANCHOR_RECOVERY_MAX_FAILURES else "recovering")
-                     if missing else "healthy",
+                     if missing else ("viewport_stalled" if viewport_stalled else "healthy"),
             "anchor_missing": missing,
-            "blocked_for_sec": round(max(0.0, time.monotonic() - since), 1) if since is not None else 0.0,
+            "blocked_for_sec": (round(max(0.0, time.monotonic() - since), 1) if since is not None
+                                else follow["no_progress_sec"] if viewport_stalled else 0.0),
+            "viewport_follow": ({key: follow[key] for key in
+                                 ("state", "no_progress_sec", "scroll_attempts")}
+                                if follow else None),
             "recovery_failures": failures,
             "retry_in_sec": round(self._anchor_retry_in(), 1) if missing else 0.0,
             "last_recovery": dict(self._last_anchor_recovery_result),
@@ -2342,14 +2373,80 @@ class ChatBox(BaseUISubWnd):
         New or changed rows still receive fresh avatar identification.
         """
         if self._last_anchor_missing:
+            self._viewport_follow = None
             waiting = getattr(self, "_anchor_wait_control_snapshot", ())
             if not waiting or self._anchor_retry_in() <= 0:
                 return False
             return tuple(control_anchor_token(row) for row in self.get_visible_messages()) == waiting
         if not self._visible_control_snapshot:
+            self._viewport_follow = None
             return False
-        snapshot = tuple(control_anchor_token(row) for row in self.get_visible_messages())
-        return snapshot == self._visible_control_snapshot
+        rows = self.get_visible_messages()
+        snapshot = tuple(control_anchor_token(row) for row in rows)
+        if snapshot != self._visible_control_snapshot:
+            self._viewport_follow = None
+            return False
+        self._follow_oversized_tail(rows)
+        return True
+
+    def _follow_oversized_tail(self, rows: list) -> None:
+        """Advance a clipped tall tail without replacing the delivery baseline.
+
+        Qt can scroll a focused message back into view after sender probing.
+        A row taller than the viewport then hides later arrivals indefinitely:
+        its RuntimeId and text remain unchanged while its geometry moves.
+        Take one targeted wheel step per second, only on an already consumed
+        page. The next poll reads any newly visible rows through normal anchor
+        matching/recovery, including repeated text and recycled RuntimeIds.
+        Called under the UI lock; never focus the row or jump/reset the cursor.
+        """
+        now = time.monotonic()
+        if not rows:
+            self._viewport_follow = None
+            return
+        message_list = self.message_list
+        if message_list is None or not message_list.Exists(0):
+            self._viewport_follow = None
+            return
+        viewport = message_list.BoundingRectangle
+        tail = rows[-1].BoundingRectangle
+        height = viewport.bottom - viewport.top
+        if (height <= 4 or viewport.right <= viewport.left
+                or tail.right <= tail.left
+                or tail.bottom - tail.top <= height
+                or tail.top >= viewport.bottom or tail.bottom <= viewport.top
+                or tail.bottom <= viewport.bottom + 2):
+            self._viewport_follow = None
+            return
+        # Observe before the throttle: even a one-pixel advance clears a stall.
+        # Cache an immutable replacement for lock-free, UI-free health reads.
+        position = (int(getattr(self.root, "HWND", 0) or 0),
+                    self._visible_control_snapshot[-1],
+                    (viewport.left, viewport.top, viewport.right, viewport.bottom),
+                    (tail.left, tail.top, tail.right, tail.bottom))
+        previous = self._viewport_follow
+        unchanged = previous is not None and previous["position"] == position
+        since = previous["since"] if unchanged else now
+        attempts = previous["scroll_attempts"] if unchanged else 0
+        elapsed = max(0.0, now - since)
+        self._viewport_follow = {
+            "position": position, "since": since,
+            "scroll_attempts": attempts,
+            "no_progress_sec": round(elapsed, 1),
+            # Silence alone never means stalled. Require repeated successful
+            # wheel submissions and a later unchanged, still-clipped viewport.
+            "state": "viewport_stalled" if attempts >= 3 and elapsed >= 10.0 else "following",
+        }
+        if now - self._oversized_tail_scroll_at < 1.0:
+            return
+        self._oversized_tail_scroll_at = now
+        self._scroll_message_list(-1)
+        self._viewport_follow = {**self._viewport_follow, "scroll_attempts": attempts + 1}
+        wxlog.debug(
+            "超高尾消息继续向下跟随: "
+            f"baseline={anchor_snapshot_summary(self._visible_control_snapshot)} "
+            f"row_height={tail.bottom - tail.top} viewport_height={height}"
+        )
 
     def _get_new_messages_serialized(self) -> list:
         if self._visible_list_is_unchanged():
@@ -2424,10 +2521,12 @@ class ChatBox(BaseUISubWnd):
         attach_delivery_context(visible_messages, context_candidates)
         for message in messages:
             if recovering:
-                from datetime import datetime
-                from mabowx.utils.history_time import message_timestamp
                 message.history_recovered = True
-                message.sent_at = message_timestamp(getattr(message, 'time', ''), datetime.now())
+            from datetime import datetime
+            from mabowx.utils.history_time import message_timestamp
+            # Ordinary scrolling catch-up needs the same cutoff as recovery.
+            # get_messages freezes displayed separators into absolute local time.
+            message.sent_at = message_timestamp(getattr(message, 'time', ''), datetime.now())
             self._delivery_sequence += 1
             message.delivery_sequence = self._delivery_sequence
         messages = self._resolve_group_senders(messages)

@@ -188,6 +188,38 @@ const LLMManager = {
         return value;
     },
 
+    generationTimingView(timing) {
+        const reasons = {
+            client_stream_timing: '供应商输出 Token ÷ 首个输出至消息完成的时间',
+            missing_output_timing: '缺少完整的输出计时',
+            insufficient_observation_window: '输出计时间隔不足 0.1 秒，无法可靠估算速度',
+            missing_usage: '缺少可匹配的供应商用量', incomplete_stream: '流式响应未完成',
+            multiple_model_requests: '本轮包含多次模型请求，请查看逐次用量明细',
+            non_text_output: '包含工具或非文本输出', insufficient_chunks: '有效输出块不足',
+            token_count_mismatch: '文本 Token 与供应商用量不匹配', tokenizer_unavailable: '无法校验 Token 数',
+            insufficient_tokens: '排除首块后没有足够的 Token', unknown_model_tokenizer: '模型尚无已知分词映射',
+        };
+        const valid = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+        const first = valid(timing?.first_token_seconds) ? `${timing.first_token_seconds.toFixed(2)}s` : '—';
+        // Apply the same sampling floor to historical client-stream records.
+        const shortWindow = timing?.source === 'client_stream'
+            && valid(timing?.generation_seconds) && timing.generation_seconds < 0.1;
+        const legacy = timing?.source === 'client_stream' && timing?.method !== 'provider_output_over_decode_window';
+        const hasSpeed = !legacy && !shortWindow && !timing?.reason && valid(timing?.generation_tokens_per_second);
+        const speed = hasSpeed ? `${timing.generation_tokens_per_second.toFixed(0)} t/s` : '—';
+        const estimated = hasSpeed && (timing?.estimated === true || timing?.source === 'client_stream');
+        const reason = legacy ? 'missing_output_timing' : shortWindow ? 'insufficient_observation_window' : timing?.reason;
+        const explanation = estimated
+            ? `${reasons.client_stream_timing}；客户端观测值，受网络与缓冲影响`
+            : reason ? reasons[reason] || '暂无可用计时' : '暂无可用计时';
+        return {first, speed, estimated, explanation};
+    },
+
+    renderGenerationTiming(timing) {
+        const {first, speed, estimated, explanation} = this.generationTimingView(timing);
+        return `<span title="从请求开始到首个可见文本块">首字 ${first}</span> <span title="${this.escapeHtml(explanation)}">速度${estimated ? '(估算)' : ''} ${speed}</span>`;
+    },
+
     renderTokenUsage(entry) {
         const formatK = (num) => {
             if (num === null || num === undefined) return '-';
@@ -1916,10 +1948,10 @@ const LLMManager = {
         const unknownTokens = Math.max(0, (metrics.calls || 0) - (metrics.token_calls || 0));
         const unpriced = Math.max(0, (metrics.calls || 0) - (metrics.cost_calls || 0));
         target.innerHTML = `<div class="usage-overview" aria-label="所选范围概览">
-            <div><small>成功次数</small><strong>${this.usageNumber(metrics.successes)}</strong><span>失败尝试不计入</span></div>
+            <div><small>成功任务</small><strong>${this.usageNumber(metrics.task_successes)}</strong><span>其中 ${this.usageNumber(metrics.task_recovered)} 个曾失败后成功</span></div>
             <div><small>已记录 Token</small><strong>${this.usageTokens(metrics)}</strong><span>${unknownTokens ? `${this.usageNumber(unknownTokens)} 次尝试未上报用量` : metrics.estimated_calls ? '含估算 Token' : '输入与输出合计'}</span></div>
             <div><small>预估费用</small><strong class="usage-money">${this.usageCosts(metrics)}</strong><span>已计价 ${this.usageNumber(metrics.cost_calls)} / ${this.usageNumber(metrics.calls)} 次尝试${unpriced ? ` · ${this.usageNumber(unpriced)} 次未知` : ''}</span></div>
-            <div><small>失败次数</small><strong>${this.usageNumber(metrics.failures)}</strong><span>未成功的请求</span></div>
+            <div><small>尚未成功任务</small><strong>${this.usageNumber(metrics.task_unresolved)}</strong><span>底层失败记录 ${this.usageNumber(metrics.failures)} 条，含重试与用量分段</span></div>
         </div>
         <div class="usage-list-toolbar"><label class="usage-search-label"><span class="visually-hidden">搜索${this.usageView === 'chat' ? '聊天对象' : '调用类型'}</span><input type="search" id="usageSearch" class="form-control form-control-sm" placeholder="搜索${this.usageView === 'chat' ? '聊天对象' : '中文名称或英文标识'}" value="${this.escapeHtml(this.usageSearch)}"></label><span id="usageRowCount" class="usage-secondary"></span></div>
         <div id="usageTable"></div>
@@ -1935,7 +1967,7 @@ const LLMManager = {
 
     renderUsageFootnote() {
         const meta = this.currentStats.metadata || {};
-        const notes = [`统计自 ${this.usageDate(meta.chat_tracking_started_at)} 起记录。成功次数不含失败尝试；Token 和费用包含已上报的消耗。Codex 按官方标准 API 单价折算，包含在预估费用中；无逐次用量时按整轮统计。`];
+        const notes = [`统计自 ${this.usageDate(meta.chat_tracking_started_at)} 起记录。任务按聊天对象、调用类型和业务调用去重；所选周期内有成功记录即计为成功，否则计为尚未成功（可能仍在重试）。一个任务可有多次模型尝试或用量分段，失败记录不等于失败任务。Token 和费用包含失败尝试已上报的消耗。Codex 按官方标准 API 单价折算，包含在预估费用中；无逐次用量时按整轮统计。`];
         if (this.activeStatsType === 'session' && meta.run_started_at) notes.push(`运行开始：${this.usageDate(meta.run_started_at)}。`);
         if (meta.daily_available_from && ['7d', '30d'].includes(this.activeStatsType) && meta.daily_available_from > meta.range_start) notes.push(`现有每日记录从 ${this.escapeHtml(meta.daily_available_from)} 开始，之前的数据不可拆分。`);
         notes.push(`日期按服务端时区 ${this.escapeHtml(meta.timezone || '')} 统计。未上报显示 —。`);
@@ -1978,7 +2010,7 @@ const LLMManager = {
             target.innerHTML = `<div class="usage-empty">${this.usageSearch ? '没有匹配的记录' : '此范围暂无调用记录'}</div>`;
             return;
         }
-        const headers = [['successes', '成功次数'], ['tokens', 'Token'], ['cost', '预估费用'], ['failures', '失败']];
+        const headers = [['task_successes', '成功任务'], ['tokens', 'Token'], ['cost', '预估费用'], ['task_unresolved', '尚未成功任务']];
         const pageRows = rows.slice((this.usagePage - 1) * 20, this.usagePage * 20);
         const kindLabels = { group: '群聊', user: '私聊', unknown: '类型未确认', system: '系统' };
         target.innerHTML = `<div class="usage-table-scroll"><table class="usage-table"><thead><tr><th>${this.usageView === 'chat' ? '聊天对象' : '调用类型'}</th>
@@ -1992,7 +2024,7 @@ const LLMManager = {
                 const expanded = this.usageExpanded === row.key;
                 const label = meta?.label || row.name;
                 return `<tr data-usage-row="${index}"><td><button type="button" class="usage-name" data-usage-open="${index}" ${this.usageView === 'task' ? `aria-expanded="${expanded}" ${row.children ? '' : `aria-controls="usageDetail${index}"`}` : ''}><span>${this.escapeHtml(label)}</span><small>${this.escapeHtml(meta ? row.key : kindLabels[row.kind] || '聊天对象')}</small></button></td>
-                    <td>${this.usageNumber(row.metrics.successes)}</td><td>${this.usageTokens(row.metrics)}</td><td class="usage-money">${this.usageCosts(row.metrics)}</td><td>${this.usageNumber(row.metrics.failures)}</td>
+                    <td>${this.usageNumber(row.metrics.task_successes)}</td><td>${this.usageTokens(row.metrics)}</td><td class="usage-money">${this.usageCosts(row.metrics)}</td><td>${this.usageNumber(row.metrics.task_unresolved)}</td>
                     <td><button type="button" class="usage-row-action" data-usage-open="${index}" aria-label="${this.escapeHtml((expanded ? '收起' : '查看') + label)}" ${meta ? `aria-expanded="${expanded}" ${row.children ? '' : `aria-controls="usageDetail${index}"`}` : ''}>${meta ? expanded ? '收起' : row.children ? '展开' : '详情' : '查看'}</button></td></tr>
                     ${meta && !row.children ? `<tr id="usageDetail${index}" class="usage-detail-row" ${expanded ? '' : 'hidden'}><td colspan="6">${expanded ? this.renderUsageDetail(row) : ''}</td></tr>` : ''}`;
             }).join('')}</tbody></table></div>
@@ -2035,7 +2067,8 @@ const LLMManager = {
         const cache = m.cache_input_tokens > 0 ? `${(m.cached_tokens / m.cache_input_tokens * 100).toFixed(1)}%` : '—';
         const models = Object.entries(m.models || {}).sort((a, b) => b[1] - a[1]).map(([name, count]) => `${this.escapeHtml(name)} · ${this.usageNumber(count)} 次`).join('<br>') || '—';
         const facts = [
-            [row.key === 'assistant.chat' ? '回复结果' : '请求结果', `成功 ${this.usageNumber(m.successes)} ${row.key === 'assistant.chat' ? '轮' : '次'} · 失败 ${this.usageNumber(m.failures)} 次<small>共 ${this.usageNumber(m.calls)} 次尝试，包含重试与模型回退</small>`],
+            ['任务结果', `成功 ${this.usageNumber(m.task_successes)} 个 · 尚未成功 ${this.usageNumber(m.task_unresolved)} 个<small>共 ${this.usageNumber(m.tasks)} 个任务，其中 ${this.usageNumber(m.task_recovered)} 个曾失败后成功</small>`],
+            ['底层调用记录', `共 ${this.usageNumber(m.calls)} 条 · 失败 ${this.usageNumber(m.failures)} 条<small>包含重试、模型回退和用量分段；不代表失败任务数</small>`],
             ['输入 / 输出 Token', `${m.input_calls ? this.usageNumber(m.input_tokens) : '—'} / ${m.output_calls ? this.usageNumber(m.output_tokens) : '—'}`],
             ['平均耗时', `${average}<small>所选周期内 ${this.usageNumber(m.duration_calls)} 次已记录调用</small>`],
             ['缓存命中率', `${cache}<small>按输入 Token 加权 · ${this.usageNumber(m.cache_calls)} 次有缓存明细</small>`],
@@ -2070,6 +2103,7 @@ const LLMManager = {
                     ${rates ? `${this.escapeHtml(rates)} ${this.escapeHtml(p.currency || '')} / 百万 Token<br>` : ''}
                     ${p.reason ? `${this.escapeHtml(reasons[p.reason] || p.reason)}<br>` : ''}${row.usage?.estimated ? 'Token 为本地估算<br>' : ''}${p.notes?.includes('cache_not_reported') ? '未上报缓存明细，输入按普通单价估算<br>' : ''}
                     ${this.escapeHtml(row.scope === 'codex_turn' ? 'Codex 整轮用量' : '逐次请求')} · ${row.success ? '成功' : '失败'} · 输入 ${this.usageNumber(row.usage?.prompt_tokens)} / 输出 ${this.usageNumber(row.usage?.completion_tokens)} / 缓存 ${this.usageNumber(row.usage?.cached_tokens)}<br>
+                    ${this.renderGenerationTiming(row.generation_timing)}<br>
                     请求 ${this.escapeHtml(row.id)}<br>业务调用 ${this.escapeHtml(row.logical_id)}</div></details>`;
             }).join('') || '<span class="usage-secondary">暂无请求明细</span>';
             target.insertAdjacentHTML('afterbegin', `<div class="usage-secondary">${result.data.request_count_exact
@@ -2959,89 +2993,21 @@ const LLMManager = {
             };
 
             let html = '';
+            let previousDate = null;
             entries.forEach((entry, idx) => {
-                const time = entry.timestamp ? this.escapeHtml(UI.formatDateTime(entry.timestamp)) : '';
-                const statusBadge = entry.success
-                    ? '<span class="badge bg-success-subtle text-success">成功</span>'
-                    : '<span class="badge bg-danger-subtle text-danger">失败</span>';
-                const modelBadge = `<span class="badge bg-secondary-subtle text-secondary ms-1">${this.escapeHtml(entry.actual_model || entry.model_id || '未知')}</span>`;
-
-                const hasReasoning = !!entry.has_reasoning;
-                const messageCount = entry.message_count || 0;
-                const responseSize = entry.response_size || 0;
-                const attachmentCount = Number(entry.attachment_count || 0);
-                const imageCount = Number(entry.image_count || 0);
-                const fileCount = Number(entry.file_count || 0);
-                const responseSummary = [
-                    `${responseSize} 个字符`,
-                    ...(imageCount ? [`${imageCount} 张图片`] : []),
-                    ...(fileCount ? [`${fileCount} 个文件`] : []),
-                ].join(' · ');
-                const reasoningSize = entry.reasoning_size || 0;
-                const tokenUsageHtml = this.renderTokenUsage(entry);
-                const chatContext = entry.chat_name
-                    ? `<span class="badge bg-light text-dark border fw-normal">
-                        <i class="bi bi-chat-dots me-1"></i>${this.escapeHtml(entry.chat_name)}
-                        ${entry.role_name ? ` · ${this.escapeHtml(entry.role_name)}` : ''}
-                       </span>`
-                    : '';
-
-                html += `<div class="card border-0 shadow-sm mb-3">
-                    <div class="card-body p-3">
-                        <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-2">
-                            <div class="d-flex align-items-center gap-2 flex-wrap">
-                                ${statusBadge}
-                                ${modelBadge}
-                                <span class="text-muted small"><i class="bi bi-calendar2-event me-1"></i>${time}</span>
-                            </div>
-                            <div class="d-flex flex-wrap justify-content-end gap-2">
-                                <button class="btn btn-sm btn-outline-secondary py-0 px-2 u-text-12"
-                                    onclick="LLMManager.toggleCallHistoryBody(${idx}, 'req')">
-                                    <i class="bi bi-box-arrow-in-down me-1"></i>请求
-                                </button>
-                                ${hasReasoning ? `<button class="btn btn-sm btn-outline-secondary py-0 px-2 u-text-12"
-                                    onclick="LLMManager.toggleCallHistoryBody(${idx}, 'reasoning')">
-                                    <i class="bi bi-lightbulb me-1"></i>思维
-                                </button>` : ''}
-                                <button class="btn btn-sm btn-outline-secondary py-0 px-2 u-text-12"
-                                    onclick="LLMManager.toggleCallHistoryBody(${idx}, 'resp')">
-                                    <i class="bi bi-box-arrow-up me-1"></i>响应${attachmentCount ? ` · ${attachmentCount} 附件` : ''}
-                                </button>
-
-                            </div>
-                        </div>
-                        <div class="d-flex flex-wrap align-items-center gap-2 mt-2 pt-2 border-top">
-                            <span class="badge bg-light text-secondary border fw-normal"><i class="bi bi-stopwatch me-1"></i>${Number(entry.response_time || 0).toFixed(1)} 秒</span>
-                            ${tokenUsageHtml}
-                            ${chatContext}
-                        </div>
-                    </div>
-                    <div class="history-req-body d-none" data-history-index="${idx}" data-history-kind="req">
-                        <div class="px-3 pt-2">
-                            <small class="text-muted fw-semibold">📥 请求（${messageCount} 条消息）</small>
-                        </div>
-                        <pre class="m-2 p-2 bg-light rounded small u-text-12" style="max-height:250px; overflow:auto"></pre>
-                    </div>
-                    ${hasReasoning ? `<div class="history-reasoning-body d-none" data-history-index="${idx}" data-history-kind="reasoning">
-                        <div class="px-3 pt-2">
-                            <small class="text-muted fw-semibold"><i class="bi bi-lightbulb me-1"></i>思维链（${reasoningSize} 个字符）</small>
-                        </div>
-                        <div class="m-2 p-2 bg-warning-subtle rounded small u-text-13" style="max-height:250px; overflow:auto; white-space:pre-wrap"></div>
-                    </div>` : ''}
-                    <div class="history-resp-body d-none" data-history-index="${idx}" data-history-kind="resp">
-                        <div class="px-3 pt-2">
-                            <small class="text-muted fw-semibold">📤 响应（${responseSummary}）</small>
-                        </div>
-                        <div class="history-response-text m-2 p-2 bg-light rounded small u-text-13" style="max-height:250px; overflow:auto; white-space:pre-wrap"></div>
-                        <div class="history-response-attachments d-none px-2 pb-2" aria-label="响应附件">
-                        </div>
-                    </div>
-
-                    ${!entry.success ? `<div class="history-error-body" data-history-index="${idx}" data-history-kind="error">
-                        <div class="px-3 pt-2"><small class="text-muted fw-semibold text-danger">❌ 错误</small></div>
-                        <div class="m-2 p-2 bg-danger-subtle rounded small text-danger u-text-13" style="white-space:pre-wrap"></div>
-                    </div>` : ''}
-                </div>`;
+                const dateTime = entry.timestamp ? UI.formatDateTime(entry.timestamp) : '';
+                const match = String(dateTime).match(/^(.*?)\s+(\d{1,2}:\d{2}:\d{2})$/);
+                const date = match ? match[1] : '日期未知';
+                const time = match ? match[2] : dateTime || '—';
+                if (date !== previousDate) {
+                    html += `<div class="call-history-date">${this.escapeHtml(date)}</div>
+                        <div class="call-history-grid call-history-head" aria-hidden="true">
+                            <span>时间 / 状态</span><span>模型 / 聊天</span><span>输入 / 输出</span>
+                            <span>缓存命中</span><span>总耗时</span><span>首字</span><span>速度 t/s</span>
+                        </div>`;
+                    previousDate = date;
+                }
+                html += this.renderCallHistoryRow(entry, idx, time);
             });
 
             if (!html) html = '<div class="text-center text-muted py-4">暂无记录</div>';
@@ -3057,19 +3023,83 @@ const LLMManager = {
         }
     },
 
-    toggleCallHistoryBody(index, kind) {
-        const selectorMap = {
-            req: '.history-req-body',
-            resp: '.history-resp-body',
-            reasoning: '.history-reasoning-body',
-            error: '.history-error-body'
-        };
-        const selector = selectorMap[kind];
-        const body = document.querySelector(`${selector}[data-history-index="${index}"]`);
-        if (!body) return;
+    callHistoryNumber(value) {
+        if (value === null || value === undefined || value === '') return '—';
+        const number = Number(value);
+        if (!Number.isFinite(number) || number < 0) return '—';
+        if (number >= 1000000) return `${(number / 1000000).toFixed(1).replace(/\.0$/, '')}M`;
+        if (number >= 1000) return `${(number / 1000).toFixed(1).replace(/\.0$/, '')}k`;
+        return UI.formatNumber(number);
+    },
 
-        body.classList.toggle('d-none');
-        this.renderCallHistoryPayload(index, kind);
+    renderCallHistoryRow(entry, index, time) {
+        const escape = value => this.escapeHtml(String(value ?? ''));
+        const usage = entry.token_usage || {};
+        const timing = this.generationTimingView(usage.generation_timing);
+        const fullModel = String(entry.actual_model || entry.model_id || '未知模型');
+        const model = fullModel.split('/').pop() || fullModel;
+        const chat = [entry.chat_name, entry.role_name].filter(Boolean).join(' · ') || '未归属聊天';
+        const prompt = this.callHistoryNumber(usage.prompt_tokens ?? entry.prompt_tokens);
+        const completion = this.callHistoryNumber(usage.completion_tokens ?? entry.completion_tokens);
+        const rate = usage.cache_hit_rate;
+        const cacheRate = typeof rate === 'number' && Number.isFinite(rate) && rate >= 0 && rate <= 1
+            ? `${(rate * 100).toFixed(1)}%` : '—';
+        const duration = typeof entry.response_time === 'number' && Number.isFinite(entry.response_time) && entry.response_time >= 0
+            ? `${entry.response_time.toFixed(1)}s` : '—';
+        const speed = timing.speed === '—' ? '—' : `${timing.estimated ? '≈' : ''}${timing.speed.replace(' t/s', '')}`;
+        const estimated = usage.estimated || entry.estimated;
+        const field = (label, value) => `<div><dt>${escape(label)}</dt><dd>${escape(value)}</dd></div>`;
+        const metric = (label, value, extra = '') => `<span class="call-history-metric"><span class="call-history-mobile-label">${label}</span><span>${value}</span>${extra}</span>`;
+        const panels = [
+            ['tokens', 'Token 用量'], ['performance', '响应性能'], ['req', '请求'],
+            ...(entry.has_reasoning ? [['reasoning', '思维']] : []),
+            ['resp', `响应${Number(entry.attachment_count) > 0 ? ` · ${Number(entry.attachment_count)} 附件` : ''}`],
+        ];
+        return `<details class="call-history-entry" data-history-row="${index}">
+            <summary class="call-history-grid" aria-label="${escape(time)} ${escape(model)} ${escape(chat)}，${entry.success ? '成功' : '失败'}，展开详情">
+                <span class="call-history-time">${escape(time)}<span class="call-history-status ${entry.success ? 'text-success' : 'text-danger'}"><i class="bi ${entry.success ? 'bi-check-circle' : 'bi-x-circle'}" aria-hidden="true"></i> ${entry.success ? '成功' : '失败'}</span></span>
+                <span class="call-history-identity"><strong title="${escape(fullModel)}">${escape(model)}</strong><span class="call-history-chat">${escape(chat)}</span></span>
+                ${metric('输入 / 输出', escape(prompt), `<span class="call-history-secondary">/ ${escape(completion)}${estimated ? ' · 估算' : ''}</span>`)}
+                ${metric('缓存命中', cacheRate)}${metric('总耗时', duration)}${metric('首字', timing.first)}
+                ${metric('速度 t/s', speed, `<span class="call-history-secondary">${timing.estimated ? '估算' : speed === '—' ? '未提供' : ''}</span>`)}
+            </summary>
+            <div class="call-history-expanded">
+                <div class="call-history-tabs" aria-label="调用详情">
+                    ${panels.map(([kind, label], i) => `<button type="button" aria-pressed="${i === 0}" aria-controls="history-${index}-${kind}" data-history-tab="${kind}" onclick="LLMManager.toggleCallHistoryBody(${index}, '${kind}')">${label}</button>`).join('')}
+                </div>
+                <div id="history-${index}-tokens" data-history-panel="tokens">
+                    <dl class="call-history-fields">${field('输入 Token', prompt)}${field('输出 Token', completion)}${field('总 Token', this.callHistoryNumber(usage.total_tokens ?? entry.tokens))}${field('推理 Token', this.callHistoryNumber(usage.reasoning_tokens))}${field('缓存命中 Token', this.callHistoryNumber(usage.cached_tokens))}${field('缓存命中率', cacheRate)}${field('未命中 Token', this.callHistoryNumber(usage.cache_miss_tokens))}</dl>
+                    ${estimated ? '<p class="call-history-secondary">Token 用量为估算值</p>' : ''}
+                    <div class="call-history-provider">服务 / 模型：${escape(fullModel)}</div>
+                </div>
+                <div id="history-${index}-performance" data-history-panel="performance" class="d-none">
+                    <dl class="call-history-fields">${field('总耗时', duration)}${field('首字耗时', timing.first)}${field('生成速度', speed === '—' ? '—' : speed + ' t/s')}</dl>
+                    <p class="call-history-explanation">首字：从请求开始到首个可见文本块。${escape(timing.explanation)}</p>
+                </div>
+                <div id="history-${index}-req" class="history-req-body d-none" data-history-panel="req" data-history-index="${index}" data-history-kind="req">
+                    <span class="call-history-secondary">请求 · ${Number(entry.message_count || 0)} 条消息</span><pre class="rounded call-history-payload"></pre>
+                </div>
+                ${entry.has_reasoning ? `<div id="history-${index}-reasoning" class="history-reasoning-body d-none" data-history-panel="reasoning" data-history-index="${index}" data-history-kind="reasoning"><span class="call-history-secondary">思维 · ${Number(entry.reasoning_size || 0)} 个字符</span><div class="rounded call-history-payload"></div></div>` : ''}
+                <div id="history-${index}-resp" class="history-resp-body d-none" data-history-panel="resp" data-history-index="${index}" data-history-kind="resp">
+                    <span class="call-history-secondary">响应 · ${Number(entry.response_size || 0)} 个字符</span>
+                    <div class="history-response-text rounded call-history-payload"></div><div class="history-response-attachments d-none" aria-label="响应附件"></div>
+                </div>
+                ${!entry.success ? `<div class="history-error-body" data-history-index="${index}" data-history-kind="error"><strong class="text-danger">错误</strong><div class="rounded call-history-payload text-danger"></div></div>` : ''}
+            </div>
+        </details>`;
+    },
+
+    toggleCallHistoryBody(index, kind) {
+        const row = document.querySelector(`[data-history-row="${index}"]`);
+        if (!row) return;
+        row.open = true;
+        row.querySelectorAll('[data-history-panel]').forEach(panel => {
+            panel.classList.toggle('d-none', panel.dataset.historyPanel !== kind);
+        });
+        row.querySelectorAll('[data-history-tab]').forEach(button => {
+            button.setAttribute('aria-pressed', String(button.dataset.historyTab === kind));
+        });
+        if (['req', 'resp', 'reasoning'].includes(kind)) this.renderCallHistoryPayload(index, kind);
     },
 
     renderCallHistoryPayload(index, kind) {

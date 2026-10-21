@@ -7,6 +7,7 @@ from typing import Any, Dict, Iterable, Mapping, Optional
 
 from sqlalchemy.orm import Session, selectinload
 
+from app.services.chat_logging_policy import LOGGER_PLUGIN, is_logger_grant
 from app.models.assistant_policy import AssistantChatPolicy
 from app.models.chatbot_judge import UserChatBotJudge
 from app.models.chatbot_role import UserChatBotRole
@@ -102,6 +103,7 @@ class ChatPolicyService:
                 "chat_name": user.chat_name,
                 "is_group": bool(user.is_group),
                 "listening_enabled": bool(user.listening_enabled),
+                "chat_log_enabled": any(is_logger_grant(item.plugin_name) for item in user.permissions),
                 "attachment_content_review_enabled": user.attachment_content_review_enabled is not False,
                 "listening_active": user.chat_name in active_names,
                 "sender_blacklist": _json_list(user.sender_blacklist),
@@ -220,6 +222,21 @@ class ChatPolicyService:
                             require_mention=require_mention,
                         )
                     )
+
+            # The dedicated switch and plugin grants share one source of truth.
+            # Apply after grant replacement, within the same versioned transaction.
+            if "chat_log_enabled" in chat_changes:
+                self.db.flush()
+                logger_grants = [item for item in self.db.query(UserPermission).filter_by(user_id=user.id)
+                                 if is_logger_grant(item.plugin_name)]
+                if not chat_changes["chat_log_enabled"]:
+                    for item in logger_grants:
+                        self.db.delete(item)
+                elif not logger_grants:
+                    info = self.plugin_manager.get_plugin_info(LOGGER_PLUGIN) if self.plugin_manager else None
+                    if info is None:
+                        raise ChatPolicyError("聊天记录插件不存在")
+                    self.db.add(UserPermission(user_id=user.id, plugin_name=LOGGER_PLUGIN, require_mention=False))
 
             if request.plugin_configs is not None:
                 try:

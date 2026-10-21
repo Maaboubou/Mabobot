@@ -26,6 +26,26 @@ def encode(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+def search_terms(query: str | list[str]) -> list[str]:
+    """Normalize a bounded literal query; an empty string is a range lookup."""
+    if isinstance(query, str):
+        values = [query] if query.strip() else []
+    elif isinstance(query, list) and 1 <= len(query) <= 6:
+        values = query
+    else:
+        raise ValueError("query must be a string or 1–6 literal keywords")
+    terms = []
+    seen = set()
+    for value in values:
+        if not isinstance(value, str) or not value.strip() or len(value) > 200:
+            raise ValueError("each keyword must contain 1–200 characters")
+        value = value.strip()
+        if value.lower() not in seen:
+            terms.append(value)
+            seen.add(value.lower())
+    return terms
+
+
 def normalized_time(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
@@ -352,6 +372,8 @@ class ArchiveStore(MemberDirectory):
         Bound exceptional backfills; callers must disclose omitted records.
         The cursor is acknowledged only after a successful model response.
         """
+        from app.history.attachments import wait_for_attachments
+        wait_for_attachments(chat)
         with self.connection() as db:
             db.execute("BEGIN")
             cursor = db.execute("SELECT coalesce(max(seq),0) FROM changes WHERE chat=?", (chat,)).fetchone()[0]
@@ -380,12 +402,14 @@ class ArchiveStore(MemberDirectory):
         with self.connection() as db:
             return db.execute("SELECT coalesce(max(seq),0) FROM changes WHERE chat=?", (chat,)).fetchone()[0]
 
-    def search(self, chat: str, *, query: str = "", sender: str = "", start: str = "", end: str = "", offset: int = 0, limit: int = 6) -> dict:
-        query, sender = query.strip(), sender.strip()
-        if len(query) > 200 or len(sender) > 160 or offset < 0 or offset > 1000000:
+    def search(self, chat: str, *, query: str | list[str] = "", sender: str = "", start: str = "", end: str = "", offset: int = 0, limit: int = 6, match: str = "any", order: str = "recent") -> dict:
+        terms, sender = search_terms(query), sender.strip()
+        if len(sender) > 160 or offset < 0 or offset > 1000000:
             raise ValueError("search parameters exceed bounds")
+        if match not in ("any", "all") or order not in ("recent", "relevance"):
+            raise ValueError("unsupported search match or order")
         limit = max(1, min(limit, 100))
-        key = encode([query, sender, start, end, offset, limit, "nickname-v3"])
+        key = encode([terms, sender, start, end, offset, limit, match, order, "keywords-v1"])
         with self.connection() as db:
             db.execute("BEGIN")
             snapshot = db.execute("SELECT coalesce(max(seq),0) FROM changes WHERE chat=?", (chat,)).fetchone()[0]
@@ -416,12 +440,17 @@ class ArchiveStore(MemberDirectory):
                     clauses.append(f"(m.id IN ({placeholders}) OR m.id IN (SELECT message_id FROM changes WHERE chat=? AND seq>?))")
                     params.extend([*old_ids, chat, old_snapshot])
                     incremental = True
-            if query:
-                if self.fts and len(query) >= 3:
-                    clauses.append("m.seq IN (SELECT rowid FROM message_fts WHERE message_fts MATCH ?)")
-                    params.append('"' + query.replace('"', '""') + '"')
-                clauses.append("instr(lower(m.search_text),lower(?))>0")
-                params.append(query)
+            if terms:
+                predicates = []
+                for term in terms:
+                    parts = []
+                    if self.fts and len(term) >= 3:
+                        parts.append("m.seq IN (SELECT rowid FROM message_fts WHERE message_fts MATCH ?)")
+                        params.append('"' + term.replace('"', '""') + '"')
+                    parts.append("instr(lower(m.search_text),lower(?))>0")
+                    params.append(term)
+                    predicates.append("(" + " AND ".join(parts) + ")")
+                clauses.append("(" + (" OR " if match == "any" else " AND ").join(predicates) + ")")
             if sender:
                 members = self._resolve_members(db,chat,sender)
                 if len(members)>1:
@@ -436,6 +465,13 @@ class ArchiveStore(MemberDirectory):
             if end:
                 clauses.append("m.occurred<?")
                 params.append(normalized_time(end))
+            ordering = "m.occurred DESC,m.seq DESC"
+            # A cheap relevance option: distinct matching keywords, then time.
+            # No hit-frequency feedback: often retrieved does not mean correct.
+            if order == "relevance" and match == "any" and len(terms) > 1:
+                score = "+".join("(instr(lower(m.search_text),lower(?))>0)" for _ in terms)
+                ordering = f"({score}) DESC," + ordering
+                params.extend(terms)
             # Bounded VM work also caps a pathological short-query scan.
             ticks = [0]
             def bounded():
@@ -443,7 +479,7 @@ class ArchiveStore(MemberDirectory):
                 return int(ticks[0] > 3000)
             db.set_progress_handler(bounded, 10000)
             try:
-                rows = db.execute("SELECT m.id FROM messages m WHERE " + " AND ".join(clauses) + " ORDER BY m.occurred DESC,m.seq DESC LIMIT ? OFFSET ?", (*params, limit + 1, offset)).fetchall()
+                rows = db.execute("SELECT m.id FROM messages m WHERE " + " AND ".join(clauses) + " ORDER BY " + ordering + " LIMIT ? OFFSET ?", (*params, limit + 1, offset)).fetchall()
             finally:
                 db.set_progress_handler(None, 0)
             result = {"ids": [row[0] for row in rows[:limit]], "snapshot": snapshot,
