@@ -18,6 +18,7 @@ from selenium import webdriver
 from app.core.event_bus import Event, EventType
 from app.services.llm_manager import get_llm_manager
 from app.services.email_service import get_email_service
+from app.services.media_auth_health import record_auth_state
 from app.services.plugin_runtime import PluginContext
 from app.services.runtime_operations import OperationContext
 from app.services.shared_chrome import (
@@ -582,9 +583,11 @@ class SummaryService(BrowserRuntimeMixin, MediaPipelineMixin, XiaohongshuMixin):
 
     def _verify_bili_login_by_cookie_map(self, cookie_map: dict) -> bool:
         """通过 cookie 映射调用 B 站 nav 接口验证登录态"""
+        checked_at = time.time()
         try:
             required = ("SESSDATA", "DedeUserID")
             if not all(cookie_map.get(k) for k in required):
+                record_auth_state("bilibili", "cookie_required", checked_at=checked_at)
                 self.logger.warning("⚠️ Cookie 缺少关键登录字段 (SESSDATA / DedeUserID)")
                 return False
 
@@ -599,6 +602,7 @@ class SummaryService(BrowserRuntimeMixin, MediaPipelineMixin, XiaohongshuMixin):
             data = payload.get("data", {}) if isinstance(payload, dict) else {}
             is_login = bool(data.get("isLogin"))
             if is_login:
+                record_auth_state("bilibili", "", checked_at=checked_at)
                 uname = data.get("uname", "")
                 if uname:
                     self.logger.info(f"✅ B 站登录态验证通过，账号: {uname}")
@@ -606,6 +610,12 @@ class SummaryService(BrowserRuntimeMixin, MediaPipelineMixin, XiaohongshuMixin):
                     self.logger.info("✅ B 站登录态验证通过")
                 return True
 
+            # Network errors and malformed replies aren't proof of expired cookies.
+            if resp.ok and isinstance(payload, dict) and (
+                payload.get("code") == -101
+                or (payload.get("code") == 0 and data.get("isLogin") is False)
+            ):
+                record_auth_state("bilibili", "cookie_required", checked_at=checked_at)
             self.logger.warning("⚠️ B 站 nav 接口返回未登录状态")
             return False
         except Exception as e:
@@ -645,9 +655,11 @@ class SummaryService(BrowserRuntimeMixin, MediaPipelineMixin, XiaohongshuMixin):
     def _verify_bili_login_by_cookie_file(self, file_path: str) -> bool:
         """验证本地 cookie 文件是否仍为有效登录态"""
         if not os.path.exists(file_path):
+            record_auth_state("bilibili", "cookie_required")
             return False
         cookie_map = self._load_netscape_cookie_map(file_path)
         if not cookie_map:
+            record_auth_state("bilibili", "cookie_required")
             self.logger.warning(f"⚠️ Cookie 文件为空或格式不兼容: {file_path}")
             return False
         return self._verify_bili_login_by_cookie_map(cookie_map)

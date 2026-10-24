@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import subprocess
@@ -318,6 +319,7 @@ class XiaohongshuMixin:
             result = self._run_platform_ytdlp(
                 "xiaohongshu",
                 [
+                    "--skip-download",
                     "--ignore-no-formats-error",
                     "--dump-single-json",
                     share_url,
@@ -578,12 +580,12 @@ class XiaohongshuMixin:
                 )
                 formats = info.get("formats") or []
                 if isinstance(formats, list) and formats:
-                    duration = self._xhs_video_duration_seconds(info)
-                    if not duration:
-                        duration = max(
-                            (self._xhs_video_duration_seconds(item) for item in formats),
-                            default=0,
-                        )
+                    duration = self._xhs_ytdlp_duration_seconds(info)
+                    self.logger.info(
+                        "小红书 yt-dlp 时长探测: %ss，上限 %ss",
+                        duration,
+                        self.xhs_max_download_duration,
+                    )
                     if duration > self.xhs_max_download_duration:
                         self.logger.info(
                             "跳过处理(yt-dlp): 视频时长为 %ss，超过 %ss",
@@ -1061,6 +1063,21 @@ class XiaohongshuMixin:
         self.logger.warning("⚠️ TikHub 小红书App V2 视频接口未返回可用视频播放地址")
 
         return None
+
+    @staticmethod
+    def _xhs_ytdlp_duration_seconds(info: dict) -> float:
+        """yt-dlp has already converted native milliseconds to seconds."""
+        durations = []
+        for item in [info, *(info.get("formats") or [])]:
+            if not isinstance(item, dict):
+                continue
+            try:
+                duration = float(item.get("duration"))
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(duration) and duration > 0:
+                durations.append(duration)
+        return max(durations, default=0)
 
     def _xhs_video_duration_seconds(self, video_info: Any) -> float:
         """兼容 TikHub 和小红书 H5 __INITIAL_STATE__ 的视频时长字段。"""

@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import requests
 
+from app.services.media_auth_health import observe_ytdlp_result
 from app.utils.plugin_config import get_config
 from app.utils.subprocess_utils import hidden_process_kwargs
 
@@ -1313,48 +1314,38 @@ class MediaPipelineMixin:
         cookie_args: Optional[List[str]] = None,
     ) -> subprocess.CompletedProcess:
         """Run yt-dlp with cookies from the project's dedicated Chrome profile."""
-        if cookie_args is not None:
-            return subprocess.run(
-                [
-                    *self.yt_dlp_command,
-                    "--ignore-config",
-                    "--no-playlist",
-                    "--max-filesize",
-                    f"{getattr(self, 'max_artifact_size_mb', 512)}M",
-                    *cookie_args,
-                    *arguments,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=timeout_sec,
-                encoding="utf-8",
-                errors="replace",
-                **hidden_process_kwargs(),
-            )
-        with ytdlp_browser_cookie_args(
-            platform=platform,
-            debug_port=self.chrome_debug_port,
-            user_data_dir=self.chrome_user_data_dir,
-            profile_dir=self.chrome_profile_dir,
-            logger=self.logger,
-        ) as cookie_args:
-            return subprocess.run(
-                [
-                    *self.yt_dlp_command,
-                    "--ignore-config",
-                    "--no-playlist",
-                    "--max-filesize",
-                    f"{getattr(self, 'max_artifact_size_mb', 512)}M",
-                    *cookie_args,
-                    *arguments,
-                ],
-                capture_output=True,
-                text=True,
-                timeout=timeout_sec,
-                encoding="utf-8",
-                errors="replace",
-                **hidden_process_kwargs(),
-            )
+        if cookie_args is None:
+            with ytdlp_browser_cookie_args(
+                platform=platform,
+                debug_port=self.chrome_debug_port,
+                user_data_dir=self.chrome_user_data_dir,
+                profile_dir=self.chrome_profile_dir,
+                logger=self.logger,
+            ) as exported_cookie_args:
+                return self._run_platform_ytdlp(
+                    platform, arguments, timeout_sec=timeout_sec,
+                    cookie_args=exported_cookie_args,
+                )
+        checked_at = time.time()
+        result = subprocess.run(
+            [
+                *self.yt_dlp_command,
+                "--ignore-config",
+                "--no-playlist",
+                "--max-filesize",
+                f"{getattr(self, 'max_artifact_size_mb', 512)}M",
+                *cookie_args,
+                *arguments,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+            encoding="utf-8",
+            errors="replace",
+            **hidden_process_kwargs(),
+        )
+        observe_ytdlp_result(platform, result, arguments, checked_at=checked_at)
+        return result
 
     def _find_ytdlp_output(self, output_template: str) -> Optional[str]:
         prefix = output_template.replace("%(ext)s", "")

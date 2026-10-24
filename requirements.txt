@@ -37,7 +37,9 @@ NudeNet>=3.4,<4
 opencv-python-headless>=4.11,<5
 matplotlib
 static-ffmpeg==3.0
-yt-dlp>=2026.7.4
+# Temporary Douyin 403 fix: https://github.com/yt-dlp/yt-dlp/pull/17826
+# Keep the tested commit pinned until the upstream fix is released.
+yt-dlp @ https://github.com/viking1304/yt-dlp/archive/d5e0f9b38e081748fa965d9f3429b9620f6e926c.zip
 yt-dlp-danmaku>=0.3,<1
 youtube-transcript-api>=1.2,<2
 json-repair>=0.59,<1

@@ -1138,7 +1138,18 @@ def _collect_attention_blocking(request: Request) -> List[Dict[str, Any]]:
     _attention_from_health(request, items)
     _attention_from_storage(items)
     _attention_from_incidents(items)
+    _attention_from_media_auth(items)
     return items
+
+
+def _attention_from_media_auth(items: List[Dict[str, Any]]) -> None:
+    from app.services.media_auth_health import active_auth_warnings
+
+    for warning in active_auth_warnings():
+        items.append(_attention_item(
+            f"media_auth.{warning['platform']}", "warning", warning["title"],
+            warning["detail"], at=warning["at"],
+        ))
 
 
 @router.get("/attention")
