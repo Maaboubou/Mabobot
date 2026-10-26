@@ -49,6 +49,10 @@ class OperationContext:
             raise OperationCancelled("操作已取消")
 
     def progress(self, percent: int, message: str, **details: Any) -> None:
+        from app.services.work_coordination import current_work
+        scope = current_work()
+        if scope:
+            scope[0].update(scope[1]["id"], message=message)
         self._service.update_progress(
             self.operation_id,
             percent=max(0, min(int(percent), 100)),
@@ -322,6 +326,10 @@ class RuntimeOperationService:
             )
             self._persist(operation)
             self._event(operation_id, status, {"error": error} if error else {})
+            work_id = (operation.get("details") or {}).get("work_id")
+            if work_id and status != "completed":
+                from app.services.work_coordination import get_work_coordinator
+                get_work_coordinator().update(work_id, status=status, message=error or operation["message"])
             self._trim()
 
     def cancel(self, operation_id: str) -> Dict[str, Any]:

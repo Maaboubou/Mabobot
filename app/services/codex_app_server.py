@@ -224,7 +224,7 @@ def _message_fingerprint(message: Dict[str, Any]) -> str:
 
 
 def _is_ephemeral_message(message: Dict[str, Any]) -> bool:
-    return str(message.get("name") or "") in {"search_context", "history_context"}
+    return str(message.get("name") or "") in {"search_context", "history_context", "shared_work_context"}
 
 
 def _split_message_fingerprints(
@@ -875,7 +875,9 @@ class CodexAppServerManager:
         )
         from app.history.tools import dynamic_tool_specs as history_specs
         self.dynamic_tool_specs += history_specs()
-        self.dynamic_tool_signature = self.browser_tool.tool_signature() + ":history-v5-keywords"
+        from app.services.codex_work_tool import dynamic_tool_specs as work_specs
+        self.dynamic_tool_specs += work_specs()
+        self.dynamic_tool_signature = self.browser_tool.tool_signature() + ":history-v5-keywords:shared-work-v2"
         from app.services.codex_lens_tool import VERSION as lens_version, dynamic_tool_specs as lens_specs
         from app.services.lens_management import LensSettings
         lens_tools = lens_specs(LensSettings())
@@ -1475,6 +1477,12 @@ class CodexAppServerManager:
                 if active.lens is None:
                     raise CodexBrowserToolError("Lens is unavailable for this task")
                 result = active.lens.execute(normalized_tool.removeprefix("wx_lens."), params.get("arguments"))
+            elif str(namespace or "") == "work" or normalized_tool.startswith("work."):
+                from app.services.codex_work_tool import execute as execute_work
+                try:
+                    result = execute_work(normalized_tool.removeprefix("work."), params.get("arguments"), active.browser.chat_id, context=active.browser)
+                except (ValueError, TypeError) as exc:
+                    raise CodexBrowserToolError(str(exc)) from exc
             elif str(namespace or "") == "history" or normalized_tool.startswith("history."):
                 if active.history is None:
                     raise CodexBrowserToolError("history is unavailable for this task")

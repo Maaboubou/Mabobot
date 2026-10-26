@@ -244,10 +244,25 @@ def load_plugin_manifest(plugin_path: Path, config: Mapping[str, Any]) -> Dict[s
                 ),
             }
         )
+    capabilities = []
+    raw_capabilities = payload.get("capabilities", [])
+    if not isinstance(raw_capabilities, list):
+        raise PluginManifestError("capabilities 必须是数组")
+    capability_ids = set()
+    for item in raw_capabilities:
+        if not isinstance(item, dict):
+            raise PluginManifestError("capability 必须是对象")
+        capability_id = _require_text(item.get("id"), "capability.id")
+        if capability_id in capability_ids:
+            raise PluginManifestError("capability.id 重复")
+        capability_ids.add(capability_id)
+        capabilities.append({"id": capability_id, "description": _require_text(item.get("description"), "capability.description"),
+            "reuse_seconds": _bounded_int(item.get("reuse_seconds"), label="capability.reuse_seconds", default=300, minimum=0, maximum=86400)})
     return {
         "schema_version": PLUGIN_MANIFEST_VERSION,
         "plugin_api_version": plugin_api_version,
         "listeners": listeners,
+        "capabilities": capabilities,
         "jobs": jobs,
         "storage": storage,
         "backup": backup,

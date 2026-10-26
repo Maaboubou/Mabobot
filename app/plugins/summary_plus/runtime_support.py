@@ -344,6 +344,7 @@ class ManagedDispatcher:
 
         def run(operation: OperationContext) -> Any:
             acquired = False
+            successful = False
             try:
                 operation.progress(2, "等待可用执行槽", pool=pool_name)
                 while not acquired:
@@ -354,6 +355,7 @@ class ManagedDispatcher:
                 operation.progress(5, "开始处理")
                 result = target(operation)
                 operation.progress(98, "处理完成")
+                successful = not isinstance(result, ProcessingResult) or result.status == "completed"
                 if isinstance(result, ProcessingResult):
                     return result.as_dict()
                 return result
@@ -363,14 +365,24 @@ class ManagedDispatcher:
                 with self._lock:
                     self._active = max(0, self._active - 1)
                     self._inflight.discard(key)
-                    self._recent[key] = time.time()
+                    if successful:
+                        self._recent[key] = time.time()
                 self._admission.release()
 
         try:
+            shared_options = {}
+            if hasattr(self.context, "work"):
+                shared_options["work"] = {
+                    "chat": chat_name,
+                    "capability": "media.download" if kind == "douyin" else "link.process",
+                    "subject": url,
+                    "parameters": {"format": ".mp4"} if kind == "douyin" else {"kind": kind},
+                }
             operation = self.context.tasks.submit(
                 kind=f"summary_plus.{kind}",
                 title=title or f"Summary Plus · {kind}",
                 target=run,
+                **shared_options,
                 details={
                     "chat": str(chat_name or "")[:120],
                     "url": self._safe_url(url),
@@ -382,6 +394,11 @@ class ManagedDispatcher:
                 self._inflight.discard(key)
             self._admission.release()
             raise
+        if operation.get("joined"):
+            with self._lock:
+                self._inflight.discard(key)
+            self._admission.release()
+            return DispatchDecision(False, "shared_work", operation.get("operation_id"))
         return DispatchDecision(True, "accepted", operation.get("operation_id"))
 
     def close(self) -> None:

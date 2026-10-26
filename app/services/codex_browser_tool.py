@@ -479,6 +479,7 @@ class CodexBrowserToolService:
                             "additionalProperties": False,
                             "properties": {
                                 "url": {"type": "string", "description": "Public file HTTP(S) URL."},
+                                "source_url": {"type": "string", "description": "Original user-shared page URL when url is a resolved CDN URL. Required for shared-link downloads so existing plugin work can be reused."},
                                 "audio_url": {
                                     "type": "string", "minLength": 1,
                                     "description": "Optional public audio-track URL for DASH video; output filename must end in .mp4.",
@@ -490,7 +491,7 @@ class CodexBrowserToolService:
                                     "maxLength": 160,
                                 },
                             },
-                            "required": ["url", "filename"],
+                            "required": ["url", "filename", "source_url"],
                         },
                     },
                     {
@@ -597,6 +598,8 @@ class CodexBrowserToolService:
             raise CodexBrowserToolError("unknown dynamic tool namespace")
         if not isinstance(arguments, dict):
             raise CodexBrowserToolError("browser tool arguments must be an object")
+        if normalized_tool == "download" and not str(arguments.get("source_url") or "").strip():
+            raise CodexBrowserToolError("下载必须提供原始分享链接 source_url；直接文件链接填写同一个 URL")
         if not self._slots.acquire(timeout=5):
             raise CodexBrowserToolError("browser capacity is busy; retry shortly")
         try:
@@ -1093,6 +1096,19 @@ class CodexBrowserToolService:
                     logger.debug("Could not close Chromium cleanly", exc_info=True)
 
     def _download(self, arguments: Dict[str, Any], context: BrowserToolContext) -> Dict[str, Any]:
+        from app.services.work_coordination import get_work_coordinator
+        coordinator = get_work_coordinator()
+        subject = str(arguments.get("source_url") or arguments.get("url") or "")
+        # This lookup makes no network request; _download_file retains all access checks.
+        claim = coordinator.claim(chat=context.chat_id, capability="media.download", subject=subject,
+            owner="assistant", request_id=context.request_id, title="下载文件",
+            parameters={"format": Path(str(arguments.get("filename") or "")).suffix.lower()})
+        if not claim.acquired:
+            return {"shared_work": True, "work_id": claim.work["id"], "status": claim.work["status"],
+                    "delivered": claim.work["delivered"], "message": "已有同一任务，勿再次下载或声称本轮已发送；用work.get查询进展，已完成的文件可用work.prepare_redelivery复用"}
+        return coordinator.run(claim, lambda: self._download_file(arguments, context))
+
+    def _download_file(self, arguments: Dict[str, Any], context: BrowserToolContext) -> Dict[str, Any]:
         guard = PublicUrlGuard(resolver=self._resolver, doh_resolver=self._doh_resolver)
         target_url = guard.validate_public_url(arguments.get("url"))
         filename = str(arguments.get("filename") or "").strip()
@@ -1221,6 +1237,10 @@ class CodexBrowserToolService:
                 }
                 if audio_url:
                     result.update({"audio_url": audio_url, "downloaded_bytes": downloaded_bytes, "streams_merged": True})
+                from app.services.work_coordination import current_work
+                scope = current_work()
+                if scope:
+                    scope[0].remember_artifact(scope[1], destination)
                 completed = True
                 return result
         except HTTPError as exc:

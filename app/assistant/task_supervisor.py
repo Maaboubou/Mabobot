@@ -347,7 +347,13 @@ class AssistantTaskSupervisor:
                 archive_expired_event(event)
                 self.store.update(task.id, status='skipped', error='源消息已过期或时间不明')
                 return False
-            result = handler(event)
+            from app.services.work_coordination import get_work_coordinator
+            shared = get_work_coordinator()
+            claim = shared.claim(chat=task.chat, capability="assistant.reply", subject=task.id,
+                owner="assistant", title="处理对话请求", reuse_seconds=0)
+            result = shared.run(claim, lambda: handler(event))
+            if not result:
+                shared.update(claim.work["id"], status="failed", message="本轮未交付回复")
             status = 'failed' if task.error else 'completed' if result else 'delivery_failed' if task.result_ready else 'skipped'
             self.store.update(task.id, status=status, error=task.error or ('结果已生成，发送未确认' if status == 'delivery_failed' else None))
             return result

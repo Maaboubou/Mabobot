@@ -34,10 +34,14 @@ def _send_files(
     if artifacts is not None:
         artifacts.validate_file(file_path)
     if hasattr(wx, "send_files"):
-        wx.send_files(chat_name, [file_path])
+        from app.services.work_coordination import tracked_send
+        if not tracked_send(chat_name, "send_files", [str(file_path)], lambda: wx.send_files(chat_name, [file_path])):
+            raise RuntimeError("文件发送未确认")
         return
     if hasattr(wx, "SendFiles"):
-        wx.SendFiles(file_path, chat_name)
+        from app.services.work_coordination import tracked_send
+        if not tracked_send(chat_name, "send_files", [str(file_path)], lambda: wx.SendFiles(file_path, chat_name)):
+            raise RuntimeError("文件发送未确认")
         return
     logger.error("❌ 无法发送文件，未找到发送方法")
 
@@ -116,6 +120,10 @@ def _handle_douyin_async(
             int(getattr(svc, "douyin_max_download_duration", 300)),
         )
         if duration is not None and duration > max_download_duration:
+            from app.services.work_coordination import current_work
+            scope = current_work()
+            if scope:
+                scope[0].reclassify(scope[1], "link.process", {"kind": "douyin_mindmap"}, "长视频转写与脑图")
             logger.info(
                 "ℹ️ 抖音视频 %s 时长 %ss > %ss，进入本地 ASR 脑图制作逻辑。",
                 share_url,
@@ -428,7 +436,9 @@ def _dispatch_platform_route(
             logger,
             message_id,
         )
-        if handled is False:
+        from app.services.work_coordination import current_work
+        scope = current_work()
+        if handled is False or (scope and not scope[0].get(chat_name, scope[1]["id"])["deliveries"]):
             return ProcessingResult.skipped(f"{route.name} 没有可发送内容")
         return ProcessingResult.completed(f"{route.name} 处理完成")
 

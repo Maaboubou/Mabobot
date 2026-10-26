@@ -407,3 +407,57 @@ CDP/WebSocket 连接在 `finally` 中关闭，并清理自己的目标标签页�
 只记录用量、不可通过辅助任务路由配置的调用，可在声明中设置 `"routable": false`（例如核心助手的 `chat`）。目录接口的 `usage_tasks` 包含全部声明，`tasks` 仅包含可配置路由。
 
 消息事件处理器以及通过 `context.operations` / 托管 worker 启动的后台任务自动继承聊天归属。脱离事件上下文的调用应传入 `_mabobot_chat_name`；可额外提供 `_mabobot_user_id`（系统聊天对象 ID）、`_mabobot_chat_type`（`group` / `user`）。这些参数不发送给模型。无聊天归属的系统任务可显式传入 `_mabobot_usage_scope="system"`；未提供归属的调用归入“未归属”。
+
+## 共享办事进度与交付
+
+插件 Runtime 的 `context.work` 与 `context.tasks` 共用公共任务服务；该服务不导入或启动 Chatbot。
+关闭聊天助手、助手超时或关闭助手会话，不会停止插件任务。插件继续负责默认结果文字、文件及失败反馈。
+助手启用后通过 `work.list/get` 和每轮临时上下文读取同一份进度。
+
+已有 `context.tasks.submit` 会从 `details.chat`、`details.chat_name` 或入站事件取得聊天身份，自动登记进度。
+由入站消息启动的 `context.workers.start` 也会登记任务。旧插件只获得进度可见性，不能仅凭标题或相似文本跨插件合并。
+定时任务必须显式传目标聊天；面向多个聊天的任务应按聊天建立交付任务，不能拿管理员聊天替代目标聊天。
+
+新插件的可复用工作必须在 `manifest.json` 声明能力，并通过以下接口提交：
+
+```json
+"capabilities": [
+  {"id": "land.lookup", "description": "查询地块资料和图片", "reuse_seconds": 300}
+]
+```
+
+```python
+submission = context.work.submit(
+    kind="land_query", title=f"查询地块 {land_number}", target=run,
+    work={
+        "chat": chat_name,
+        "capability": "land.lookup",
+        "subject": land_number,
+        "parameters": {},
+    },
+)
+```
+
+- `subject` 是资源身份，`parameters` 必须包括影响结果的语言、版本、清晰度、范围，以及需要隔离的请求人身份等。
+- 同群、同能力、同资源、同参数的并发请求原子地加入原任务，返回 `joined=True`，不会执行第二个 target。
+- 能力 ID 表示相同业务含义，不以插件名区分。不同实现只有在输入与产物契约相同时才能共用能力 ID。
+- `reuse_seconds=0` 只合并正在运行的工作，不缓存成功结果。实时查询按业务选择有效期。
+- `new_attempt=True` 用于用户明确要求重新执行；不能抢走正在执行的任务，也不能覆盖发送结果不确定的任务。
+- 不要在返回 `joined=True` 时保留自己预先占用的锁或信号量。无 Chatbot 时需要的短句由插件自己决定，例如“正在查”。
+- target 必须返回真实结果或抛出异常；没有可发送内容不能声称已经交付。
+
+发送消息、引用和文件经过统一交付登记。执行完成和发送确认分别记录，`completed` 不等于 `delivered`。
+同一任务的同一效果只发送一次；文件在任务内按内容指纹识别，改名不会绕过检查。失败后接手执行会保留已成功的交付记录。
+发送异常或返回未确认会标记为 `uncertain`，不得盲目重试。新执行不会自动夺取结果不确定的旧任务。
+显式重发与重新执行是两种操作：插件应复用已有产物，使用 `tracked_send(..., slot=新的交付标识)` 创建一次新的交付意图；不能伪装为首次发送。
+
+不要从业务代码启动未托管线程或绕开微信发送服务。任意脚本、外部进程、未提供聊天的定时任务，以及不同链接之间尚未建立的资源别名，不在自动语义协调保证内。
+运行时不会凭文件名、标题或模型猜测合并资源。平台适配器应提供稳定资源身份；短链和 CDN 下载应保留原始分享链接。
+`wx_browser.download` 因此要求模型提供 `source_url`，下载工具与摘要插件可共同认领 `media.download` 工作。
+当前媒体契约使用 `parameters.format` 区分文件类型；需要清晰度等变体时，适配器也必须扩展此契约，不能省略差异。
+
+共享记录位于 `data/shared_work.sqlite3`，可用 `WORK_COORDINATION_DB` 指定位置。读取服务不会把其他执行进程的活跃任务标为中断。
+执行租约过期展示为待核对；未确认交付不会自动重放。测试使用独立临时数据库，不改动线上任务和交付记录。
+
+助手处理“再发一下”时使用 `work.prepare_redelivery`，它只接受当前聊天的任务 ID，校验留存文件的内容指纹、重新审核并复制到本轮输出目录，再走正常附件发送流程。每个用户请求获得独立交付标识，同一次重发不会被重复执行。
+发送时公共服务将文件快照留存在数据库旁的 `shared_work_files` 中，避免原插件临时文件被清理后无法重发。服务初始化时清理超过 7 天、已结束且没有未确认发送的文件快照；任务和发送事实仍保留。

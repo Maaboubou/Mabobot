@@ -1,0 +1,39 @@
+name: Retain latest published release
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: retain-latest-release
+  cancel-in-progress: false
+jobs:
+  cleanup:
+    if: github.repository == 'Maaboubou/Mabobot'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const repo = context.repo;
+            const releases = await github.paginate(github.rest.repos.listReleases, {
+              ...repo, per_page: 100
+            });
+            const published = releases.filter(r => !r.draft && r.published_at)
+              .sort((a, b) => Date.parse(b.published_at) - Date.parse(a.published_at) || b.id - a.id);
+            if (published.length < 2) {
+              core.info('Nothing to prune.');
+              return;
+            }
+            const keep = published[0];
+            core.info(`Keeping ${keep.tag_name} (${keep.id})`);
+            for (const release of published.slice(1)) {
+              // Recheck the retained release before each destructive operation.
+              const {data: current} = await github.rest.repos.getRelease({...repo, release_id: keep.id});
+              if (current.draft || !current.published_at) {
+                throw new Error('Retained release is no longer published; refusing cleanup.');
+              }
+              await github.rest.repos.deleteRelease({...repo, release_id: release.id});
+              core.info(`Deleted release ${release.tag_name}; Git tag retained.`);
+            }

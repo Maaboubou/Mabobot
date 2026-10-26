@@ -13,6 +13,7 @@ import shutil
 from contextvars import copy_context
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -188,8 +189,9 @@ class PluginStorage:
 
 
 class OwnerTaskFacade:
-    def __init__(self, plugin_id: str):
+    def __init__(self, plugin_id: str, manifest=None):
         self.plugin_id = plugin_id
+        self.capabilities = {item["id"]: item for item in (manifest or {}).get("capabilities", [])}
 
     @property
     def _service(self):
@@ -202,14 +204,58 @@ class OwnerTaskFacade:
         target: Callable[[OperationContext], Any],
         *,
         details: Optional[Dict[str, Any]] = None,
+        work: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        return self._service.submit(
-            owner=f"plugin:{self.plugin_id}",
-            kind=kind,
-            title=title,
-            target=target,
-            details=details,
-        )
+        from app.services.work_coordination import current_origin, get_work_coordinator
+        origin = current_origin()
+        details = dict(details or {})
+        chat = str((work or {}).get("chat") or details.get("chat") or details.get("chat_name") or origin.get("chat") or "")
+        if work and not chat:
+            raise ValueError("共享任务必须指定聊天")
+        claim = None
+        coordinator = None
+        if chat:
+            coordinator = get_work_coordinator()
+            if work:
+                capability = str(work["capability"])
+                if capability not in self.capabilities:
+                    raise ValueError(f"未声明的插件能力: {capability}")
+                spec = self.capabilities[capability]
+                subject = work["subject"]
+                parameters = work.get("parameters", {})
+                reuse_seconds = spec.get("reuse_seconds", 300)
+            else:
+                # Legacy operations are visible but not semantically merged.
+                capability, subject, parameters, reuse_seconds = f"plugin.{self.plugin_id}.{kind}", uuid.uuid4().hex, {}, 0
+            claim = coordinator.claim(chat=chat, capability=capability, subject=subject,
+                parameters=parameters, owner=f"plugin:{self.plugin_id}", title=title,
+                request_id=origin.get("message_id", ""), reuse_seconds=reuse_seconds,
+                new_attempt=bool((work or {}).get("new_attempt")))
+            if not claim.acquired:
+                return {"operation_id": claim.work.get("operation_id"), "work_id": claim.work["id"],
+                        "joined": True, "status": claim.work["status"]}
+            original_target = target
+            def target(operation):
+                coordinator.update(claim.work["id"], operation_id=operation.operation_id)
+                return coordinator.run(claim, lambda: original_target(operation))
+            details["work_id"] = claim.work["id"]
+            details["chat"] = chat
+        try:
+            operation = self._service.submit(
+                owner=f"plugin:{self.plugin_id}",
+                kind=kind,
+                title=title,
+                target=target,
+                details=details,
+            )
+        except BaseException as exc:
+            if claim:
+                coordinator.update(claim.work["id"], status="failed", message=str(exc))
+            raise
+        if claim:
+            coordinator.update(claim.work["id"], operation_id=operation["operation_id"])
+            operation = {**operation, "work_id": claim.work["id"], "joined": False}
+        return operation
 
     def list(self, limit: int = 100) -> List[Dict[str, Any]]:
         return self._service.list(limit=limit, owner=f"plugin:{self.plugin_id}")
@@ -271,9 +317,22 @@ class OwnerWorkerFacade:
             if existing and existing.is_alive():
                 raise RuntimeError(f"插件 worker 已在运行: {worker_name}")
 
+        from app.services.work_coordination import current_origin, current_work, get_work_coordinator
+        origin = current_origin()
+        shared_claim = None
+        coordinator = None
+        if origin.get("chat") and current_work() is None:
+            coordinator = get_work_coordinator()
+            shared_claim = coordinator.claim(chat=origin["chat"], capability=f"plugin.{self.plugin_id}.worker",
+                subject=uuid.uuid4().hex, owner=f"plugin:{self.plugin_id}", title=worker_name,
+                request_id=origin.get("message_id", ""), reuse_seconds=0)
+
         def _runner() -> None:
             try:
-                target(*args, **(kwargs or {}))
+                if shared_claim:
+                    coordinator.run(shared_claim, lambda: target(*args, **(kwargs or {})))
+                else:
+                    target(*args, **(kwargs or {}))
             except Exception as exc:  # noqa: BLE001 - plugin boundary
                 with self._lock:
                     self._failures[worker_name] = str(exc)
@@ -404,7 +463,8 @@ class PluginContext:
 
         self.config = ChatConfigFacade(plugin_id, plugin_path)
         self.storage = PluginStorage(plugin_id)
-        self.tasks = OwnerTaskFacade(plugin_id)
+        self.tasks = OwnerTaskFacade(plugin_id, manifest)
+        self.work = self.tasks
         self.workers = OwnerWorkerFacade(plugin_id)
         self.health = HealthFacade(self)
         self.audit = AuditFacade(plugin_id)

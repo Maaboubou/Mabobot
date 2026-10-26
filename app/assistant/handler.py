@@ -2300,6 +2300,11 @@ class AssistantHandler:
             settings = self.role_manager.get_output_settings(role_name) if response_format else {}
         # Internal metadata survives image preparation, but never enters provider messages.
         messages = [{k: v for k, v in m.items() if not k.startswith('_assistant_')} for m in messages]
+        from app.services.work_coordination import context_message, WORK_INSTRUCTIONS
+        messages = [*messages, {"role": "system", "content": WORK_INSTRUCTIONS}]
+        shared_progress = context_message(chat_name)
+        if shared_progress:
+            messages = [*messages, shared_progress]
         requested_search_mode = str(kwargs.get("_mabobot_web_search_mode") or "").strip().lower()
         if requested_search_mode not in {"disabled", "cached", "indexed", "live"}:
             requested_search_mode = ""
@@ -2581,7 +2586,23 @@ class AssistantHandler:
         try:
             with get_wechat_content_review().prepare_delivery(file_paths, chat_name=chat_name) as reviewed_paths:
                 logger.info(f"🤖 Sending {len(reviewed_paths)} reviewed attachment(s) to {chat_name}")
-                return bool(wx_manager.send_files(chat_name, reviewed_paths))
+                from app.services.work_coordination import get_work_coordinator, tracked_send
+                from app.services.wechat_file_store import sha256_file
+                coordinator = get_work_coordinator()
+                for original_path, file_path in zip(file_paths, reviewed_paths):
+                    digest = sha256_file(Path(file_path))
+                    redelivery = coordinator.redelivery(chat_name, original_path, digest)
+                    work = redelivery[0] if redelivery else coordinator.artifact_work(chat_name, digest)
+                    if work:
+                        with coordinator.scope(work):
+                            sent = tracked_send(chat_name, "send_files", [str(file_path)],
+                                lambda: wx_manager.send_files(chat_name, [file_path]),
+                                slot=redelivery[1] if redelivery else None)
+                    else:
+                        sent = wx_manager.send_files(chat_name, [file_path])
+                    if not sent:
+                        return False
+                return True
         except Exception:
             logger.exception("🤖 微信附件审核或发送未完成，已停止发送: %s", chat_name)
             return False

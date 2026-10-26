@@ -17,6 +17,7 @@ import time
 
 from app.services.llm_usage_context import usage_context
 from app.services.plugin_activity import record_message_trigger
+from app.services.work_coordination import origin_scope, tracked_send
 from mabobot_logging import log_context
 from app.utils.source_message_policy import (
     event_is_fresh, has_source_policy, archive_expired_event, SourceMessageActionProxy,
@@ -599,6 +600,20 @@ class EventBus:
                             self._observe = observe
                             self.consumed = False
 
+                        def _send_with_work(self, method, args, kwargs):
+                            chat = args[0] if args else kwargs.get("chat_name", "")
+                            if self._owner_kind != "plugin" or self._observe:
+                                return getattr(self._wx, method)(*args, **kwargs), False
+                            payload = json.loads(json.dumps({"args": args[1:], "kwargs": kwargs}, default=str))
+                            called = False
+                            def send():
+                                nonlocal called
+                                called = True
+                                return getattr(self._wx, method)(*args, **kwargs)
+                            with origin_scope(chat, self._evt.id, "plugin:" + self._plugin_name):
+                                result = tracked_send(chat, method, payload, send)
+                            return result, not called
+
                         def _mark_consumed(self):
                             # A delayed send cannot consume a different listener's turn.
                             if self.consumed:
@@ -663,7 +678,11 @@ class EventBus:
                                 or kwargs.pop('log_name', None)
                                 or kwargs.pop('log_speaker', None)
                             )
-                            result_inner = getattr(self._wx, 'send_message')(*args, **kwargs)
+                            result_inner, reused = self._send_with_work('send_message', args, kwargs)
+                            if reused:
+                                if result_inner:
+                                    self._mark_consumed()
+                                return result_inner
                             if result_inner and not silent:  # 发送成功且未设置静音
                                 self._mark_consumed()
                                 # 自动记录插件回复
@@ -683,7 +702,11 @@ class EventBus:
                                 or kwargs.pop('log_name', None)
                                 or kwargs.pop('log_speaker', None)
                             )
-                            result_inner = getattr(self._wx, 'quote_message')(*args, **kwargs)
+                            result_inner, reused = self._send_with_work('quote_message', args, kwargs)
+                            if reused:
+                                if result_inner:
+                                    self._mark_consumed()
+                                return result_inner
                             if result_inner:
                                 self._mark_consumed()
                                 if not silent:
@@ -703,7 +726,11 @@ class EventBus:
                             log_sender = kwargs.pop('log_sender', None)
                             log_name = kwargs.pop('log_name', None)
                             log_speaker = kwargs.pop('log_speaker', None)
-                            result_inner = getattr(self._wx, 'send_files')(*args, **kwargs)
+                            result_inner, reused = self._send_with_work('send_files', args, kwargs)
+                            if reused:
+                                if result_inner:
+                                    self._mark_consumed()
+                                return result_inner
                             if result_inner:
                                 self._mark_consumed()
                                 if not (silent or skip_log):
@@ -728,8 +755,13 @@ class EventBus:
                                 or kwargs.pop('log_name', None)
                                 or kwargs.pop('log_speaker', None)
                             )
-                            result_inner = getattr(self._wx, 'send_url_card')(*args, **kwargs)
-                            if result_inner and not silent:
+                            result_inner, reused = self._send_with_work('send_url_card', args, kwargs)
+                            succeeded = result_inner.get('success') is True if isinstance(result_inner, dict) else bool(result_inner)
+                            if reused:
+                                if succeeded:
+                                    self._mark_consumed()
+                                return result_inner
+                            if succeeded and not silent:
                                 self._mark_consumed()
                                 # URL卡片发送也记录
                                 if len(args) >= 1:
@@ -742,7 +774,7 @@ class EventBus:
                                     title = kwargs.get('title', '[链接卡片]')
                                     if chat_name:
                                         self._save_bot_response(chat_name, f"[链接] {title}", log_sender)
-                            elif result_inner and silent:
+                            elif succeeded and silent:
                                 self._mark_consumed()
                             return result_inner
 
@@ -766,7 +798,8 @@ class EventBus:
                 try:
                     from app.services.plugin_config_context import plugin_config_scope
 
-                    with usage_context(usage_metadata), plugin_config_scope(
+                    with origin_scope(chat_name or "", event.id,
+                        "plugin:" + listener.plugin_name if listener.owner_kind == "plugin" else "assistant"), usage_context(usage_metadata), plugin_config_scope(
                         chat_id=event.context.get("chat_id"),
                         session_factory=self.db_session_factory,
                     ):

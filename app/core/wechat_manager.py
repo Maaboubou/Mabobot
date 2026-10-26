@@ -1,5 +1,7 @@
 """微信管理器：通过 HTTP 与使用 mabowx 的 wx_bot 桥接进程交互。"""
 
+from app.services.work_coordination import coordinated_delivery
+
 import logging
 import os
 import time
@@ -378,6 +380,7 @@ class WeChatManager:
             self._listened_chats.pop(chat_name, None)
             self._stats['listened_chats_count'] = len(self._listened_chats)
 
+    @coordinated_delivery("send_message")
     def send_message(self, chat_name: str, message: str, at_users: List[str] = None) -> bool:
         """发送消息 - 通过API"""
         normalized_at_users = [
@@ -454,6 +457,7 @@ class WeChatManager:
             )
             return False
 
+    @coordinated_delivery("quote_message")
     def quote_message(self, chat_name: str, message_id: str, message: str) -> bool:
         """引用指定的已缓存微信消息并回复。"""
         if not message_id:
@@ -543,6 +547,7 @@ class WeChatManager:
 
     # === 历史桥接脚本使用的方法 ===
 
+    @coordinated_delivery("send_files")
     def send_files(self, chat_name: str, file_paths: List[str]) -> bool:
         """发送文件 - 通过API"""
         try:
@@ -568,6 +573,7 @@ class WeChatManager:
             self.logger.error(f"❌ Failed to call send_files API: {e}")
             return False
 
+    @coordinated_delivery("send_url_card")
     def send_url_card(self, chat_name: str, url: str, timeout: int = 30) -> Dict[str, Any]:
         """发送URL卡片 - 通过API"""
         try:

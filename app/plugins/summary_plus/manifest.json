@@ -17,7 +17,42 @@
     "timeout_seconds": 5
   },
   "listeners": [
-    {"event": "link_message_received", "handler": "handle_link_message", "title": "链接摘要", "trigger": {"kind": "link", "summary": "收到插件支持且未被黑名单或访问门禁拦截的分享链接", "config_keys": ["domain_blacklist", "sender_blacklist"], "conditions": ["平台识别、域名黑名单、发送者黑名单及登录门禁由插件逻辑判断"]}, "scope": {"level": "global", "chat_types": ["group", "user"]}, "propagation": "stop_on_consumed"}
+    {
+      "event": "link_message_received",
+      "handler": "handle_link_message",
+      "title": "链接摘要",
+      "trigger": {
+        "kind": "link",
+        "summary": "收到插件支持且未被黑名单或访问门禁拦截的分享链接",
+        "config_keys": [
+          "domain_blacklist",
+          "sender_blacklist"
+        ],
+        "conditions": [
+          "平台识别、域名黑名单、发送者黑名单及登录门禁由插件逻辑判断"
+        ]
+      },
+      "scope": {
+        "level": "global",
+        "chat_types": [
+          "group",
+          "user"
+        ]
+      },
+      "propagation": "stop_on_consumed"
+    }
   ],
-  "jobs": []
+  "jobs": [],
+  "capabilities": [
+    {
+      "id": "media.download",
+      "description": "下载分享链接中的原始视频",
+      "reuse_seconds": 300
+    },
+    {
+      "id": "link.process",
+      "description": "提取或摘要分享链接内容，按平台与处理方式区分",
+      "reuse_seconds": 300
+    }
+  ]
 }
