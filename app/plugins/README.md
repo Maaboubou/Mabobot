@@ -412,7 +412,11 @@ CDP/WebSocket 连接在 `finally` 中关闭，并清理自己的目标标签页�
 
 插件 Runtime 的 `context.work` 与 `context.tasks` 共用公共任务服务；该服务不导入或启动 Chatbot。
 关闭聊天助手、助手超时或关闭助手会话，不会停止插件任务。插件继续负责默认结果文字、文件及失败反馈。
-助手启用后通过 `work.list/get` 和每轮临时上下文读取同一份进度。
+助手启用后通过 `work.list/get` 和当前请求相关的临时上下文读取同一份进度。
+自动上下文仅关联同一入站消息或当前问题中的原始资源链接，放在真实用户消息之前；模糊的进度追问通过工具查询。
+聊天记录插件的内部工作仍保留在任务库，但不进入默认列表或回复上下文；其他旧插件 worker 仍可查询。
+列表优先展示发送待核对和运行中的任务，不因超过 24 小时而隐藏这两类任务。
+状态带有 `created_at` / `updated_at`（UTC），`delivery_state` 区分 `not_required`（无需交付）、`unknown`（是否需要交付不明确）、`pending`（待交付）、`uncertain`（发送待核对）、`sent`（已确认发送）。不得将 `unknown` 当作漏发。
 
 已有 `context.tasks.submit` 会从 `details.chat`、`details.chat_name` 或入站事件取得聊天身份，自动登记进度。
 由入站消息启动的 `context.workers.start` 也会登记任务。旧插件只获得进度可见性，不能仅凭标题或相似文本跨插件合并。

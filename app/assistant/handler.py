@@ -2302,9 +2302,10 @@ class AssistantHandler:
         messages = [{k: v for k, v in m.items() if not k.startswith('_assistant_')} for m in messages]
         from app.services.work_coordination import context_message, WORK_INSTRUCTIONS
         messages = [*messages, {"role": "system", "content": WORK_INSTRUCTIONS}]
-        shared_progress = context_message(chat_name)
+        from app.services.message_context import insert_before_latest_user, latest_user_message
+        shared_progress = context_message(chat_name, request=latest_user_message(messages))
         if shared_progress:
-            messages = [*messages, shared_progress]
+            messages = insert_before_latest_user(messages, shared_progress)
         requested_search_mode = str(kwargs.get("_mabobot_web_search_mode") or "").strip().lower()
         if requested_search_mode not in {"disabled", "cached", "indexed", "live"}:
             requested_search_mode = ""

@@ -58,7 +58,8 @@ def dynamic_tool_specs(settings=None):
 def image_bindings(messages, image_paths):
     """Follow the exact latest-user image ordering used by extract_image_urls."""
     from app.services.codex_proxy.client import extract_image_urls
-    latest = next((m for m in reversed(list(messages)) if str(m.get("role") or "user") == "user"), {})
+    from app.services.message_context import latest_user_message
+    latest = latest_user_message(messages)
     content = latest.get("content")
     metadata = []
     for part in content if isinstance(content, list) else []:

@@ -23,6 +23,7 @@ from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
+from app.services.message_context import latest_user_message
 from app.services.codex_job_manager import codex_job_manager
 from app.services.file_tools_runtime import (
     build_codex_runtime_command,
@@ -317,11 +318,7 @@ def _extract_image_urls(content: Any) -> List[str]:
 def extract_image_urls(messages: Iterable[Dict[str, Any]], allow_image_input: bool = False) -> List[str]:
     if not allow_image_input:
         return []
-    latest_content: Any = None
-    for message in messages:
-        if str(message.get("role") or "user") == "user":
-            latest_content = message.get("content")
-    return _extract_image_urls(latest_content)
+    return _extract_image_urls(latest_user_message(messages).get("content"))
 
 
 def _suffix_for_mime(mime_type: str) -> str:
@@ -804,11 +801,7 @@ _DOCUMENT_DELIVERABLE_RE = re.compile(
     re.IGNORECASE,
 )
 def _latest_user_text(messages: Iterable[Dict[str, Any]]) -> str:
-    latest = ""
-    for message in messages:
-        if str(message.get("role") or "user") == "user":
-            latest = _content_to_text(message.get("content"))
-    return latest.strip()
+    return _content_to_text(latest_user_message(messages).get("content")).strip()
 
 
 def _direct_image_request_mode(

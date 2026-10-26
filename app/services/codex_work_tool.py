@@ -1,6 +1,6 @@
 """Chat-bound task facts and explicit artifact reuse, independent of web search."""
 import json
-from app.services.work_coordination import get_work_coordinator
+from app.services.work_coordination import get_work_coordinator, work_facts
 
 
 def dynamic_tool_specs():
@@ -40,4 +40,4 @@ def execute(tool, arguments, chat, *, context=None):
         records = [record] if record else []
     else:
         raise ValueError('invalid work tool or arguments')
-    return {'tasks': [{k: w[k] for k in ('id', 'capability', 'subject', 'parameters', 'title', 'status', 'message', 'delivered', 'deliveries')} for w in records]}
+    return {'tasks': [work_facts(w) for w in records]}
