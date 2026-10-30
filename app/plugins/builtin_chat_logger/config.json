@@ -64,10 +64,11 @@
       "scope": "global_and_chat"
     },
     "image_understanding_prompt": {
+      "format": "prompt",
+      "title": "聊天图片理解",
       "type": "textarea",
       "group": "image",
       "level": "advanced",
-      "title": "图片理解提示词",
       "description": "控制图片场景、对象和可见文字的提取方式",
       "default": "你是聊天记录的图片内容补充工具。\n请客观描述图片中的主要场景、对象、界面和可见文字，不要推测看不见的信息。\n如果图片包含文字，尽量准确抄录；如果没有可辨认文字，也要描述视觉内容。\n输出纯文本，先写“内容描述：”，需要时再写“可见文字：”。总长度控制在 500 字以内。"
     },

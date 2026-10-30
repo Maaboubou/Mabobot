@@ -611,6 +611,9 @@ async def lifespan(app: FastAPI):
         app.state.monitor_service = monitor_service
         app.state.codex_runtime = agent_runtime
         app.state.assistant_runtime = assistant_runtime
+        from app.services.scheduled_task_runtime import get_scheduled_runtime
+        app.state.scheduled_runtime = get_scheduled_runtime()
+        app.state.scheduled_runtime.start(event_bus, lambda: assistant_runtime.handler if assistant_runtime else None)
 
         logger.info("Application startup completed")
 
@@ -623,6 +626,8 @@ async def lifespan(app: FastAPI):
     finally:
         # 清理资源
         logger.info("Shutting down application...")
+        if getattr(app.state, "scheduled_runtime", None):
+            app.state.scheduled_runtime.stop()
 
         if monitor_service:
             monitor_service.stop_monitoring()
@@ -712,6 +717,8 @@ app.include_router(plugins.router, prefix="/api/plugins", tags=["plugins"])
 app.include_router(capabilities.router, prefix="/api/capabilities", tags=["capabilities"])
 app.include_router(automation.router, prefix="/api/automation", tags=["automation"])
 app.include_router(assistant.router, prefix="/api/assistant", tags=["assistant"])
+from app.api.endpoints import scheduled_tasks
+app.include_router(scheduled_tasks.router, prefix="/api/scheduled-tasks", tags=["scheduled-tasks"])
 app.include_router(chat_policies.router, prefix="/api/chats", tags=["chat-policies"])
 app.include_router(codex_profiles.router, prefix="/api/codex/profiles", tags=["codex-profiles"])
 app.include_router(codex_permissions.router, prefix="/api/codex/permissions", tags=["codex-permissions"])

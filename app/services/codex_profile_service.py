@@ -69,6 +69,7 @@ def public_profile(value: Any) -> Optional[dict[str, Any]]:
         "base_url",
         "reasoning_effort",
         "model_verbosity",
+        "fast_mode",
         "context_window",
         "supports_vision",
         "supports_web_search",
@@ -87,6 +88,7 @@ def public_profile(value: Any) -> Optional[dict[str, Any]]:
         "available",
     }
     profile = {key: deepcopy(value[key]) for key in allowed if key in value}
+    profile["fast_mode"] = value.get("fast_mode") is True
     if profile.get("auth_type") == "chatgpt":
         # Profiles created before auth-source tracking used device-code login.
         if profile.get("auth_source") not in {"device_code", "local_cache"}:
@@ -446,7 +448,7 @@ class CodexProfileRuntimeRegistry:
             raise CodexProfileError(f"Codex Profile 尚未完成登录或密钥配置：{normalized}")
         signature = "|".join(
             str(profile.get(key) or "")
-            for key in ("wrapper_path", "model", "reasoning_effort", "context_window", "created_at", "supports_web_search")
+            for key in ("wrapper_path", "model", "reasoning_effort", "context_window", "created_at", "supports_web_search", "fast_mode")
         )
         with self._lock:
             cached = self._runtimes.get(normalized)
@@ -457,6 +459,7 @@ class CodexProfileRuntimeRegistry:
                 codex_bin=str(profile["wrapper_path"]),
                 permission_read_roots=_managed_profile_permission_roots(profile),
                 managed_profile_id=normalized,
+                service_tier="fast" if profile.get("fast_mode") else "default",
                 model_supports_web_search=bool(profile.get("supports_web_search")),
             )
             try:

@@ -111,6 +111,9 @@ const App = {
 
         try {
             switch (tabName) {
+                case 'schedules':
+                    await ScheduledTasks.load({ quiet: isBackground });
+                    break;
                 case 'dashboard':
                     await Dashboard.load({ quiet: isBackground });
                     break;

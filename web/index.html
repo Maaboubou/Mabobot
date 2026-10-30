@@ -42,7 +42,7 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
 
     <!-- App CSS -->
-    <link href="/static/assets/css/style.css?v=20261021-history-aligned" rel="stylesheet">
+    <link href="/static/assets/css/style.css?v=20261030-chat-picker" rel="stylesheet">
     <link href="/static/assets/css/dashboard.css?v=20260921-bot-activity" rel="stylesheet">
     <link rel="stylesheet" href="/notification-assets/email_notifications.css?v=2">
 </head>
@@ -101,6 +101,7 @@
                         <span>角色管理</span>
                     </a>
                 </li>
+                <li class="nav-item"><a href="/scheduled-tasks" class="nav-link" data-tab="schedules"><i class="bi bi-calendar-check"></i><span>计划任务</span></a></li>
                 <li class="nav-item">
                     <a href="/plugins" class="nav-link" data-tab="plugins">
                         <i class="bi bi-puzzle"></i>
@@ -137,7 +138,7 @@
             </div>
 
             <div class="sidebar-footer p-3 border-top border-secondary border-opacity-25">
-                <small class="text-muted d-block mb-1">版本：3.9.1</small>
+                <small class="text-muted d-block mb-1">版本：3.10.0</small>
                 <div class="d-flex align-items-center text-muted gap-2">
                     <button id="themeToggle" type="button" class="sidebar-theme-toggle"
                         aria-label="切换到暗色模式" aria-pressed="false" title="切换到暗色模式">
@@ -198,6 +199,7 @@
                 </div>
             </header>
 
+            <div id="schedules" class="tab-content workspace-page"><div id="scheduledTasksRoot" class="p-3"></div></div>
             <!-- Tab: Dashboard -->
             <div id="dashboard" class="tab-content workspace-page">
                 <div class="dashboard-shell fade-in">
@@ -446,6 +448,10 @@
                                     <div class="col-md-4 codex-profile-final-config-field"><label class="form-label">推理强度</label><select class="form-select" name="reasoning_effort"><option>minimal</option><option>low</option><option>medium</option><option selected>high</option><option>xhigh</option><option>max</option></select></div>
                                     <div class="col-md-4 codex-profile-final-config-field"><label class="form-label">输出详细度</label><select class="form-select" name="model_verbosity"><option selected>inherit</option><option>low</option><option>medium</option><option>high</option></select></div>
                                     <div class="col-md-4 codex-profile-final-config-field"><label class="form-label">上下文窗口（Token）</label><input class="form-control" name="context_window" type="number" min="4096" max="10000000" value="128000"><div class="form-text">官方登录和 API 均生效；自动压缩阈值为此值的 90%。运行时可用窗口可能扣除预留空间。</div></div>
+                                    <div class="col-12 codex-profile-final-config-field">
+                                        <label class="form-check form-switch" for="codexProfileFastMode"><input class="form-check-input" id="codexProfileFastMode" name="fast_mode" type="checkbox"><span class="form-check-label">Fast mode</span></label>
+                                        <div class="form-text">默认关闭。开启后请求更快的模型响应，需要模型与服务商支持，并会增加用量或费用。</div>
+                                    </div>
                                     <div class="col-12 codex-profile-final-config-field"><label class="form-check form-switch"><input class="form-check-input" type="checkbox" name="make_default" checked><span class="form-check-label">设为 Assistant 默认 Profile</span></label></div>
                                 </form>
                             </div>
@@ -585,6 +591,10 @@
                                             <div class="form-text" id="codexOAuthCapabilities">能力信息来自登录后的账号模型目录。</div>
                                         </div>
                                         <div class="col-12">
+                                            <label class="form-check form-switch" for="codexOAuthFastMode"><input class="form-check-input" id="codexOAuthFastMode" type="checkbox"><span class="form-check-label">Fast mode</span></label>
+                                            <div class="form-text">默认关闭。开启后请求更快的模型响应，需要账号与模型支持，并会增加用量或费用。</div>
+                                        </div>
+                                        <div class="col-12">
                                             <label class="form-check form-switch"><input class="form-check-input" id="codexOAuthMakeDefault" type="checkbox" checked><span class="form-check-label">设为 Assistant 默认 Profile</span></label>
                                         </div>
                                     </div>
@@ -620,7 +630,7 @@
                                     <strong id="selectedChatLabel">选择一个聊天</strong>
                                     <small id="selectedChatMeta">尚未选择</small>
                                 </span>
-                                <i class="bi bi-chevron-down chat-picker-chevron" aria-hidden="true"></i>
+                                <span class="chat-picker-switch">切换<i class="bi bi-chevron-down chat-picker-chevron" aria-hidden="true"></i></span>
                             </summary>
                             <div class="chat-picker-popover">
                                 <div class="chat-picker-head">
@@ -1439,7 +1449,7 @@
     </div>
 
     <!-- Route Owner Prompts Modal -->
-    <div class="modal fade" id="routePromptsModal" tabindex="-1">
+    <div class="modal fade" id="routePromptsModal" tabindex="-1" aria-labelledby="routePromptsModalTitle">
         <div class="modal-dialog modal-lg modal-dialog-scrollable">
             <div class="modal-content">
                 <div class="modal-header">
@@ -1536,18 +1546,21 @@
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
     <!-- App Scripts -->
     <script src="/static/assets/js/api.js?v=20260925-backup-flow"></script>
-    <script src="/static/assets/js/codex_permissions.js?v=20261017-permission-quiet"></script>
-    <script src="/static/assets/js/ui.js?v=20261017-per-chat-logging"></script>
+    <script src="/static/assets/js/codex_permissions.js?v=20261028-permission-grid"></script>
+    <script src="/static/assets/js/ui.js?v=20261028-assistant-layout"></script>
     <script src="/notification-assets/email_notifications.js?v=1"></script>
     <script src="/static/assets/js/system_storage.js?v=20260925-storage"></script>
     <script src="/static/assets/js/system_operations.js?v=20260925-backup-flow"></script>
     <script src="/static/assets/js/system_tools.js?v=20260925-system-simplify"></script>
-    <script src="/static/assets/js/llm_manager.js?v=20261021-history-aligned"></script>
+    <script src="/static/assets/js/route_prompts.js?v=20261028-content-review"></script>
+    <script src="/static/assets/js/llm_manager.js?v=20261028-route-prompts"></script>
     <script src="/static/assets/js/codex_center.js?v=20261017-search-capability"></script>
     <script src="/static/assets/js/codex_skills.js?v=1.1.1-format-helpers"></script>
     <script src="/static/assets/js/dashboard.js?v=20260921-bot-activity"></script>
-    <script src="/static/assets/js/main.js?v=20261017-per-chat-logging"></script>
-    <script src="/static/assets/js/assistant_prompts.js?v=20261003-1"></script>
+    <link href="/static/assets/css/scheduled_tasks.css?v=20261030-detail-layout" rel="stylesheet">
+    <script src="/static/assets/js/scheduled_tasks.js?v=20261030-detail-layout"></script>
+    <script src="/static/assets/js/main.js?v=20261027-schedules"></script>
+    <script src="/static/assets/js/assistant_prompts.js?v=20261028-content-review"></script>
     <script src="/static/assets/js/chat_archive.js?v=20260917-context-actions"></script>
 
     <!-- ==================== 接话判断 History Modal ==================== -->

@@ -47,10 +47,13 @@ def attachment_metadata(source_path, *, name=""):
 def attachment_text(message):
     attachment = (message.get("metadata") or {}).get("attachment") or {}
     status = attachment.get("status")
+    image_id = str(message.get("id") or "") if message.get("message_type") == "image" else ""
+    read_hint = (f'图片附件 ID（attachment_id）：{image_id}；需要看图时调用 history.read_attachment。\n'
+                 if image_id and attachment else "")
     if status == "pending":
-        return "附件路径正在获取，尚未就绪。"
+        return read_hint + "附件路径正在获取，尚未就绪。"
     if status == "failed":
-        return "附件路径获取失败，暂无可读取路径。"
+        return read_hint + "附件路径获取失败，暂无可读取路径。"
     path = str(attachment.get("path") or "")
     if status != "ready" or not path:
         return ""
@@ -60,4 +63,5 @@ def attachment_text(message):
     if re.match(r"^[A-Za-z]:[\\/]", path):
         windows = PureWindowsPath(path)
         paths.append(str(PurePosixPath('/mnt', windows.drive[0].lower(), *windows.parts[1:])))
-    return "附件路径：" + "；WSL 路径：".join(paths)
+    hint = read_hint or ("若当前任务需要图片内容，可通过 history.range 查找该图片的 attachment_id，再调用 history.read_attachment。\n" if message.get("message_type") == "image" else "")
+    return hint + "附件路径：" + "；WSL 路径：".join(paths)

@@ -63,6 +63,10 @@ EventBus 从数据库取得可信的聊天 ID，建立配置上下文。`get_con
 
 Manifest 的监听器 `scope.level: "global"` 描述监听范围，与配置字段是否支持聊天覆盖无关。无需修改 Runtime API v2 版本。
 
+## 可编辑提示词
+
+提示词字段使用 `format: "prompt"`、中文 `title` 和明确的 `description` 声明，保持 `scope: "global_and_chat"`。任务路由的“管理提示词”编辑全局默认值，聊天中的自定义内容继续由聊天配置管理。废弃、只读、隐藏和敏感字段不能出现在可编辑目录中。完整声明、目录来源与 UI 验收要求见[插件编写规范](../app/plugins/README.md#211-声明可编辑提示词与管理入口)。
+
 ## 接口与并发
 
 | 接口 | 用途 |

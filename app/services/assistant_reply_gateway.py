@@ -50,6 +50,11 @@ class CodexReplyRequest:
     allow_image_input: bool = False
     history_mode: str = "full"
     usage_capture: Optional[List[Dict[str, Any]]] = None
+    usage_call_type: str = "chat"
+    # Reply capabilities belong to the common gateway, regardless of trigger.
+    reply_delivery: bool = True
+    delivery_chat_name: str = ""
+    initial_at_users: Sequence[str] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -61,6 +66,7 @@ class CodexReplyResult:
     backend: str
     duration_seconds: float
     raw_response: Dict[str, Any]
+    at_users: tuple[str, ...] = ()
 
 
 def _default_model() -> str:
@@ -214,17 +220,30 @@ class CodexReplyGateway:
             # context-window fallback for rotation and monitoring.
             payload["codex_model_context_window"] = profile_context_window
 
+        from app.services.codex_mention_tool import (
+            MentionPlan, mention_context, normalize_members, INSTRUCTIONS as MENTION_INSTRUCTIONS,
+        )
+        destination = str(request.delivery_chat_name or chat_name).strip()
+        mention_plan = (
+            MentionPlan(chat_name, normalize_members(request.initial_at_users), delivery_chat=destination)
+            if request.reply_delivery else None
+        )
+        if mention_plan is not None:
+            payload["messages"].append({"role": "system", "content": MENTION_INSTRUCTIONS +
+                "\n本轮回复的实际接收聊天：" + destination + "。@ 成员应属于这个接收聊天。"})
+
         started_at = time.monotonic()
         try:
-            response = runtime.chat(
-                payload,
-                chat_id=chat_name,
-                role_name=str(request.role_name or "").strip() or None,
-                retry=bool(request.retry),
-                max_turns=max(0, int(request.max_turns or 0)),
-                allow_exec_fallback=bool(request.allow_exec_fallback),
-                persistent_session=bool(request.persistent_session),
-            )
+            with mention_context(mention_plan):
+                response = runtime.chat(
+                    payload,
+                    chat_id=chat_name,
+                    role_name=str(request.role_name or "").strip() or None,
+                    retry=bool(request.retry),
+                    max_turns=max(0, int(request.max_turns or 0)),
+                    allow_exec_fallback=bool(request.allow_exec_fallback),
+                    persistent_session=bool(request.persistent_session),
+                )
         except Exception as exc:
             self._record_telemetry(
                 request=request,
@@ -296,6 +315,7 @@ class CodexReplyGateway:
             backend=backend,
             duration_seconds=duration,
             raw_response=copy.deepcopy(normalized_response),
+            at_users=mention_plan.users if mention_plan is not None else (),
         )
 
     def _record_telemetry(
@@ -328,6 +348,7 @@ class CodexReplyGateway:
                     "role_name": str(request.role_name or ""),
                     "history_mode": str(request.history_mode or "full"),
                     "_usage_capture": request.usage_capture,
+                    "usage_call_type": request.usage_call_type,
                 },
             )
         except Exception as exc:

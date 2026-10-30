@@ -225,6 +225,7 @@ class CodexOAuthService:
             "model": model_id,
             "reasoning_effort": reasoning_effort,
             "model_verbosity": str(payload.get("model_verbosity") or "inherit"),
+            "fast_mode": bool(payload.get("fast_mode", False)),
             "context_window": context_window,
             "supports_vision": "image" in (selected.get("input_modalities") or []),
             "setup_status": "ready",

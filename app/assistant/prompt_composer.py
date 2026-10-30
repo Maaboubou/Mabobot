@@ -163,7 +163,7 @@ messages 必须非空，不存在 continue 或 suppressed 状态，不得用空�
 
 
 def compose_reply(role_prompt, settings, history, current, *, search="", rules=None):
-    rules = rules or {k: v["text"] for k, v in DEFAULT_RULES.items()}
+    rules = {**{k: v["text"] for k, v in DEFAULT_RULES.items()}, **(rules or {})}
     contract, schema = output_contract(settings)
     blocks = [
         block(
@@ -183,6 +183,7 @@ def compose_reply(role_prompt, settings, history, current, *, search="", rules=N
             editable="output",
         ),
         rule_block("history", rules),
+        rule_block("image_read", rules),
         block(
             "history_context",
             "近期聊天资料",
@@ -260,7 +261,8 @@ def composition_version(rules):
 class ComposedReply(str):
     """Keep per-request delivery settings stable across live configuration changes."""
 
-    def __new__(cls, value, settings):
+    def __new__(cls, value, settings, at_users=()):
         result = super().__new__(cls, value)
         result.output_settings = dict(settings)
+        result.at_users = tuple(at_users)
         return result

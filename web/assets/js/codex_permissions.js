@@ -92,6 +92,7 @@ const CodexPermissions = {
                 <fieldset class="chat-policy-permission-field"><legend class="visually-hidden">权限来源</legend><div class="chat-policy-permission-options chat-permission-segment">
                     ${[['inherit', '跟随默认'], ['custom', '本聊天自定义']].map(([value, label]) => `<label><input type="radio" name="permission_mode" value="${value}" ${custom === (value === 'custom') ? 'checked' : ''}><span>${label}</span></label>`).join('')}
                 </div></fieldset>
+                <button type="button" class="btn btn-sm btn-outline-secondary chat-permission-reset" data-permission-reset>恢复默认</button>
                 <div class="chat-permission-status" role="status" aria-live="polite" ${pending ? 'hidden' : ''}>${pending ? '' : e(this.statuses[runtime.status] || '正在刷新')}</div>
             </div>
             ${!pending && (effective.issues || []).length ? `<div class="codex-permission-issues" role="note">${effective.issues.map(code => `<p>${e(this.issueText(code, effective))}</p>`).join('')}</div>` : ''}
@@ -112,7 +113,6 @@ const CodexPermissions = {
                 <p>保存后下一轮生效，进行中的轮次保持原权限。</p>
                 ${!pending ? `<details><summary>查看实际生效权限</summary>${this.summary(effective)}${runtime.applied_at ? `<p>${e(UI.formatDateTime(runtime.applied_at))}</p>` : ''}<p>${e(data.runtime_support?.reason || '')}</p></details>` : ''}
             </div></details>
-            <button type="button" class="btn btn-outline-secondary mt-3" data-permission-reset>恢复默认</button>
         </section>`;
     },
 

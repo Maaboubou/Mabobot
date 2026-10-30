@@ -2334,6 +2334,7 @@ class LLMManager:
     ) -> None:
         """Record first-class Codex replies without routing them through LiteLLM."""
         metadata = {**(metadata or {}), "billing_codex": True}
+        call_type = "scheduled" if metadata.get("usage_call_type") == "scheduled" else "chat"
         safe_response = response if isinstance(response, dict) else {}
         token_usage = self._extract_token_usage(safe_response)
         response_attachments = self._extract_attachments_from_response(safe_response)
@@ -2341,19 +2342,19 @@ class LLMManager:
         if success:
             self._record_stats(
                 "assistant",
-                "chat",
+                call_type,
                 str(model_id or "unknown"),
                 safe_response,
                 max(0.0, float(response_time or 0.0)),
                 token_usage=token_usage, metadata=metadata,
             )
         else:
-            self._record_error("assistant", "chat", str(model_id or "unknown"))
-            self._record_usage("assistant", "chat", str(model_id or "unknown"),
+            self._record_error("assistant", call_type, str(model_id or "unknown"))
+            self._record_usage("assistant", call_type, str(model_id or "unknown"),
                                safe_response, response_time, success=False, metadata=metadata, error=error)
         self._record_call_history(
             "assistant",
-            "chat",
+            call_type,
             str(model_id or "unknown"),
             messages,
             response_text,

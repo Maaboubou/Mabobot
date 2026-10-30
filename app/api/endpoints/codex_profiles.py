@@ -24,6 +24,7 @@ class CodexProfileCreate(BaseModel):
     api_key: str = Field(default="", max_length=4096)
     reasoning_effort: Literal["minimal", "low", "medium", "high", "xhigh", "max"] = "high"
     model_verbosity: Literal["inherit", "low", "medium", "high"] = "inherit"
+    fast_mode: bool = False
     context_window: int = Field(default=128000, ge=4096, le=10_000_000)
     supports_vision: bool = False
     supports_web_search: bool = False
@@ -38,6 +39,7 @@ class CodexProfileUpdate(BaseModel):
     api_key: Optional[str] = Field(default=None, min_length=1, max_length=4096)
     reasoning_effort: Optional[Literal["minimal", "low", "medium", "high", "xhigh", "max"]] = None
     model_verbosity: Optional[Literal["inherit", "low", "medium", "high"]] = None
+    fast_mode: Optional[bool] = None
     context_window: Optional[int] = Field(default=None, ge=4096, le=10_000_000)
     supports_vision: Optional[bool] = None
     supports_web_search: Optional[bool] = None
@@ -55,6 +57,7 @@ class CodexProfileFinalize(BaseModel):
     model: str = Field(min_length=1, max_length=128)
     reasoning_effort: Literal["minimal", "low", "medium", "high", "xhigh", "max"]
     model_verbosity: Literal["inherit", "low", "medium", "high"] = "inherit"
+    fast_mode: bool = False
     make_default: bool = True
 
 

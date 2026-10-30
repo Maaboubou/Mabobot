@@ -209,7 +209,7 @@ async def update_role(
 
         return {
             "applied": True, "cache_refreshed": cache_refreshed,
-            "message": f"角色 '{role.display_name}' 更新成功"
+            "revision": prompt_revision(role), "prompt": role.prompt, "message": f"角色 '{role.display_name}' 更新成功"
         }
     except HTTPException:
         raise

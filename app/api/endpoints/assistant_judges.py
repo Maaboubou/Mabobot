@@ -206,7 +206,7 @@ async def update_judge(
 
         commit_prompt_update(db, judge)
         cache_refreshed = _reload_assistant_judges_safely()
-        return {"applied": True, "cache_refreshed": cache_refreshed, "message": f"接话判断 '{judge.display_name}' 更新成功"}
+        return {"applied": True, "cache_refreshed": cache_refreshed, "revision": prompt_revision(judge), "prompt": judge.prompt, "message": f"接话判断 '{judge.display_name}' 更新成功"}
     except HTTPException:
         raise
     except Exception as e:

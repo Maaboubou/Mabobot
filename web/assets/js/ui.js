@@ -11,6 +11,7 @@ const UI = {
         codex: '/codex',
         users: '/chats',
         roles: '/assistant',
+        schedules: '/scheduled-tasks',
         plugins: '/plugins',
         llm: '/ai',
         usage: '/usage',
@@ -457,6 +458,7 @@ const UI = {
             'plugins': '功能插件',
             'users': '聊天管理',
             'roles': '角色管理',
+            'schedules': '计划任务',
             'settings': '系统',
             'wechat': 'WeChat 状态',
             'logs': '运行与日志',
@@ -1901,23 +1903,23 @@ const UI = {
 
                 <div class="chat-policy-pane ${activePane === 'assistant' ? 'active' : ''}" data-chat-policy-pane="assistant">
                     <div class="chat-assistant-columns ${chat.is_group ? '' : 'is-private'}">
-                    <section class="chat-policy-block">
+                    <section class="chat-policy-block chat-assistant-identity">
                         <div class="chat-policy-block-head"><h4>回复身份</h4></div>
                         <div class="chat-policy-field-grid two">
                             <label class="chat-horizontal-field"><span class="chat-field-label"><span>Codex Profile</span><a href="/codex" onclick="event.preventDefault(); UI.switchTab('codex')">管理</a></span><select class="form-select" name="codex_profile_id">${profileOptions}</select></label>
                             <label class="chat-horizontal-field"><span class="chat-field-label"><span>角色</span><a href="/assistant/roles" onclick="event.preventDefault(); App.openAssistantRoleManager()">管理</a></span><select class="form-select" name="role_id"><option value="">继承全局默认角色</option>${roleOptions}</select></label>
 
                         </div>
-                        ${chat.is_group ? `<div class="chat-nickname-group">
+                    </section>
+                        ${chat.is_group ? `<section class="chat-policy-block chat-nickname-group">
                             <div class="chat-policy-block-head"><h4>群内昵称</h4></div>
                             <label class="chat-setting-row chat-behavior-toggle form-switch"><span><strong>自动同步微信昵称</strong><small data-nickname-status data-detected="${this.escapeHtml(chat.bot_group_nickname_detected || '')}"></small></span><input class="form-check-input" type="checkbox" role="switch" name="bot_group_nickname_auto_enabled" ${chat.bot_group_nickname_auto_enabled ? 'checked' : ''}></label>
                             <div class="chat-policy-field-grid two">
                                 <label class="chat-horizontal-field"><span data-nickname-label>备用昵称</span><input class="form-control" name="bot_group_nickname" value="${this.escapeHtml(chat.bot_group_nickname || '')}" maxlength="128" placeholder="输入昵称，无需填写 @"><small data-nickname-help>用于补充 @ 匹配</small></label>
                             </div>
-                        </div>` : ''}
-                    </section>
+                        </section>` : ''}
 
-                    <section class="chat-policy-block">
+                    <section class="chat-policy-block chat-assistant-behavior">
                         <div class="chat-policy-block-head"><h4>对话行为</h4></div>
                         <div class="chat-setting-list">
                             <div class="chat-setting-group">

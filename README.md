@@ -2,7 +2,7 @@
 
 Mabobot 是运行在 Windows 上的本地微信自动化与 AI 助手。它使用内置 `mabowx` 连接微信，并提供 Web 控制台、AI 助手、插件、模型路由、聊天档案与文件处理能力。
 
-当前版本：`3.9.1`
+当前版本：`3.10.0`
 
 ## 启动
 
@@ -56,6 +56,10 @@ cd Mabobot
 
 公开版包含聊天记录、翻译助手、Magnet Check、菜单翻译、Summary Plus、Weekly、中国银行汇率、电子书下载、图像编辑和游戏发售日历 10 个插件。翻译助手支持每聊天双语／三语、提示词与模板，启用前请先在模型配置中分配翻译模型。
 
+可以在聊天中说“每天九点整理 AI 新闻发到本群”来创建计划任务，随后用“以后只要五条并附原文链接”改进任务。在 Web 的“计划任务”页面可统一编辑、暂停、执行、查看结果与恢复历史版本。详见[计划任务使用与运行规则](docs/SCHEDULED_TASKS.md)。
+
+AI 助手可在群聊回复时自主选择需要提醒的成员，调用 `wechat.mention_reply` 后，首段回复会带真正的微信 @。支持多人、群昵称与联系人备注差异；找不到或无法唯一定位成员时取消发送，不会退化为普通的“@昵称”文字。
+
 真实密钥、Cookie、数据库、聊天记录和下载文件不要提交到 Git。运行数据主要位于 `data/`、`logs/` 和 `tmp/`。
 
 ## 开发与排障
@@ -105,6 +109,7 @@ scripts/           安装、运维与文件工具
 - [mabowx 与主程序边界](docs/MABOWX_BOUNDARY.md)
 - [Web 控制台架构](docs/WEB_CONSOLE_ARCHITECTURE.md)
 - [Codex Profile 配置与权限架构](docs/CODEX_PROFILE_ARCHITECTURE.md)
+- [计划任务与聊天反馈改进](docs/SCHEDULED_TASKS.md)
 - [聊天档案与线程上下文](docs/CHAT_ARCHIVE_OPERATIONS.md)
 - [模型用量与计价](docs/LLM_USAGE.md)
 - [安全策略](SECURITY.md)

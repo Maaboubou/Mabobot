@@ -1,0 +1,164 @@
+/* Continuous workspace surface; shared semantic tokens support both themes. */
+#scheduledTasksRoot { font-size: 13px; color: var(--text-body); }
+#scheduledTasksRoot [hidden] { display: none !important; }
+#scheduledTasksRoot summary { cursor: pointer; overflow-wrap: anywhere; color: var(--text-secondary); }
+#scheduledTasksRoot summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 4px; }
+#scheduledTasksRoot .schedule-toolbar,
+#scheduledTasksRoot .schedule-service,
+#scheduledTasksRoot .schedule-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+#scheduledTasksRoot .schedule-toolbar { justify-content: space-between; padding-bottom: 16px; border-bottom: 1px solid var(--border-color); }
+#scheduledTasksRoot .schedule-service { flex: 1; }
+#scheduledTasksRoot #scheduleRuntimeStatus { font-size: 12px; color: var(--text-secondary); }
+#scheduledTasksRoot .schedule-settings,
+#scheduledTasksRoot .schedule-help { padding: 12px 0; border-bottom: 1px solid var(--border-soft); }
+#scheduledTasksRoot .schedule-help { font-size: 12px; }
+#scheduledTasksRoot .schedule-hint { margin: 12px 0; font-size: 12px; line-height: 1.6; color: var(--text-secondary); }
+#scheduledTasksRoot #schedulePermissionCount { margin-left: 8px; font-size: 12px; }
+#scheduledTasksRoot .schedule-filters { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 16px 0; }
+#scheduledTasksRoot #scheduleSearch { flex: 1 1 180px; max-width: 320px; }
+#scheduledTasksRoot .schedule-filters .form-select { width: auto; max-width: 200px; }
+#scheduledTasksRoot .schedule-history-filter { margin-left: auto; white-space: nowrap; color: var(--text-secondary); font-size: 12px; }
+#scheduledTasksRoot .schedule-list { border-block: 1px solid var(--border-color); }
+#scheduledTasksRoot .table { color: inherit; font-size: 13px; }
+#scheduledTasksRoot th { font-size: 12px; font-weight: 500; color: var(--text-secondary); white-space: nowrap; }
+#scheduledTasksRoot .schedule-task-row > td { max-width: 22rem; min-width: 88px; overflow-wrap: anywhere; }
+#scheduledTasksRoot .schedule-task-row > td:first-child { min-width: 160px; }
+#scheduledTasksRoot td .btn-link { color: var(--text-main); font-weight: 500; text-decoration: none; }
+#scheduledTasksRoot td .btn-link:hover { color: var(--primary); }
+#scheduledTasksRoot td .small { font-size: 12px; margin-top: 4px; }
+#scheduledTasksRoot .schedule-detail-panel { padding: 24px 0 0; min-width: 0; }
+#scheduledTasksRoot h3 { font-size: 15px; margin-bottom: 12px; overflow-wrap: anywhere; }
+#scheduledTasksRoot h4 { font-size: 13px; }
+#scheduledTasksRoot .schedule-meta { font-size: 12px; color: var(--text-secondary); margin: 8px 0 12px; overflow-wrap: anywhere; }
+#scheduledTasksRoot .schedule-output { white-space: pre-wrap; overflow-wrap: anywhere; font-family: inherit; font-size: 13px; line-height: 1.6; max-height: 28rem; overflow-y: auto; color: inherit; }
+#scheduledTasksRoot .schedule-original { margin-bottom: 12px; font-size: 12px; }
+#scheduledTasksRoot .schedule-record { padding: 12px 0; border-bottom: 1px solid var(--border-soft); }
+#scheduledTasksRoot .schedule-versions { margin-top: 20px; }
+#scheduledTasksRoot .schedule-advanced { margin-top: 16px; }
+#scheduledTasksRoot .alert { margin: 12px 0 0; padding: 8px 12px; font-size: 13px; }
+@media (max-width: 575.98px) {
+    #scheduledTasksRoot .schedule-service { align-items: flex-start; flex-direction: column; gap: 4px; min-width: 140px; }
+    #scheduledTasksRoot #scheduleSearch { flex-basis: 100%; max-width: none; }
+    #scheduledTasksRoot .schedule-filters .form-select { flex: 1 1 110px; min-width: 110px; max-width: none; }
+    #scheduledTasksRoot .schedule-history-filter { margin-left: 0; }
+    #scheduledTasksRoot .schedule-detail-panel { padding-top: 16px; }
+}
+
+/* Selected task and its detail share one disclosure state. */
+#scheduledTasksRoot .schedule-task-toggle { display: inline-flex; align-items: baseline; gap: 8px; }
+#scheduledTasksRoot .schedule-task-toggle i { flex-shrink: 0; font-size: 12px; color: var(--text-secondary); }
+#scheduledTasksRoot .schedule-row-selected > td { background: var(--bg-soft); }
+#scheduledTasksRoot #scheduleDetail { container: schedule-detail / inline-size; }
+#scheduledTasksRoot .schedule-detail-topbar { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 16px 24px; margin-bottom: 20px; }
+#scheduledTasksRoot .schedule-detail-header { flex: 1 1 280px; min-width: 0; display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+#scheduledTasksRoot .schedule-detail-header > div { min-width: 0; }
+#scheduledTasksRoot .schedule-detail-header h3 { margin-bottom: 4px; }
+#scheduledTasksRoot .schedule-detail-header .schedule-meta { margin: 0; }
+#scheduledTasksRoot .schedule-detail-tools { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; align-items: center; }
+#scheduledTasksRoot .schedule-more { position: relative; align-self: center; font-size: 12px; }
+#scheduledTasksRoot .schedule-more > summary { padding: 8px; }
+#scheduledTasksRoot .schedule-more > div { position: absolute; right: 0; z-index: 2; display: grid; gap: 4px; padding: 8px; width: max-content; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--bg-card); box-shadow: var(--shadow-sm); }
+#scheduledTasksRoot .schedule-detail-tabs { display: flex; gap: 24px; border-bottom: 1px solid var(--border-color); margin-bottom: 16px; }
+#scheduledTasksRoot .schedule-detail-tabs button { border: 0; border-bottom: 2px solid transparent; padding: 8px 0 12px; background: transparent; color: var(--text-secondary); font-size: 13px; }
+#scheduledTasksRoot .schedule-detail-tabs button[aria-selected="true"] { color: var(--text-main); border-bottom-color: var(--primary); }
+#scheduledTasksRoot .schedule-detail-tabs button:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+#scheduledTasksRoot .schedule-detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 280px); gap: 28px; align-items: start; }
+#scheduledTasksRoot .schedule-instructions { min-width: 0; }
+#scheduledTasksRoot .schedule-instructions h4 { color: var(--text-secondary); font-size: 12px; margin-bottom: 12px; }
+#scheduledTasksRoot .schedule-definition { min-width: 0; padding: 16px; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); background: var(--bg-soft); }
+#scheduledTasksRoot .schedule-definition h4 { margin: 0 0 16px; color: var(--text-main); font-weight: 600; }
+#scheduledTasksRoot .schedule-prompt { margin: 0 0 20px; padding: 16px 18px; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); background: var(--bg-soft); line-height: 1.85; tab-size: 4; scrollbar-gutter: stable; }
+#scheduledTasksRoot .schedule-instructions > p { line-height: 1.75; overflow-wrap: anywhere; }
+#scheduledTasksRoot .schedule-definition .schedule-settings:last-child { border-bottom: 0; padding-bottom: 0; }
+#scheduledTasksRoot .schedule-definition dl { margin: 0; }
+#scheduledTasksRoot .schedule-definition dl > div { margin-bottom: 16px; }
+#scheduledTasksRoot .schedule-definition dt { font-size: 12px; color: var(--text-secondary); font-weight: 400; margin-bottom: 4px; }
+#scheduledTasksRoot .schedule-definition dd { margin: 0; overflow-wrap: anywhere; }
+#scheduledTasksRoot .schedule-definition .schedule-settings { font-size: 12px; }
+#scheduledTasksRoot .schedule-detail-loading { display: flex; justify-content: space-between; align-items: center; padding: 16px 0; color: var(--text-secondary); }
+@container schedule-detail (max-width: 640px) {
+    #scheduledTasksRoot .schedule-detail-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+    #scheduledTasksRoot .schedule-definition { padding: 16px; }
+    #scheduledTasksRoot .schedule-detail-tabs { gap: 16px; }
+}
+
+/* The disclosure occupies a full-width row immediately after its task. */
+#scheduledTasksRoot .schedule-list { container-type: inline-size; }
+#scheduledTasksRoot .schedule-detail-cell { max-width: none; min-width: 0; padding: 20px; background: var(--bg-soft); box-shadow: none; }
+#scheduledTasksRoot .schedule-detail-cell #scheduleDetail { width: calc(100cqi - 40px); position: sticky; left: 20px; padding: 24px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--bg-card); }
+#scheduledTasksRoot .schedule-detail-cell .schedule-detail-panel { padding-top: 0; }
+#scheduledTasksRoot .schedule-detail-cell .schedule-detail-loading { padding: 0; }
+
+#scheduledTasksRoot .schedule-task-row > .schedule-row-actions { position: sticky; right: 0; width: 56px; min-width: 56px; max-width: 56px; text-align: center; background: var(--bg-body); }
+#scheduledTasksRoot .schedule-row-delete { color: var(--text-secondary); min-width: 36px; min-height: 36px; }
+#scheduledTasksRoot .schedule-row-delete:hover { color: var(--danger); background: var(--danger-soft); }
+#scheduledTasksRoot .schedule-row-delete:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+@media (max-width: 575.98px) {
+    #scheduledTasksRoot .schedule-row-delete { min-width: 44px; min-height: 44px; }
+}
+
+/* Phone layout: each table row becomes a readable task summary, with its
+   existing detail row directly beneath it. No duplicate controls or drafts. */
+@media (max-width: 767.98px) {
+    #scheduledTasksRoot { font-size: 14px; }
+    #scheduledTasksRoot .schedule-toolbar { align-items: flex-start; gap: 12px; }
+    #scheduledTasksRoot .schedule-service { flex-basis: 100%; gap: 8px; }
+    #scheduledTasksRoot .schedule-actions { width: 100%; gap: 8px; }
+    #scheduledTasksRoot .schedule-actions [data-schedule-action="new"] { flex: 1; }
+    #scheduledTasksRoot .btn,
+    #scheduledTasksRoot .schedule-detail-tabs button { min-height: 44px; }
+    #scheduledTasksRoot .schedule-actions .btn { min-width: 44px; }
+    #scheduledTasksRoot .schedule-settings > summary,
+    #scheduledTasksRoot .schedule-help > summary { padding-block: 10px; }
+    #scheduledTasksRoot .schedule-settings,
+    #scheduledTasksRoot .schedule-help { padding-block: 2px; }
+    #scheduledTasksRoot .schedule-filters { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+    #scheduledTasksRoot #scheduleSearch { grid-column: 1 / -1; width: 100%; max-width: none; }
+    #scheduledTasksRoot .schedule-filters .form-select { min-width: 0; width: 100%; max-width: none; }
+    #scheduledTasksRoot .schedule-history-filter { grid-column: 1 / -1; margin: 0; display: flex; align-items: center; min-height: 44px; }
+    #scheduledTasksRoot .form-control,
+    #scheduledTasksRoot .form-select { font-size: 16px; min-height: 44px; min-width: 0; }
+    #scheduledTasksRoot #scheduleChatPermissions { gap: 0 !important; }
+    #scheduledTasksRoot #scheduleChatPermissions .form-check { width: 100%; padding-block: 10px; margin-bottom: 0; overflow-wrap: anywhere; }
+    #scheduledTasksRoot .schedule-list { border: 0; }
+    #scheduledTasksRoot .table-responsive { overflow: visible; }
+    #scheduledTasksRoot .table,
+    #scheduledTasksRoot .table tbody { display: block; width: 100%; }
+    #scheduledTasksRoot .table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+    #scheduledTasksRoot .schedule-task-row { display: grid; grid-template-columns: minmax(0, 1fr) 44px; padding: 12px; margin-top: 12px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--bg-card); }
+    #scheduledTasksRoot .schedule-task-row > td { grid-column: 1 / -1; display: block; min-width: 0; max-width: none; padding: 6px 0; border: 0; background: transparent; box-shadow: none; }
+    #scheduledTasksRoot .schedule-task-row > .schedule-task-name:first-child { min-width: 0; grid-column: 1; grid-row: 1; padding: 0 8px 10px 0; }
+    #scheduledTasksRoot .schedule-task-toggle { width: 100%; font-size: 15px; line-height: 1.5; }
+    #scheduledTasksRoot .schedule-task-toggle span { min-width: 0; overflow-wrap: anywhere; }
+    #scheduledTasksRoot .schedule-task-name > .small { margin-left: 20px; }
+    #scheduledTasksRoot .schedule-task-row > td[data-label] { display: grid; grid-template-columns: 72px minmax(0, 1fr); column-gap: 12px; line-height: 1.6; }
+    #scheduledTasksRoot td[data-label]::before { content: attr(data-label); grid-column: 1; grid-row: 1 / span 2; font-size: 12px; color: var(--text-secondary); }
+    #scheduledTasksRoot td[data-label] > .small { grid-column: 2; margin-top: 0; }
+    #scheduledTasksRoot .schedule-task-row > .schedule-row-actions { grid-column: 2; grid-row: 1; position: static; width: 44px; padding: 0; }
+    #scheduledTasksRoot .schedule-row-delete { width: 44px; min-height: 44px; }
+    #scheduledTasksRoot .schedule-row-selected { border-color: var(--primary); border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+    #scheduledTasksRoot .schedule-detail-row { display: block; border: 1px solid var(--primary); border-top: 0; border-radius: 0 0 var(--radius-sm) var(--radius-sm); }
+    #scheduledTasksRoot .schedule-detail-cell { display: block; width: 100%; padding: 16px 12px; border: 0; }
+    #scheduledTasksRoot .schedule-detail-cell #scheduleDetail { position: static; width: 100%; padding: 0; border: 0; background: transparent; }
+    #scheduledTasksRoot .schedule-detail-topbar { gap: 12px; margin-bottom: 12px; }
+    #scheduledTasksRoot .schedule-detail-tools { width: 100%; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    #scheduledTasksRoot .schedule-detail-tools > [data-schedule-action="close_detail"] { grid-column: 1 / -1; }
+    #scheduledTasksRoot .schedule-more { align-self: stretch; }
+    #scheduledTasksRoot .schedule-more > summary { min-height: 44px; padding: 12px 8px; }
+    #scheduledTasksRoot .schedule-more > div { left: auto; right: 0; }
+    #scheduledTasksRoot .schedule-detail-tabs { gap: 8px; }
+    #scheduledTasksRoot .schedule-detail-tabs button { flex: 1; font-size: 12px; }
+    #scheduledTasksRoot .schedule-output { font-size: 14px; }
+    #scheduledTasksRoot .schedule-record > summary { padding-block: 10px; }
+    #scheduledTasksRoot #schedulePreview { display: block; margin: 8px 0 0 !important; overflow-wrap: anywhere; }
+    #scheduledTasksRoot #scheduleForm [data-kind="weekly"] label { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; }
+    #scheduledTasksRoot .schedule-form-actions { padding-bottom: env(safe-area-inset-bottom); }
+    #scheduledTasksRoot .schedule-form-actions .btn { flex: 1; }
+}
+
+#scheduledTasksRoot .schedule-control-form { padding: 16px 0; border-block: 1px solid var(--border-soft); }
+#scheduledTasksRoot .schedule-control-form > label { width: 100%; max-width: 32rem; }
+#scheduledTasksRoot .schedule-weekdays label { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; }
+
+#scheduledTasksRoot .schedule-goal-summary { padding: 16px 0; border-block: 1px solid var(--border-soft); margin-bottom: 16px; }
+#scheduledTasksRoot .schedule-goal-summary progress { display: block; width: 100%; height: 8px; margin-top: 12px; accent-color: var(--primary); }

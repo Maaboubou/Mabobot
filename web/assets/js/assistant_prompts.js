@@ -205,7 +205,7 @@ const PromptWorkbench = {
                     body.rule_draft={[key]:area.value};
                     const result=await API.post('/api/assistant/prompts/preview',body);
                     if(!target.isConnected)return;
-                    if(['quoted','followup'].includes(key))this.renderBlocks(target,[{id:key,title:rule.title,content:area.value,source:'未保存系统规则草稿'}],null);
+                    if(['quoted','followup','content_review'].includes(key))this.renderBlocks(target,[{id:key,title:rule.title,content:area.value,source:'未保存系统规则草稿'}],null);
                     else this.renderBlocks(target,result.blocks.map(b=>({...b,editable:null})),null);
                     container.querySelector('[data-rule-status]').textContent='未保存规则预览，不调用模型；展开下方模块查看';
                 }catch(e){container.querySelector('[data-rule-status]').textContent=`预览失败：${e.message}`;}

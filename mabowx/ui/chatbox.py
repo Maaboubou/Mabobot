@@ -1324,6 +1324,8 @@ class ChatBox(BaseUISubWnd):
             return WxResponse.failure("聊天窗口不存在")
 
         if at:
+            if MENTION_OBJECT_CHARACTER in msg:
+                return WxResponse.failure("消息正文不能包含伪造的 @ 富文本占位符")
             response = self.clear_edit()
             if not response.is_success:
                 return WxResponse.failure(f"无法清除输入框内容，发送失败: {response['message']}")
@@ -1349,9 +1351,13 @@ class ChatBox(BaseUISubWnd):
             # 每段回复额外消耗约一秒。粘贴后的相似度校验仍阻止错发。
             response = self._paste_edit_text(msg, verify=True, replace=True)
         if not response.is_success:
+            if at:
+                self.clear_edit()
             return response
 
         if not self._wait_send_button_enabled():
+            if at:
+                self.clear_edit()
             return WxResponse.failure("发送按钮未启用")
         self._mark_sent_text(msg)
         response = self._click_send()
@@ -1370,7 +1376,10 @@ class ChatBox(BaseUISubWnd):
 
         if not clear:
             self.set_edit_text(msg, verify=False)
-        return WxResponse.success()
+        return WxResponse.success(data={
+            "mentioned_users": members,
+            "verified_mention_objects": len(members),
+        } if at else {})
 
     # ------------------------------------------------------------------
     # @ 成员
@@ -1394,21 +1403,35 @@ class ChatBox(BaseUISubWnd):
                 normalized.append(value)
         if not normalized:
             return WxResponse.failure("@成员不能为空")
-        for expected_count, member in enumerate(normalized, start=1):
+        baseline = self.get_edit_text().count(MENTION_OBJECT_CHARACTER) if verify else 0
+        for expected_count, member in enumerate(normalized, start=baseline + 1):
             if not self._activate_editbox():
                 return WxResponse.failure("输入框不存在")
-            self.input_control.SendKeys("@", waitTime=0.1)
+            self.input_control.SendKeys("@", waitTime=0.03)
+            if self._wait_mention_popup(timeout=0.8) is None:
+                return WxResponse.failure("未出现群成员 @ 列表，请确认当前聊天是群聊")
+            # 输入搜索词，让微信检索整个群；粘贴避免昵称被解释为快捷键。
+            set_text(member)
+            self.input_control.SendKeys("{Ctrl}v", waitTime=0.06)
             matches = self._find_mention_items(member, timeout=3.0, exact=exact)
             if not matches:
-                self.input_control.SendKeys("{Esc}", waitTime=0.2)
+                # 没有弹窗时 Esc 会把微信主窗口隐藏到托盘。
+                popup = uia.find_descendant(
+                    self.root.control, class_name="mmui::ChatMentionList", timeout=0,
+                )
+                if popup is not None:
+                    self.input_control.SendKeys("{Esc}", waitTime=0.03)
                 return WxResponse.failure(f"未找到@成员：{member}")
             if exact and len(matches) != 1:
                 self.input_control.SendKeys("{Esc}", waitTime=0.2)
                 return WxResponse.failure(f"@成员精确匹配不唯一：{member}")
-            matches[0].Click(simulateMove=False, waitTime=0.3)
-            time.sleep(0.15)
+            matches[0].Click(simulateMove=False, waitTime=0.03)
             if verify:
+                deadline = time.monotonic() + 0.8
                 object_count = self.get_edit_text().count(MENTION_OBJECT_CHARACTER)
+                while object_count != expected_count and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                    object_count = self.get_edit_text().count(MENTION_OBJECT_CHARACTER)
                 if object_count != expected_count:
                     return WxResponse.failure(
                         f"@成员富文本校验失败：{member} "
@@ -1421,6 +1444,16 @@ class ChatBox(BaseUISubWnd):
             }
         )
 
+    def _wait_mention_popup(self, timeout: float = 0.8):
+        deadline = time.monotonic() + timeout
+        while True:
+            popup = uia.find_descendant(
+                self.root.control, class_name="mmui::ChatMentionList", timeout=0,
+            )
+            if popup is not None or time.monotonic() >= deadline:
+                return popup
+            time.sleep(0.02)
+
     def _find_mention_items(
         self,
         member: str,
@@ -1428,27 +1461,48 @@ class ChatBox(BaseUISubWnd):
         *,
         exact: bool = True,
     ) -> list:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            matches = []
-            for control in uia.find_controls(
-                self.root.control,
-                class_name="mmui::ChatMentionList",
-                max_results=3,
-            ):
-                for candidate in uia.iter_descendants(control, max_nodes=80):
+        started = time.monotonic()
+        deadline = started + timeout
+        previous = None
+        stable_since = started
+        while True:
+            # UIA 原生查询到弹窗即停止，不遍历整棵聊天消息树。
+            popup = uia.find_descendant(
+                self.root.control, class_name="mmui::ChatMentionList", timeout=0,
+            )
+            candidates, matches, names = [], [], []
+            if popup is not None:
+                for candidate in uia.iter_descendants(popup, max_nodes=500):
                     try:
+                        if candidate.ControlTypeName != "ListItemControl":
+                            continue
                         name = str(candidate.Name or "")
                         first = name.splitlines()[0].strip() if name else ""
+                        candidates.append(candidate)
+                        names.append(first)
                         matched = first == member if exact else member in first
                         if matched:
                             matches.append(candidate)
                     except Exception:
                         continue
-            if matches:
+            now = time.monotonic()
+            signature = tuple(names)
+            if signature != previous:
+                previous, stable_since = signature, now
+            # 等待搜索列表稳定，避免刚输入搜索词时把未过滤列表当作结果。
+            settled = now - stable_since >= 0.06
+            if matches and (settled or timeout <= 0):
                 return matches
-            time.sleep(0.25)
-        return []
+            # 微信仅暴露联系人备注，但搜索同时覆盖群昵称。例如搜索
+            # “关家辉Gerry”时唯一候选 Name 为“Gerry”。与原库一致，接受
+            # 已稳定的唯一搜索结果；不把多个模糊候选中的第一个当作目标。
+            if (not matches and len(candidates) == 1 and settled
+                    and now - started >= 0.15
+                    and self.get_edit_text().endswith("@" + member)):
+                return candidates
+            if now >= deadline:
+                return []
+            time.sleep(0.02)
 
     def _find_mention_item(self, member: str, timeout: float = 3.0):
         """Backward-compatible single-item accessor."""

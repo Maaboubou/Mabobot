@@ -44,6 +44,13 @@
         "description": "审核下载文件和最终附件，拦截色情及管理员定义的政治敏感内容；需要支持图片的模型",
         "category": "内容审核",
         "order": 40
+      },
+      "scheduled": {
+        "label": "计划任务",
+        "description": "后台计划任务的 Codex 调用，包含静默监控检查及失败调用",
+        "category": "计划任务",
+        "order": 10,
+        "routable": false
       }
     },
     "settings_notice": "这里是 AI 助手的全局默认值。聊天卡片上的“继承全局”会自动跟随这里；聊天配置只负责少量必要的单独覆盖。",

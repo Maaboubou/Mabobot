@@ -483,9 +483,11 @@ class CodexAgentRuntime:
         codex_bin: Optional[str] = None,
         permission_read_roots: Optional[Iterable[str]] = None,
         managed_profile_id: str = "",
+        service_tier: str = "",
         model_supports_web_search: Optional[bool] = None,
     ) -> None:
         self.managed_profile_id = managed_profile_id
+        self.service_tier = service_tier
         self.model_supports_web_search = model_supports_web_search
         self.workdir = str(Path(workdir or os.getenv("CODEX_PROXY_WORKDIR") or Path.cwd()).resolve())
         self.probe = CodexCompatibilityProbe(codex_bin=codex_bin, workdir=self.workdir)
@@ -527,6 +529,7 @@ class CodexAgentRuntime:
             experimental_api=True,
             permission_read_roots=self.permission_read_roots,
             managed_profile_id=self.managed_profile_id,
+            service_tier=self.service_tier,
             model_supports_web_search=self.model_supports_web_search,
         )
 
@@ -947,11 +950,18 @@ class CodexAgentRuntime:
         allow_exec_fallback: Optional[bool] = None,
         persistent_session: bool = True,
     ) -> Dict[str, Any]:
-        profile = self._profile("chat")
+        from app.services.schedule_context import current_schedule_context
+        schedule = current_schedule_context(chat_id)
+        scheduled_run = bool(schedule and schedule.scheduled)
+        profile = self._profile("batch" if scheduled_run else "chat")
         request = self._prepare_payload(payload, profile)
+        if scheduled_run:
+            request["mabobot_fresh_context"] = True
         access = codex_access_service.for_chat(chat_id, ensure=True)
         request = access.apply(request)
         fallback = profile.allow_exec_fallback if allow_exec_fallback is None else allow_exec_fallback
+        if scheduled_run:
+            fallback = False
 
         # History is a host dynamic tool and cannot survive an exec fallback.
         # Fresh context is independent of process pooling and backend selection.

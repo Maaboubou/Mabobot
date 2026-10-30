@@ -30,7 +30,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from app.services.codex_job_manager import codex_job_manager
 from app.services.generation_timing import GenerationTiming
 from app.services.codex_delivery import (
-    DeliveryError, collect_selected_files, delivery_instructions, delivery_schema, parse_delivery,
+    DeliveryError, collect_selected_files, provider_instructions, delivery_schema, parse_delivery,
 )
 from app.services.codex_browser_tool import (
     BrowserToolContext,
@@ -195,6 +195,8 @@ class _ActiveDynamicToolContext:
     history: Any = None
     history_exports: List[Path] = field(default_factory=list)
     lens: Any = None
+    schedules: Any = None
+    mentions: Any = None
 
 
 def _positive_int(value: Any, default: int) -> int:
@@ -831,6 +833,7 @@ class CodexAppServerManager:
         schema_hash: str = "",
         experimental_api: bool = False,
         permission_read_roots: Optional[Iterable[str]] = None,
+        service_tier: str = "",
         browser_tool: Optional[CodexBrowserToolService] = None,
         managed_profile_id: str = "",
         model_supports_web_search: Optional[bool] = None,
@@ -870,20 +873,25 @@ class CodexAppServerManager:
             )
         )
         self.browser_tool = browser_tool or get_codex_browser_tool()
-        self.dynamic_tool_specs = (
+        self.dynamic_tool_specs = list(
             self.browser_tool.dynamic_tool_specs() if self.browser_tool.enabled else []
         )
         from app.history.tools import dynamic_tool_specs as history_specs
         self.dynamic_tool_specs += history_specs()
         from app.services.codex_work_tool import dynamic_tool_specs as work_specs
         self.dynamic_tool_specs += work_specs()
-        self.dynamic_tool_signature = self.browser_tool.tool_signature() + ":history-v5-keywords:shared-work-v2"
+        from app.services.codex_mention_tool import dynamic_tool_specs as mention_specs
+        self.dynamic_tool_specs += mention_specs()
+        from app.services.codex_schedule_tool import dynamic_tool_specs as schedule_specs
+        self.dynamic_tool_specs += schedule_specs()
+        self.dynamic_tool_signature = self.browser_tool.tool_signature() + ":history-v5-keywords:attachment-image-v1:shared-work-v2"
         from app.services.codex_lens_tool import VERSION as lens_version, dynamic_tool_specs as lens_specs
         from app.services.lens_management import LensSettings
         lens_tools = lens_specs(LensSettings())
         self.dynamic_tool_specs += lens_tools
         self.dynamic_tool_signature += ":" + lens_version + (":enabled" if lens_tools else ":disabled")
         self.managed_profile_id = managed_profile_id
+        self.service_tier = service_tier
         self.model_supports_web_search = model_supports_web_search
 
         self._lifecycle_lock = threading.RLock()
@@ -1451,6 +1459,7 @@ class CodexAppServerManager:
         started_at = time.monotonic()
         active: Optional[_ActiveDynamicToolContext] = None
         success = False
+        content_items = None
         try:
             active = self._claim_dynamic_tool_context(
                 thread_id=thread_id,
@@ -1477,6 +1486,18 @@ class CodexAppServerManager:
                 if active.lens is None:
                     raise CodexBrowserToolError("Lens is unavailable for this task")
                 result = active.lens.execute(normalized_tool.removeprefix("wx_lens."), params.get("arguments"))
+            elif str(namespace or "") == "schedules" or normalized_tool.startswith("schedules."):
+                from app.services.codex_schedule_tool import execute as execute_schedule
+                try:
+                    result = execute_schedule(normalized_tool.removeprefix("schedules."), params.get("arguments"), active.schedules, active.browser)
+                except (ValueError, TypeError) as exc:
+                    raise CodexBrowserToolError(str(exc)) from exc
+            elif str(namespace or "") == "wechat" or normalized_tool.startswith("wechat."):
+                from app.services.codex_mention_tool import execute as execute_mention
+                try:
+                    result = execute_mention(normalized_tool.removeprefix("wechat."), params.get("arguments"), active.mentions, active.browser.chat_id)
+                except (ValueError, TypeError) as exc:
+                    raise CodexBrowserToolError(str(exc)) from exc
             elif str(namespace or "") == "work" or normalized_tool.startswith("work."):
                 from app.services.codex_work_tool import execute as execute_work
                 try:
@@ -1497,7 +1518,12 @@ class CodexAppServerManager:
                     arguments=params.get("arguments"),
                     context=active.browser,
                 )
-            output_text = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+            from app.history.image_reader import AttachmentImageResult
+            if isinstance(result, AttachmentImageResult):
+                content_items = result.content_items()
+                output_text = ""
+            else:
+                output_text = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
             success = True
         except CodexBrowserToolError as exc:
             output_text = json.dumps(
@@ -1520,7 +1546,7 @@ class CodexAppServerManager:
             "id": request_id,
             "result": {
                 "success": success,
-                "contentItems": [{"type": "inputText", "text": output_text}],
+                "contentItems": content_items or [{"type": "inputText", "text": output_text}],
             },
         }
         try:
@@ -2133,6 +2159,10 @@ class CodexAppServerManager:
                 token=token,
                 browser=browser_context,
             )
+            from app.services.codex_mention_tool import current_mention_context
+            self._dynamic_tool_contexts[thread_id].mentions = current_mention_context(browser_context.chat_id)
+            from app.services.schedule_context import current_schedule_context
+            self._dynamic_tool_contexts[thread_id].schedules = current_schedule_context(browser_context.chat_id)
             from app.services.codex_lens_tool import LensSession
 
             def lens_progress(stage):
@@ -2229,6 +2259,9 @@ class CodexAppServerManager:
         if reasoning_summary != "inherit":
             config["model_reasoning_summary"] = reasoning_summary
             config["model_supports_reasoning_summaries"] = reasoning_summary != "none"
+        if self.service_tier:
+            config["service_tier"] = self.service_tier
+            config["features.fast_mode"] = self.service_tier == "fast"
         return config
 
     @staticmethod
@@ -2319,10 +2352,18 @@ class CodexAppServerManager:
 
     def _permission_tool_specs(self, online_research: bool, lens_settings=None):
         from app.services.lens_management import defaults
+        from app.services.schedule_context import current_schedule_context
+        schedule = current_schedule_context()
+        from app.services.scheduled_tasks import get_scheduled_tasks
+        schedules_enabled = get_scheduled_tasks().context_enabled(schedule)
         settings = lens_settings or defaults()
+        from app.services.codex_mention_tool import current_mention_context
+        mentions_enabled = current_mention_context() is not None
         return [spec for spec in self.dynamic_tool_specs
                 if (online_research or spec.get("name") not in {"wx_browser", "wx_lens"})
-                and (settings.enabled or spec.get("name") != "wx_lens")]
+                and (spec.get("name") != "schedules" or schedule is not None and not schedule.scheduled and schedules_enabled)
+                and (settings.enabled or spec.get("name") != "wx_lens")
+                and (mentions_enabled or spec.get("name") != "wechat")]
 
     def _verify_thread_permissions(self, result, profile, approval, roots, *, sandbox=None):
         if profile == ":danger-full-access" or not profile and sandbox == "danger-full-access":
@@ -2420,6 +2461,11 @@ class CodexAppServerManager:
     ) -> Tuple[str, _TurnTracker]:
         """Start one App Server turn and wait for its terminal notification."""
         generation_started = time.monotonic()
+        from app.services.schedule_context import current_schedule_context
+        schedule = current_schedule_context()
+        if schedule and schedule.scheduled and schedule.bind:
+            # Fence retries before dispatch, including a lost turn/start ACK.
+            schedule.bind(self, thread_id, None)
         result = self._request(
             "turn/start",
             {
@@ -2443,6 +2489,12 @@ class CodexAppServerManager:
         task = assistant_task
         if task:
             task.bind(self, thread_id, turn_id)
+        from app.services.schedule_context import current_schedule_context
+        schedule = current_schedule_context()
+        from app.services.scheduled_tasks import get_scheduled_tasks
+        schedules_enabled = get_scheduled_tasks().context_enabled(schedule)
+        if schedule and schedule.scheduled and schedule.bind:
+            schedule.bind(self, thread_id, turn_id)
         codex_job_manager.update(
             request_id,
             status="running",
@@ -2471,6 +2523,9 @@ class CodexAppServerManager:
                 network_limit = max(30, min(7200, int(get_config('codex_network_wait_seconds', 1800, plugin_name='assistant') or 1800)))
             network_waiting = False
             while not tracker.completed.wait(timeout=min(0.5, max(0, deadline - time.monotonic()))):
+                if schedule and schedule.scheduled and schedule.cancelled and schedule.cancelled():
+                    self._interrupt_turn(thread_id, turn_id)
+                    raise CodexAppServerError("计划任务已停止或调度租约失效")
                 now = time.monotonic()
                 waiting = tracker.network_wait_since is not None
                 if task and waiting != network_waiting:
@@ -2520,7 +2575,11 @@ class CodexAppServerManager:
             raise CodexAppServerError("chat_id is required for persistent Codex threads")
         from app.assistant.task_supervisor import current_task
         task = current_task(chat_id)
-        with self._chat_lock(task.id if task else chat_id):
+        from app.services.schedule_context import current_schedule_context
+        schedule = current_schedule_context(chat_id)
+        schedule_run = schedule if schedule and schedule.scheduled else None
+        lock_key = schedule_run.run_id if schedule_run else task.id if task else chat_id
+        with self._chat_lock(lock_key):
             try:
                 response = self._chat_locked(
                     request,
@@ -2542,9 +2601,9 @@ class CodexAppServerManager:
                     status="failed", reason_code="runtime_application_failed", runtime_instance=self.permission_worker_id)
                 raise
             finally:
-                if task:
+                if task or schedule_run:
                     with self._chat_locks_lock:
-                        self._chat_locks.pop(task.id, None)
+                        self._chat_locks.pop(lock_key, None)
 
     def run(self, request: Dict[str, Any], *, profile_name: str = "batch") -> Dict[str, Any]:
         """Run one isolated turn on this long-lived process."""
@@ -2717,18 +2776,27 @@ class CodexAppServerManager:
             task.deadline = task.started + timeout
         if task and time.monotonic() >= task.deadline:
             raise CodexAppServerError("Assistant task execution limit reached")
-        state = task.load_state(self.state_store) if task else self.state_store.get(chat_id)
+        from app.services.schedule_context import current_schedule_context
+        schedule = current_schedule_context(chat_id)
+        scheduled_run = bool(schedule and schedule.scheduled)
+        state = None if scheduled_run else task.load_state(self.state_store) if task else self.state_store.get(chat_id)
         from app.services.lens_management import LensSettings, read_settings, policy_blocks
         from app.services.assistant_prompt_service import read_rules
         lens_state = read_settings()
         lens_settings = LensSettings(**lens_state["settings"])
         lens_rules = read_rules()
-        effective_tool_signature = self.dynamic_tool_signature + (":lens-on" if lens_settings.enabled else ":lens-off")
+        from app.services.scheduled_tasks import get_scheduled_tasks
+        schedule_signature = ":schedules-on" if get_scheduled_tasks().context_enabled(schedule) else ":schedules-off"
+        effective_tool_signature = schedule_signature + self.dynamic_tool_signature + (":lens-on" if lens_settings.enabled else ":lens-off")
         developer_instructions = "\n\n".join(
             text for message in messages
             if message.get("role") in {"system", "developer"}
             if (text := _content_to_text(message.get("content")))
         )
+        if structured_delivery:
+            developer_instructions += "\n\n" + provider_instructions(
+                reply_is_json=reply_is_json, web_search_enabled=web_search_enabled,
+            )
         developer_instructions += "\n\n" + "\n\n".join(b["content"] for b in policy_blocks(lens_rules["texts"]))
         developer_instructions += "\n\n【本轮 Lens 运行参数】" + json.dumps(lens_state["settings"], ensure_ascii=False)
         if request.get("codex_chat_user_id"):
@@ -2943,6 +3011,7 @@ class CodexAppServerManager:
             request.get("mabobot_input_files", extra_body.get("mabobot_input_files")),
             request_dir=request_dir,
             use_wsl=self.use_wsl,
+            trusted_files=schedule.input_files if scheduled_run else (),
         )
         runtime_output_dir = _as_runtime_path(output_dir, self.use_wsl)
         browser_context: Optional[BrowserToolContext] = None
@@ -2970,6 +3039,7 @@ class CodexAppServerManager:
                 workspace_access=str(request.get("codex_workspace_access") or "read_write"),
                 permission_chat_id=request.get("codex_chat_user_id"),
                 policy_signature=str(request.get("codex_permission_signature") or ""),
+                cancelled=schedule.cancelled if scheduled_run else None,
             )
 
         image_urls = extract_image_urls(delta.messages, allow_image_input=allow_image_input)
@@ -3007,9 +3077,8 @@ class CodexAppServerManager:
             input_files=staged_input_files,
             available_file_commands=_detect_runtime_file_commands(self.use_wsl),
             text_only=text_only,
+            session_delivery=structured_delivery,
         )
-        if structured_delivery:
-            prompt += "\n" + delivery_instructions(reply_is_json=reply_is_json)
         if browser_context is not None and browser_context.online_research_allowed:
             prompt += lens_prompt(lens_bindings, lens_settings)
         if delta.resume:
@@ -3093,6 +3162,7 @@ class CodexAppServerManager:
         recovery_prompt = ""
         dynamic_context_token = ""
         turn_options: Dict[str, Any] = {
+            **({"serviceTier": self.service_tier} if self.service_tier else {}),
             "model": model,
             "effort": reasoning_effort,
             "cwd": _as_runtime_path(workdir, self.use_wsl),
@@ -3505,7 +3575,11 @@ class CodexAppServerManager:
                     "incremental_system_fingerprints": [_message_fingerprint(m) for m in messages if m.get("role") in {"system", "developer"}],
                     "incremental_input_fingerprints": [_message_fingerprint(m) for m in messages if m.get("role") not in {"system", "developer"}],
                 })
-            if request.get("mabobot_fresh_context"):
+            if scheduled_run:
+                # Scheduled runs keep their own run ledger and never replace
+                # the real chat's continuation head or telemetry snapshot.
+                pass
+            elif request.get("mabobot_fresh_context"):
                 # Keep the last reply visible in the dashboard without making
                 # its thread resumable on the next reply.
                 state_payload["context_policy"] = "fresh"

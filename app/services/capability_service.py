@@ -455,15 +455,14 @@ def normalize_settings_descriptor(plugin_id: str, config: Mapping[str, Any]) -> 
         level = _infer_level(plugin_id, key, group_id, field)
         sensitive = _is_sensitive(key, field)
         value = values.get(key, field.get("default"))
-        if (
-            normalized_type == "string"
-            and control == "text"
-            and "prompt" in key.lower()
-        ):
+        is_prompt = normalized_type == "string" and (
+            field.get("format") == "prompt" or "prompt" in key.lower()
+        )
+        if is_prompt and control == "text":
             control = "textarea"
         options = field.get("enum") or field.get("options") or []
         option_labels = field.get("enum_labels") or {}
-        deprecated = key in LEGACY_SETTINGS_FIELDS
+        deprecated = key in LEGACY_SETTINGS_FIELDS or bool(field.get("deprecated", False))
 
         descriptor = {
             "key": key,
@@ -471,6 +470,7 @@ def normalize_settings_descriptor(plugin_id: str, config: Mapping[str, Any]) -> 
             "description": str(field.get("description") or ""),
             "type": normalized_type,
             "control": control,
+            "is_prompt": is_prompt,
             "group": group_id,
             "level": level,
             "scope": str(field.get("scope") or ("global" if plugin_id == CORE_ASSISTANT_ID else "global_and_chat")),

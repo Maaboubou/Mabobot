@@ -46,6 +46,8 @@
       "default": 6
     },
     "translate_prompt": {
+      "format": "prompt",
+      "title": "菜单识别与翻译",
       "type": "textarea",
       "description": "发送给大模型的翻译提示词（系统Prompt）",
       "default": "你是一位专业的餐厅菜单翻译专家。请仔细识别图片中的菜单内容，将所有菜品翻译成中文，并严格按照以下JSON格式输出。\n\n要求：\n1. 保留原文（name_orig / desc_orig / section_name_orig），如无描述则为空字符串\n2. 提供准确、自然的中文翻译（name_zh / desc_zh / section_name_zh）\n3. 保留价格原样（price字段，如无价格则为空字符串）\n4. 如有多个分区（如前菜、主菜、甜点、饮品），分别列出sections\n5. 如识别不到餐厅名称，restaurant_name设为空字符串\n6. 仅输出JSON，不要有任何额外说明、markdown代码块或注释\n\n输出格式：\n{\"restaurant_name\": \"餐厅名\", \"sections\": [{\"section_name_zh\": \"分区中文名\", \"section_name_orig\": \"分区原文名\", \"items\": [{\"name_zh\": \"菜品中文名\", \"name_orig\": \"菜品原文名\", \"desc_zh\": \"描述中文\", \"desc_orig\": \"描述原文\", \"price\": \"价格\"}]}]}"

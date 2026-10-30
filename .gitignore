@@ -57,3 +57,6 @@ Thumbs.db
 
 # Local agent skills are not release assets.
 /.hermes/skills/
+
+# Persistent private scheduled-task attachments
+/.scheduled-resources/

@@ -526,12 +526,17 @@ def _stage_input_files(
     *,
     request_dir: Path,
     use_wsl: bool,
+    trusted_files: Iterable[Dict[str, Any]] = (),
 ) -> List[Dict[str, Any]]:
     """Validate managed inbound files and copy immutable request-local inputs."""
     if not isinstance(raw_files, list) or not raw_files:
         return []
-    if len(raw_files) > 5:
-        raise CodexProxyError("A Codex request may include at most 5 input files")
+    # This allowlist is supplied only by the host's scheduled-run context,
+    # never by request JSON. It grants individual files, not workspace roots.
+    trusted = {str(Path(item["path"]).absolute()): item for item in trusted_files}
+    file_limit = 20 if trusted else 5
+    if len(raw_files) > file_limit:
+        raise CodexProxyError(f"A Codex request may include at most {file_limit} input files")
 
     configured_root = str(os.getenv("WECHAT_FILE_DOWNLOAD_ROOT") or "").strip()
     allowed_root = local_path_from_external(configured_root) if configured_root else DEFAULT_DOWNLOAD_ROOT
@@ -550,12 +555,15 @@ def _stage_input_files(
         if not isinstance(item, dict) or not item.get("path"):
             raise CodexProxyError("Every Codex input file must include a managed path")
         source = local_path_from_external(str(item["path"])).expanduser()
+        host_record = trusted.get(str(source.absolute()))
         source_was_symlink = source.is_symlink()
+        if host_record and any(_is_link_like(path) for path in (source, *source.parents)):
+            raise CodexProxyError("Scheduled input path contains a symbolic link or junction")
         try:
             source = source.resolve(strict=True)
         except OSError as exc:
             raise CodexProxyError(f"Input file does not exist: {item.get('name') or source.name}") from exc
-        if not _is_within_path(source, allowed_root):
+        if not _is_within_path(source, allowed_root) and not host_record:
             raise CodexProxyError("Input file is outside the managed WeChat download directory")
         if source_was_symlink or not source.is_file():
             raise CodexProxyError("Input attachment must be a regular file")
@@ -567,16 +575,19 @@ def _stage_input_files(
             raise CodexProxyError(
                 f"Input file exceeds the {max_bytes // (1024 * 1024)} MB processing limit"
             )
-        expected_size = item.get("size")
+        expected_size = (host_record or item).get("size")
         if expected_size is not None and int(expected_size) != actual_size:
             raise CodexProxyError("Input file size no longer matches its download record")
-        expected_sha256 = str(item.get("sha256") or "").strip().casefold()
+        expected_sha256 = str((host_record or item).get("sha256") or "").strip().casefold()
         if expected_sha256 and _sha256_file(source).casefold() != expected_sha256:
             raise CodexProxyError("Input file checksum no longer matches its download record")
 
         display_name = safe_file_name(str(item.get("name") or source.name), fallback=source.name)
         destination = input_dir / f"{index:02d}_{display_name}"
         shutil.copy2(source, destination)
+        if host_record and (destination.stat().st_size != actual_size or _sha256_file(destination).casefold() != expected_sha256):
+            destination.unlink(missing_ok=True)
+            raise CodexProxyError("Scheduled input changed while being staged")
         staged.append(
             {
                 "file_id": str(item.get("file_id") or ""),
@@ -1170,6 +1181,7 @@ def render_chat_prompt(
     text_only: bool = False,
     host_managed_images: bool = False,
     native_instructions: bool = False,
+    session_delivery: bool = False,
 ) -> str:
     """Render OpenAI chat messages into a single Codex exec prompt."""
     rendered: List[str] = [
@@ -1181,6 +1193,8 @@ def render_chat_prompt(
          if native_instructions else
          "Preserve the behavior requested by system and developer messages below."),
     ]
+    if session_delivery:
+        rendered = ["Follow the session developer instructions for the latest request."]
     rendered.extend(["", "Conversation:"])
     for message in messages:
         role = str(message.get("role") or "user")
@@ -1214,6 +1228,8 @@ def render_chat_prompt(
             "- Do not claim that the host sent an image; you cannot observe delivery acknowledgments.",
             "- If image generation fails or is unavailable, report that accurately. Do not draw substitute or placeholder images with code.",
         ])
+    elif session_delivery:
+        rendered.append(f"Final deliverables output directory: {artifact_output_dir}")
     elif artifact_output_dir is not None:
         search_instructions = [
             "- Treat any conversation sections labeled like 网络搜索结果, web_search, or search_results as framework-provided context, not as the only allowed source of truth.",
@@ -1330,7 +1346,8 @@ def render_chat_prompt(
                 + json.dumps(str(item.get("runtime_path") or ""), ensure_ascii=False)
             )
     rendered.append("")
-    rendered.append("Return only the assistant reply text.")
+    rendered.append("Follow the session delivery protocol and output schema."
+                    if session_delivery else "Return only the assistant reply text.")
     return "\n\n".join(rendered)
 
 

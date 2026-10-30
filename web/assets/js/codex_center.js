@@ -125,6 +125,7 @@ const CodexCenter = {
                         ${ready ? `<span><b>推理</b>${this.escape(profile.reasoning_effort || 'inherit')}</span><span><b>上下文</b>${contextLabel}</span>` : '<span class="warning">完成凭据配置后可使用</span>'}
                         ${profile.supports_vision ? '<span>图片</span>' : ''}
                         ${profile.supports_web_search ? '<span>搜索</span>' : ''}
+                        ${profile.fast_mode ? '<span>Fast mode</span>' : ''}
                     </div>
                     <footer class="codex-profile-card-actions">
                         <span class="codex-profile-card-source" title="${this.escape(sourceLabel)}">${this.escape(sourceLabel)}</span>
@@ -555,6 +556,7 @@ const CodexCenter = {
             if (baseUrl) baseUrl.value = profile.base_url || '';
             if (form.elements.reasoning_effort) form.elements.reasoning_effort.value = profile.reasoning_effort || 'high';
             if (form.elements.model_verbosity) form.elements.model_verbosity.value = profile.model_verbosity || 'inherit';
+            if (form.elements.fast_mode) form.elements.fast_mode.checked = Boolean(profile.fast_mode);
             if (form.elements.context_window) form.elements.context_window.value = Number(profile.context_window || 128000);
             if (form.elements.make_default) {
                 form.elements.make_default.checked = Boolean(profile.is_default);
@@ -608,6 +610,7 @@ const CodexCenter = {
         const values = new FormData(form);
         const payload = {
             reasoning_effort: String(values.get('reasoning_effort') || 'high'),
+            fast_mode: values.get('fast_mode') === 'on',
             model_verbosity: String(values.get('model_verbosity') || 'inherit'),
             context_window: Number(values.get('context_window') || 128000),
             supports_vision: values.get('supports_vision') === 'on',
@@ -665,7 +668,8 @@ const CodexCenter = {
             supports_vision: oauthMode || values.get('supports_vision') === 'on',
             supports_web_search: oauthMode || values.get('supports_web_search') === 'on',
             make_default: oauthMode ? false : values.get('make_default') === 'on',
-            setup_pending: oauthMode
+            setup_pending: oauthMode,
+            fast_mode: values.get('fast_mode') === 'on'
         };
         const button = document.getElementById('saveCodexProfileButton');
         if (button) button.disabled = true;
@@ -800,6 +804,8 @@ const CodexCenter = {
         }
         const verbosity = document.getElementById('codexOAuthVerbosity');
         if (verbosity) verbosity.value = editingProfile?.model_verbosity || 'inherit';
+        const fastMode = document.getElementById('codexOAuthFastMode');
+        if (fastMode) fastMode.checked = Boolean(this.profiles.find(item => item.name === this.oauthProfile)?.fast_mode);
     },
 
     async startOAuth(
@@ -1025,6 +1031,7 @@ const CodexCenter = {
             model: modelId,
             reasoning_effort: document.getElementById('codexOAuthReasoning')?.value || model.default_reasoning_effort || 'high',
             model_verbosity: document.getElementById('codexOAuthVerbosity')?.value || 'inherit',
+            fast_mode: Boolean(document.getElementById('codexOAuthFastMode')?.checked),
             make_default: Boolean(document.getElementById('codexOAuthMakeDefault')?.checked)
         };
         if (Number(model.context_window || 0) >= 4096) payload.context_window = Number(model.context_window);
@@ -1041,6 +1048,7 @@ const CodexCenter = {
                     model: payload.model,
                     reasoning_effort: payload.reasoning_effort,
                     model_verbosity: payload.model_verbosity,
+                    fast_mode: payload.fast_mode,
                     make_default: payload.make_default
                 });
             } else {

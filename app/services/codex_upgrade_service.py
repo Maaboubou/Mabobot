@@ -25,6 +25,8 @@ from app.utils.subprocess_utils import hidden_process_kwargs
 logger = logging.getLogger(__name__)
 
 _VERSION_PATTERN = re.compile(r"(?<!\d)(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?!\d)")
+_STABLE_VERSION_PATTERN = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")
+_VERSION_CHECK_FORMAT = 1
 
 
 def _now_iso() -> str:
@@ -53,6 +55,19 @@ def _positive_timeout(name: str, default: int) -> int:
 
 class CodexUpgradeError(RuntimeError):
     pass
+
+
+def _npm_stable_version(stdout: str) -> str:
+    # Login shells may prepend MOTD/nvm output. npm's scalar --json result
+    # occupies the final nonempty line; never search arbitrary text for digits.
+    lines = stdout.strip().splitlines()
+    try:
+        value = json.loads(lines[-1]) if lines else None
+    except json.JSONDecodeError:
+        value = None
+    if not isinstance(value, str) or not _STABLE_VERSION_PATTERN.fullmatch(value):
+        raise CodexUpgradeError("无法识别最新 Codex 版本：npm 未返回有效的稳定版 JSON 字符串")
+    return value
 
 
 class CodexUpgradeService:
@@ -123,8 +138,15 @@ class CodexUpgradeService:
         if state_row:
             try:
                 state = json.loads(state_row["state_json"])
-                self._available_version = str(state.get("available_version") or "")
-                self._checked_at = str(state.get("checked_at") or "")
+                # Older checks could persist a version extracted from a shell
+                # banner. Require a fresh check before trusting those caches.
+                if (
+                    state.get("version_check_format") == _VERSION_CHECK_FORMAT
+                    and isinstance(state.get("available_version"), str)
+                    and _STABLE_VERSION_PATTERN.fullmatch(state["available_version"])
+                ):
+                    self._available_version = state["available_version"]
+                    self._checked_at = str(state.get("checked_at") or "")
             except (TypeError, json.JSONDecodeError):
                 pass
         if operation_row:
@@ -143,6 +165,7 @@ class CodexUpgradeService:
 
     def _persist_state(self) -> None:
         payload = {
+            "version_check_format": _VERSION_CHECK_FORMAT,
             "available_version": self._available_version,
             "checked_at": self._checked_at,
         }
@@ -301,14 +324,7 @@ class CodexUpgradeService:
     def check_latest(self) -> Dict[str, Any]:
         installation = self.detect_installation(force=True)
         result = self._run(["npm", "view", "@openai/codex", "version", "--json"], timeout=45)
-        raw = (result.stdout or "").strip()
-        try:
-            value = json.loads(raw)
-        except json.JSONDecodeError:
-            value = raw
-        available = _version_number(value)
-        if not available:
-            raise CodexUpgradeError("无法识别最新 Codex 版本")
+        available = _npm_stable_version(result.stdout or "")
         with self._lock:
             self._available_version = available
             self._checked_at = _now_iso()

@@ -351,7 +351,9 @@ class AssistantTaskSupervisor:
             shared = get_work_coordinator()
             claim = shared.claim(chat=task.chat, capability="assistant.reply", subject=task.id,
                 owner="assistant", title="处理对话请求", reuse_seconds=0)
-            result = shared.run(claim, lambda: handler(event))
+            from app.services.schedule_context import conversation_schedule_context
+            with conversation_schedule_context(event):
+                result = shared.run(claim, lambda: handler(event))
             if not result:
                 shared.update(claim.work["id"], status="failed", message="本轮未交付回复")
             status = 'failed' if task.error else 'completed' if result else 'delivery_failed' if task.result_ready else 'skipped'

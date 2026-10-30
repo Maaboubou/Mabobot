@@ -1,9 +1,8 @@
 """Host-managed, read-only Chromium tools for Codex App Server turns.
 
-The Codex process never receives browser credentials. The application executes
-a small dynamic-tool surface in an ephemeral
-Playwright context and binds every call to the current chat's managed request
-directory.
+The Codex process never receives browser credentials. All browsing uses the
+project shared Chrome, binding every call to the current chat's managed request
+directory. Local HTML renders use isolated contexts in that same browser.
 """
 
 from __future__ import annotations
@@ -22,6 +21,7 @@ from subprocess import TimeoutExpired
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Dict, Iterable, Optional, Sequence
@@ -36,7 +36,7 @@ from app.services.codex_browser_proxy import PinnedPublicProxy, SafeBrowserProxy
 logger = logging.getLogger(__name__)
 
 
-_BROWSER_TOOL_POLICY_VERSION = "public-reviewed-download-v4-dash"
+_BROWSER_TOOL_POLICY_VERSION = "public-reviewed-download-v6-shared-chrome"
 _BROWSER_NAMESPACE = "wx_browser"
 _READ_ONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _PASSIVE_SCHEMES = frozenset({"about", "blob", "data"})
@@ -72,6 +72,7 @@ class BrowserToolContext:
     workspace_access: str = "read_write"
     permission_chat_id: Optional[int] = None
     policy_signature: str = ""
+    cancelled: Optional[Callable[[], bool]] = None
 
 
 def _as_bool(value: Any, default: bool) -> bool:
@@ -382,9 +383,10 @@ class CodexBrowserToolService:
                 "type": "namespace",
                 "name": _BROWSER_NAMESPACE,
                 "description": (
-                    "Ephemeral, read-only Playwright Chromium for public web pages. "
-                    "It has no saved login, blocks private/LAN/Tailscale addresses and write "
-                    "requests, and stores browsing data only in this chat's temporary scope."
+                    "Read-only browser tools for public web pages. All calls use the project "
+                    "shared Chrome and its existing login state, refreshing a matching "
+                    "open tab when available. "
+                    "Private/LAN targets and write requests are blocked; extracts stay in this chat scope."
                 ),
                 "tools": [
                     {
@@ -427,8 +429,8 @@ class CodexBrowserToolService:
                         "type": "function",
                         "name": "fetch_json_pages",
                         "description": (
-                            "Fetch up to 25 same-origin public JSON page URLs in one ephemeral "
-                            "Chromium session and save each exact response for local analysis. "
+                            "Fetch up to 25 same-origin public JSON page URLs in one "
+                            "browser session and save each exact response for local analysis. "
                             "Use this after open reveals a paginated JSON API; it is faster and "
                             "less prone to pagination drift than many separate open calls."
                         ),
@@ -564,9 +566,12 @@ class CodexBrowserToolService:
             "private_network_blocked": True,
             "allowed_public_ports": sorted(_PUBLIC_WEB_PORTS),
             "write_requests_blocked": True,
-            "ephemeral_context": True,
+            "ephemeral_context": False,
+            "browser_backend": "shared_chrome",
+            "scheduled_browser": "shared_chrome",
+            "browser_network": "existing_chrome_with_target_request_validation",
             "synthetic_dns_validation": "https_doh",
-            "dns_rebinding_protection": "pinned_loopback_proxy",
+            "dns_rebinding_protection": "render_and_download_pinned_proxy",
             "render_image_optimization": True,
             "file_downloads": "wechat_content_review_per_chat",
         }
@@ -644,6 +649,7 @@ class CodexBrowserToolService:
         *,
         allowed_file_roots: Iterable[Path] = (),
         optimize_images: bool = False,
+        shared_page: bool = False,
     ) -> Dict[str, Any]:
         state: Dict[str, Any] = {"seen": 0, "blocked": [], "optimized_images": 0}
         roots = tuple(allowed_file_roots)
@@ -690,9 +696,10 @@ class CodexBrowserToolService:
             else:
                 route.continue_()
 
+        state["route_handler"] = route_request
         browser_context.route("**/*", route_request)
         route_web_socket = getattr(browser_context, "route_web_socket", None)
-        if callable(route_web_socket):
+        if callable(route_web_socket) and not shared_page:
             try:
                 # A routed socket never connects upstream unless the handler
                 # explicitly calls connect_to_server(). Leave it mocked instead
@@ -720,6 +727,97 @@ class CodexBrowserToolService:
                 break
         page.evaluate("window.scrollTo(0, 0)")
 
+    @contextmanager
+    def _browser_page(self, context, guard, *, target_url=None, render=False,
+                      allowed_file_roots=(), optimize_images=False):
+        """Own only the connection/temporary pages, never the shared browser.
+
+        Shared browsing uses Chrome's existing network and cookies. Local HTML
+        still runs in an isolated context (in the same browser process).
+        """
+        from playwright.sync_api import sync_playwright
+        from contextlib import ExitStack
+
+        def check_cancelled():
+            if context.cancelled and context.cancelled():
+                raise InterruptedError("计划任务已停止")
+
+        def cleanup(function, *args):
+            try:
+                function(*args)
+            except Exception:
+                logger.debug("Browser client cleanup failed", exc_info=True)
+
+        with ExitStack() as stack:
+            check_cancelled()
+            from app.services.shared_chrome import get_shared_chrome_operation_lock
+            from app.services.shared_chrome_runtime import get_shared_chrome_runtime
+            lock = get_shared_chrome_operation_lock()
+            deadline = time.monotonic() + 30
+            while not lock.acquire(timeout=0.2):
+                check_cancelled()
+                if time.monotonic() >= deadline:
+                    raise CodexBrowserToolError("项目共享 Chrome 正忙，请稍后重试")
+            stack.callback(lock.release)
+            check_cancelled()
+            playwright = stack.enter_context(sync_playwright())
+            # No recovery restart here: existing user tabs must survive a
+            # failed client connection. Startup is owned by the runtime.
+            try:
+                endpoint = get_shared_chrome_runtime().ensure_browser()
+                browser = playwright.chromium.connect_over_cdp(endpoint, timeout=10000)
+            except Exception as exc:
+                raise CodexBrowserToolError("无法连接项目共享 Chrome，本次未读取页面") from exc
+
+            reused = False
+            if not render:
+                if not browser.contexts:
+                    raise CodexBrowserToolError("项目共享 Chrome 没有可用的默认浏览器上下文")
+                browser_context = browser.contexts[0]
+                page = None
+                if target_url:
+                    # Match the exact resource, never the selected/first tab.
+                    # Fragment differences do not change the requested resource.
+                    match = target_url.split('#', 1)[0]
+                    page = next((p for p in browser_context.pages
+                                 if not p.is_closed() and p.url.split('#', 1)[0] == match), None)
+                    reused = page is not None
+                page = page or browser_context.new_page()
+                if not target_url:
+                    stack.callback(cleanup, page.close)  # temporary JSON-pagination tab
+                # Target-local guards must not affect other shared Chrome tabs.
+                cdp = browser_context.new_cdp_session(page)
+                stack.callback(cleanup, cdp.detach)
+                cdp.send("Network.enable")
+                cdp.send("Network.setBypassServiceWorker", {"bypass": True})
+                stack.callback(cleanup, cdp.send, "Network.setBypassServiceWorker", {"bypass": False})
+                cdp.send("Network.setBlockedURLs", {"urls": ["ws://*", "wss://*"]})
+                stack.callback(cleanup, cdp.send, "Network.setBlockedURLs", {"urls": []})
+                network_state = self._install_network_guard(page, guard, shared_page=True)
+                stack.callback(cleanup, page.unroute, "**/*", network_state.pop("route_handler"))
+                proxy_stats = None  # Existing Chrome connection; no per-context proxy.
+            else:
+                public_proxy = stack.enter_context(PinnedPublicProxy(guard.resolve_public_endpoint))
+                browser_context = browser.new_context(
+                    accept_downloads=False, service_workers="block",
+                    locale="zh-CN" if render else "en-US",
+                    viewport={"width": 1440, "height": 1000},
+                    proxy=public_proxy.playwright_settings,
+                )
+                stack.callback(cleanup, browser_context.close)
+                network_state = self._install_network_guard(
+                    browser_context, guard, allowed_file_roots=allowed_file_roots,
+                    optimize_images=optimize_images,
+                )
+                network_state.pop("route_handler", None)
+                page = browser_context.new_page()
+                proxy_stats = public_proxy
+            check_cancelled()
+            logger.info("Browser request=%s backend=%s reused_tab=%s", context.request_id,
+                        "shared_chrome", reused)
+            yield page, network_state, proxy_stats, reused
+            check_cancelled()
+
     def _open(self, arguments: Dict[str, Any], context: BrowserToolContext) -> Dict[str, Any]:
         guard = PublicUrlGuard(
             resolver=self._resolver,
@@ -745,7 +843,6 @@ class CodexBrowserToolService:
         try:
             from playwright.sync_api import Error as PlaywrightError
             from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-            from playwright.sync_api import sync_playwright
         except Exception as exc:
             raise CodexBrowserToolError(
                 "Playwright is unavailable; repair Playwright Chromium in System Tools"
@@ -778,23 +875,10 @@ class CodexBrowserToolService:
             maximum=180000,
         )
 
-        with PinnedPublicProxy(guard.resolve_public_endpoint) as public_proxy, sync_playwright() as playwright:
+        with self._browser_page(context, guard, target_url=target_url) as session:
+            page, network_state, proxy_stats, reused = session
+            record_response = None
             try:
-                browser = playwright.chromium.launch(headless=True)
-            except Exception as exc:
-                raise CodexBrowserToolError(
-                    "Chromium could not start; repair Playwright Chromium in System Tools"
-                ) from exc
-            try:
-                browser_context = browser.new_context(
-                    accept_downloads=False,
-                    service_workers="block",
-                    locale="en-US",
-                    viewport={"width": 1440, "height": 1000},
-                    proxy=public_proxy.playwright_settings,
-                )
-                network_state = self._install_network_guard(browser_context, guard)
-                page = browser_context.new_page()
                 page.set_default_timeout(timeout_ms)
                 page.set_default_navigation_timeout(timeout_ms)
 
@@ -832,7 +916,9 @@ class CodexBrowserToolService:
                     responses.append(item)
 
                 page.on("response", record_response)
-                main_response = page.goto(target_url, wait_until=wait_until, timeout=timeout_ms)
+                main_response = (page.reload(wait_until=wait_until, timeout=timeout_ms) if reused
+                                 else page.goto(target_url, wait_until=wait_until, timeout=timeout_ms))
+                guard.validate_public_url(page.url)
                 if selector:
                     page.wait_for_selector(selector, timeout=timeout_ms)
                 if wait_ms:
@@ -841,6 +927,7 @@ class CodexBrowserToolService:
                     self._scroll_page(page)
                     page.wait_for_timeout(min(wait_ms, 3000))
 
+                guard.validate_public_url(page.url)
                 try:
                     body_text = page.locator("body").inner_text(timeout=10000)
                 except Exception:
@@ -883,6 +970,7 @@ class CodexBrowserToolService:
                 result = {
                     "tool": f"{_BROWSER_NAMESPACE}.open",
                     "requested_url": target_url,
+                    "reused_tab": reused,
                     "final_url": page.url,
                     "status": int(main_response.status) if main_response is not None else None,
                     "title": page.title(),
@@ -891,7 +979,8 @@ class CodexBrowserToolService:
                     "request_count": int(network_state["seen"]),
                     "blocked_request_count": len(network_state["blocked"]),
                     "blocked_requests": network_state["blocked"][:20],
-                    "pinned_proxy": public_proxy.stats,
+                    "pinned_proxy": proxy_stats.stats if proxy_stats is not None else None,
+                    "browser_backend": "shared_chrome",
                     "json_response_count": sum("path" in item for item in responses),
                     "json_responses": [item for item in responses if "path" in item],
                     "files": files,
@@ -912,10 +1001,8 @@ class CodexBrowserToolService:
             except SafeBrowserProxyError as exc:
                 raise CodexBrowserToolError(f"public browser proxy failed: {str(exc)[:500]}") from exc
             finally:
-                try:
-                    browser.close()
-                except Exception:
-                    logger.debug("Could not close Chromium cleanly", exc_info=True)
+                if record_response is not None:
+                    page.remove_listener("response", record_response)
 
     def _fetch_json_pages(
         self,
@@ -971,7 +1058,6 @@ class CodexBrowserToolService:
         try:
             from playwright.sync_api import Error as PlaywrightError
             from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-            from playwright.sync_api import sync_playwright
         except Exception as exc:
             raise CodexBrowserToolError(
                 "Playwright is unavailable; repair Playwright Chromium in System Tools"
@@ -979,25 +1065,9 @@ class CodexBrowserToolService:
 
         captured_total = 0
         items: list[dict[str, Any]] = []
-        with PinnedPublicProxy(
-            guard.resolve_public_endpoint
-        ) as public_proxy, sync_playwright() as playwright:
+        with self._browser_page(context, guard) as session:
+            page, network_state, proxy_stats, _ = session
             try:
-                browser = playwright.chromium.launch(headless=True)
-            except Exception as exc:
-                raise CodexBrowserToolError(
-                    "Chromium could not start; repair Playwright Chromium in System Tools"
-                ) from exc
-            try:
-                browser_context = browser.new_context(
-                    accept_downloads=False,
-                    service_workers="block",
-                    locale="en-US",
-                    viewport={"width": 1280, "height": 720},
-                    proxy=public_proxy.playwright_settings,
-                )
-                network_state = self._install_network_guard(browser_context, guard)
-                page = browser_context.new_page()
                 page.set_default_timeout(timeout_ms)
                 page.set_default_navigation_timeout(timeout_ms)
                 for index, target_url in enumerate(target_urls, start=1):
@@ -1012,6 +1082,7 @@ class CodexBrowserToolService:
                         )
                     if wait_ms:
                         page.wait_for_timeout(wait_ms)
+                    guard.validate_public_url(response.url)
                     body = response.body()
                     if not body or len(body) > max_body_bytes:
                         raise CodexBrowserToolError(
@@ -1068,7 +1139,8 @@ class CodexBrowserToolService:
                     "request_count": int(network_state["seen"]),
                     "blocked_request_count": len(network_state["blocked"]),
                     "blocked_requests": network_state["blocked"][:20],
-                    "pinned_proxy": public_proxy.stats,
+                    "pinned_proxy": proxy_stats.stats if proxy_stats is not None else None,
+                    "browser_backend": "shared_chrome",
                 }
                 metadata_path = call_dir / "metadata.json"
                 metadata_path.write_text(
@@ -1089,11 +1161,6 @@ class CodexBrowserToolService:
                 raise CodexBrowserToolError(
                     f"public browser proxy failed: {str(exc)[:500]}"
                 ) from exc
-            finally:
-                try:
-                    browser.close()
-                except Exception:
-                    logger.debug("Could not close Chromium cleanly", exc_info=True)
 
     def _download(self, arguments: Dict[str, Any], context: BrowserToolContext) -> Dict[str, Any]:
         from app.services.work_coordination import get_work_coordinator
@@ -1328,7 +1395,6 @@ class CodexBrowserToolService:
         try:
             from playwright.sync_api import Error as PlaywrightError
             from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-            from playwright.sync_api import sync_playwright
         except Exception as exc:
             raise CodexBrowserToolError(
                 "Playwright is unavailable; repair Playwright Chromium in System Tools"
@@ -1340,28 +1406,12 @@ class CodexBrowserToolService:
             minimum=10000,
             maximum=240000,
         )
-        with PinnedPublicProxy(guard.resolve_public_endpoint) as public_proxy, sync_playwright() as playwright:
+        with self._browser_page(
+            context, guard, render=True,
+            allowed_file_roots=(context.workdir, context.request_dir), optimize_images=optimize_images,
+        ) as session:
+            page, network_state, proxy_stats, _ = session
             try:
-                browser = playwright.chromium.launch(headless=True)
-            except Exception as exc:
-                raise CodexBrowserToolError(
-                    "Chromium could not start; repair Playwright Chromium in System Tools"
-                ) from exc
-            try:
-                browser_context = browser.new_context(
-                    accept_downloads=False,
-                    service_workers="block",
-                    locale="zh-CN",
-                    viewport={"width": 1440, "height": 1000},
-                    proxy=public_proxy.playwright_settings,
-                )
-                network_state = self._install_network_guard(
-                    browser_context,
-                    guard,
-                    allowed_file_roots=(context.workdir, context.request_dir),
-                    optimize_images=optimize_images,
-                )
-                page = browser_context.new_page()
                 page.set_default_timeout(timeout_ms)
                 page.set_default_navigation_timeout(timeout_ms)
                 page.goto(html_path.as_uri(), wait_until="domcontentloaded", timeout=timeout_ms)
@@ -1416,7 +1466,8 @@ class CodexBrowserToolService:
                     "optimized_image_request_count": int(network_state["optimized_images"]),
                     "blocked_request_count": len(network_state["blocked"]),
                     "blocked_requests": network_state["blocked"][:20],
-                    "pinned_proxy": public_proxy.stats,
+                    "pinned_proxy": proxy_stats.stats if proxy_stats is not None else None,
+                    "browser_backend": "shared_chrome",
                     "warnings": warnings,
                 }
                 (call_dir / "metadata.json").write_text(
@@ -1430,11 +1481,6 @@ class CodexBrowserToolService:
                 raise CodexBrowserToolError(f"HTML rendering failed: {str(exc)[:500]}") from exc
             except SafeBrowserProxyError as exc:
                 raise CodexBrowserToolError(f"public browser proxy failed: {str(exc)[:500]}") from exc
-            finally:
-                try:
-                    browser.close()
-                except Exception:
-                    logger.debug("Could not close Chromium cleanly", exc_info=True)
 
 
 _service_lock = threading.Lock()

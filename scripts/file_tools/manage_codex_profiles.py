@@ -189,6 +189,7 @@ def _validate(payload: dict[str, Any]) -> dict[str, Any]:
         "provider_name": provider_name,
         "reasoning_effort": effort,
         "model_verbosity": verbosity,
+        "fast_mode": _as_bool(payload.get("fast_mode")),
         "context_window": context_window,
         "supports_vision": supports_vision,
         "supports_web_search": supports_web_search,
@@ -271,6 +272,7 @@ def _legacy_profile(profile: Any, *, name: str, paths: dict[str, Path]) -> dict[
         "base_url": base_url,
         "reasoning_effort": reasoning_effort,
         "model_verbosity": model_verbosity,
+        "fast_mode": _as_bool(profile.get("fast_mode")),
         "context_window": context_window,
         "supports_vision": _as_bool(profile.get("supports_vision")),
         "supports_web_search": _as_bool(profile.get("supports_web_search")),
@@ -750,6 +752,8 @@ def _render_config(profile: dict[str, Any], paths: dict[str, Path]) -> str:
         f"model_auto_compact_token_limit = {int(profile['context_window']) * 9 // 10}",
         f"model_reasoning_effort = {toml(profile['reasoning_effort'])}",
         'model_reasoning_summary = "none"',
+        f"service_tier = {toml('fast' if profile.get('fast_mode') else 'default')}",
+        f"features.fast_mode = {'true' if profile.get('fast_mode') else 'false'}",
     ]
     if profile["model_verbosity"] != "inherit":
         lines.append(f"model_verbosity = {toml(profile['model_verbosity'])}")
@@ -840,6 +844,7 @@ def create_profile(payload: dict[str, Any], *, home: Path) -> dict[str, Any]:
         "base_url": profile["base_url"],
         "reasoning_effort": profile["reasoning_effort"],
         "model_verbosity": profile["model_verbosity"],
+        "fast_mode": bool(profile.get("fast_mode", False)),
         "context_window": profile["context_window"],
         "supports_vision": profile["supports_vision"],
         "supports_web_search": profile["supports_web_search"],
@@ -925,6 +930,8 @@ def update_profile(payload: dict[str, Any], *, home: Path) -> dict[str, Any]:
         if not 4096 <= value <= 10_000_000:
             raise ProfileError("上下文窗口必须在 4096 到 10000000 之间")
         profile["context_window"] = value
+    if "fast_mode" in payload:
+        profile["fast_mode"] = _as_bool(payload.get("fast_mode"))
     if "supports_vision" in payload:
         profile["supports_vision"] = _as_bool(payload.get("supports_vision"))
     if "supports_web_search" in payload:

@@ -9,9 +9,15 @@ from sqlalchemy.orm import Session
 
 from app.models import base, user_permission
 from app.history.tools import get_archive
+from app.history.context import message_content
 
 
 router = APIRouter()
+
+
+def display_content(row):
+    """Include saved observations and paths; the UI renders corrections separately."""
+    return message_content({**row, "correction": None})
 
 
 class MemberEdit(BaseModel):
@@ -75,8 +81,9 @@ def browse(user_id: int, query: str = Query("", max_length=200), sender: str = Q
         rows = store.read(chat, identity)
         if rows:
             row = rows[0]
+            content = display_content(row)
             messages.append({"id": identity, "sender": row["sender"], "time": row.get("time") or row["occurred_at"],
-                             "content": row["content"][:600], "truncated": len(row["content"]) > 600,
+                             "content": content[:600], "truncated": len(content) > 600,
                              "kind": row.get("message_type") or "text", "is_bot": bool(row.get("is_bot")),
                              "evidence_only": bool(row.get("evidence_only")), "corrected": bool(row.get("correction"))})
     return {**result, "chat": chat, "messages": messages, "summary": store.coverage(chat),
@@ -117,7 +124,7 @@ def detail(user_id: int, message_id: str, offset: int = Query(0, ge=0), db: Sess
         raise HTTPException(404, "Message not found")
     for row in rows:
         start = offset if row["id"] == message_id else 0
-        text = row["content"]
+        text = display_content(row)
         row["content"] = text[start:start + 16000]
         row["next_offset"] = start + 16000 if start + 16000 < len(text) else None
     return {"messages": rows}

@@ -252,7 +252,7 @@ def build_preview(request, db):
             )
         )
         from app.assistant.prompt_composer import output_contract
-        from app.services.codex_delivery import delivery_instructions, delivery_schema
+        from app.services.codex_delivery import provider_instructions, delivery_schema
         from app.services.codex_proxy.client import render_chat_prompt
 
         blocks.append(
@@ -263,6 +263,7 @@ def build_preview(request, db):
                     [],
                     artifact_output_dir="<本轮交付目录>",
                     native_instructions=True,
+                    session_delivery=True,
                     native_web_search_enabled=web_enabled,
                     available_file_commands=[],
                 ),
@@ -273,9 +274,9 @@ def build_preview(request, db):
         blocks.append(
             block(
                 "delivery",
-                "附件交付协议",
-                delivery_instructions(reply_is_json=True),
-                role="reference",
+                "系统运行与附件交付协议",
+                provider_instructions(reply_is_json=True, web_search_enabled=web_enabled),
+                role="system",
                 source="运行时适配器",
             )
         )
