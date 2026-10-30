@@ -82,6 +82,7 @@
         renderEnvironment();
         renderCompatibility();
         renderSettings();
+        window.SetupWizardUI?.render(snapshot);
     }
 
     function renderCompatibility() {
@@ -547,6 +548,7 @@
     }
 
     function start() {
+        window.SetupWizardUI?.init(apiCall, refreshNow, toast);
         bindEvents();
         const parameters = new URLSearchParams(window.location.search);
         if (parameters.has('preview')) {

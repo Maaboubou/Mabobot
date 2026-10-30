@@ -7,7 +7,7 @@
     <meta name="theme-color" content="#faf9f5">
     <title>Mabobot</title>
     <link rel="icon" href="mabobot-icon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="styles.css?v=wechat-compatibility-1">
+    <link rel="stylesheet" href="styles.css?v=setup-wizard-1">
     <link rel="stylesheet" href="notifications/email_notifications.css?v=2">
 </head>
 <body>
@@ -161,6 +161,11 @@
                 <section class="page" id="page-settings" data-page-panel="settings">
                     <div class="page-heading"><div><p class="eyebrow">PREFERENCES</p><h1>设置</h1><p class="page-description">管理启动方式、邮箱提醒、窗口行为与本地环境。</p></div></div>
                     <div class="settings-layout">
+                        <article class="panel settings-card wide-card setup-entry">
+                            <span class="setting-icon"><svg><use href="#i-layers"/></svg></span>
+                            <div><h2>配置向导</h2><p id="setupEntryHint">检查环境、准备 Codex，并按需安装功能组件。</p></div>
+                            <button class="button button-primary" data-setup-open>打开向导 <span aria-hidden="true">↗</span></button>
+                        </article>
                         <article class="panel settings-card wide-card"><details class="launcher-email-settings"><summary>邮箱提醒 · 配置与测试</summary><div id="launcherEmailConsole"></div></details></article>
                         <article class="panel settings-card">
                             <div class="settings-card-heading"><span class="setting-icon"><svg><use href="#i-power"/></svg></span><div><h2>Windows 登录启动</h2><p>使用当前用户启动项，无需管理员权限。</p></div></div>
@@ -216,8 +221,66 @@
             <div class="modal-actions"><button class="button button-secondary" id="modalCancel">取消</button><button class="button button-danger" id="modalConfirm">确认</button></div>
         </div>
     </div>
+    <div class="setup-backdrop" id="setupWizard" hidden>
+        <section class="setup-dialog" role="dialog" aria-modal="true" aria-labelledby="setupTitle" aria-describedby="setupSubtitle">
+            <header class="setup-topbar">
+                <div class="setup-brand"><img src="mabobot-icon.svg" alt=""><span>Mabobot <span class="setup-brand-divider">/</span> 配置向导</span></div>
+                <button class="setup-skip" id="setupSkip">稍后配置 <span aria-hidden="true">×</span></button>
+            </header>
+            <nav class="setup-steps" aria-label="配置步骤">
+                <button data-setup-step="welcome"><span>01</span><strong>开始准备</strong></button>
+                <button data-setup-step="codex"><span>02</span><strong>连接 AI</strong></button>
+                <button data-setup-step="components"><span>03</span><strong>功能组件</strong></button>
+                <button data-setup-step="finish"><span>04</span><strong>检查与使用</strong></button>
+            </nav>
+            <div class="setup-scroll" id="setupScroll">
+                <div class="setup-heading"><p class="setup-eyebrow" id="setupEyebrow">WELCOME TO MABOBOT</p><h1 id="setupTitle" tabindex="-1">让 Mabobot 准备就绪</h1><p id="setupSubtitle">基础环境已经准备好，接下来按你的需要完成配置。</p></div>
+                <section data-setup-panel="welcome" class="setup-welcome">
+                    <div>
+                        <div class="setup-welcome-list">
+                            <div><span class="setup-small-icon"><svg><use href="#i-check"/></svg></span><div><strong>基础环境，自动准备</strong><p>Python、桌面组件与项目依赖已由启动流程检查。</p></div></div>
+                            <div><span class="setup-small-icon"><svg><use href="#i-terminal"/></svg></span><div><strong>选择你的 AI 连接方式</strong><p>使用 ChatGPT 账号，或连接第三方 Responses API。</p></div></div>
+                            <div><span class="setup-small-icon"><svg><use href="#i-layers"/></svg></span><div><strong>需要什么，再安装什么</strong><p>浏览器、媒体和文件处理组件可分别安装，失败后可重试。</p></div></div>
+                        </div>
+                        <p class="setup-note"><svg><use href="#i-message"/></svg>使用微信功能前，请自行打开并登录微信。</p>
+                    </div>
+                    <div class="setup-illustration" aria-hidden="true"><div class="setup-orbit"></div><div class="setup-mini-window"><div class="setup-mini-dots"><i></i><i></i><i></i></div><img src="mabobot-icon.svg" alt=""><span>准备好，开始探索</span><div class="setup-mini-line"><b>✓</b><i></i></div><div class="setup-mini-line"><b>✓</b><i></i></div><div class="setup-mini-line"><b>＋</b><i></i></div></div><span class="setup-floating"><svg><use href="#i-layers"/></svg></span></div>
+                </section>
+                <section data-setup-panel="codex" hidden>
+                    <article class="setup-runtime-card">
+                        <span class="setup-card-icon"><svg><use href="#i-terminal"/></svg></span>
+                        <div class="setup-card-copy"><div class="setup-card-title"><h2>Codex 运行环境</h2><span class="setup-badge" id="setupCodexBadge">等待检测</span></div><p id="setupRuntimeDetail">正在检测当前使用的运行环境…</p><p class="setup-help" id="setupRuntimeHelp">Windows 默认在 WSL 中运行 Codex。</p>
+                            <div class="setup-card-actions"><button class="button button-primary" id="setupRuntimeAction" data-setup-install="wsl">安装 WSL 与 Ubuntu</button><button class="inline-link" data-setup-link="wsl_help">安装帮助 ↗</button><button class="inline-link" data-setup-link="codex">查看运行环境 ↗</button></div>
+                        </div>
+                    </article>
+                    <div class="setup-model-grid">
+                        <article class="setup-model-card"><span class="setup-card-kicker">CHATGPT</span><h2>使用 ChatGPT 账号</h2><p>在 Codex 页面新建 Profile，选择官方登录，按页面提示完成授权。</p><button class="inline-link" data-requires-cli data-setup-link="codex">前往账号配置 <span>→</span></button></article>
+                        <article class="setup-model-card"><span class="setup-card-kicker">RESPONSES API</span><h2>接入第三方 API</h2><p>填写接口地址、API Key 和模型名称，保存后设为默认 Profile。</p><button class="inline-link" data-requires-cli data-setup-link="codex">前往 API 配置 <span>→</span></button></article>
+                    </div>
+                    <div class="setup-profile-status"><span class="presence-dot" id="setupProfileDot"></span><span id="setupProfileDetail">配置完成后，返回这里重新检测。</span><button class="inline-link" data-setup-refresh>重新检测</button></div>
+                    <p class="setup-help">使用其他模型接入方式？可直接前往 <button class="inline-link" data-setup-link="models">模型配置 ↗</button>，并跳过此步。</p>
+                </section>
+                <section data-setup-panel="components" hidden>
+                    <div class="setup-component-list">
+                        <article class="setup-component"><span class="setup-card-icon"><svg><use href="#i-globe"/></svg></span><div><h2>浏览器组件 <span class="setup-badge" data-setup-badge="browser">待检测</span></h2><p>网页阅读、链接摘要与脑图渲染。自动下载 Chromium。</p><small data-setup-detail="browser"></small></div><button class="button button-secondary" data-setup-install="browser">安装</button></article>
+                        <article class="setup-component"><span class="setup-card-icon"><svg><use href="#i-play"/></svg></span><div><h2>媒体组件 <span class="setup-badge" data-setup-badge="media">待检测</span></h2><p>视频、音频处理所需的 FFmpeg 与 FFprobe。</p><small data-setup-detail="media"></small></div><button class="button button-secondary" data-setup-install="media">安装</button></article>
+                        <article class="setup-component"><span class="setup-card-icon"><svg><use href="#i-folder"/></svg></span><div><h2>文件处理工具 <span class="setup-badge" data-setup-badge="file_tools">待检测</span></h2><p>为 Codex 准备常用 Office、PDF 与 OCR 工具。</p><small data-setup-detail="file_tools">需要已初始化的 Ubuntu / Debian，安装时可能要求 Linux 密码。</small></div><button class="button button-secondary" data-setup-install="file_tools">安装</button></article>
+                    </div>
+                    <p class="setup-note"><svg><use href="#i-info"/></svg>这些组件可以稍后安装；未安装的组件只影响对应功能。</p>
+                </section>
+                <section data-setup-panel="finish" hidden>
+                    <div class="setup-summary" id="setupSummary"></div>
+                    <div class="setup-next-use"><span class="setup-small-icon"><svg><use href="#i-message"/></svg></span><div><h2>接下来，选择一个聊天</h2><p>登录微信后，在控制台同步聊天、开启监听并选择助手。模型凭据检查不代表接口连通；请在配置页或实际使用时验证。</p><button class="inline-link" data-setup-link="chats">打开聊天管理 →</button></div></div>
+                </section>
+                <div class="setup-operation" id="setupOperation" role="status" aria-live="polite" hidden><span class="setup-operation-dot"></span><div><strong id="setupOperationTitle"></strong><p id="setupOperationMessage"></p><details><summary>安装提示与日志</summary><p>Windows / Linux 安装窗口需要时会单独打开。输入 Linux 密码时屏幕不显示字符，输入后按回车。网络失败时请检查系统网络或代理，再点击安装按钮重试。</p><p>可以关闭向导，安装会继续；如需中止终端中的安装，请在该终端按 Ctrl+C。</p><pre class="setup-log-tail" id="setupLogTail" hidden></pre><button class="inline-link" id="setupLogs">打开日志目录 ↗</button></details></div></div>
+                <p class="setup-error" id="setupError" role="alert" hidden></p>
+            </div>
+            <footer class="setup-footer"><div class="setup-footer-note"><span class="presence-dot running"></span>进度自动保存 · 随时回来继续</div><div class="setup-footer-actions"><button class="button button-quiet" id="setupBack">上一步</button><button class="button button-secondary" data-setup-refresh>重新检测</button><button class="button button-primary" id="setupNext">开始配置 <span aria-hidden="true">→</span></button></div></footer>
+        </section>
+    </div>
     <div class="toast-stack" id="toastStack" aria-live="polite"></div>
     <script src="notifications/email_notifications.js"></script>
-    <script src="app.js?v=wechat-compatibility-1"></script>
+    <script src="setup_wizard.js"></script>
+    <script src="app.js?v=setup-wizard-1"></script>
 </body>
 </html>

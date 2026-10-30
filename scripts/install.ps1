@@ -1,7 +1,8 @@
 ﻿param(
     [switch]$Force,
     [string]$StatusFile = "",
-    [switch]$InstallMissingRuntimes
+    [switch]$InstallMissingRuntimes,
+    [switch]$IncludeOptionalComponents
 )
 
 $ErrorActionPreference = "Stop"
@@ -101,6 +102,7 @@ if (-not $Force -and $null -ne $VenvPythonInfo -and (Test-Path $HashMarker)) {
 }
 
 if (-not $EnvironmentReady) {
+    Remove-Item -LiteralPath $HashMarker -Force -ErrorAction SilentlyContinue
     if ($null -eq $VenvPythonInfo) {
         $PythonInfo = Get-MabobotCompatiblePython
         if ($null -eq $PythonInfo -and $InstallMissingRuntimes) {
@@ -154,7 +156,6 @@ if (-not $EnvironmentReady) {
         Stop-Install "依赖安装完成，但关键模块导入检查失败。"
     }
 
-    Set-Content -Path $HashMarker -Value $RequirementHash -Encoding ASCII
 }
 else {
     Write-Step "虚拟环境和依赖已就绪，跳过重复安装" 55
@@ -178,46 +179,6 @@ if (-not $WebView2Version) {
 }
 Write-Step "Microsoft WebView2 Runtime 已就绪（$WebView2Version）" 62
 
-if (-not $PlaywrightReady) {
-    Write-Step "安装链接摘要脑图所需的 Chromium（首次运行需要下载）" 65
-    $PreviousErrorActionPreference = $ErrorActionPreference
-    try {
-        $ErrorActionPreference = "Continue"
-        & $VenvPython -m playwright install chromium 2>&1 | ForEach-Object {
-            $Line = [string]$_
-            Write-Host $Line
-            $OverallPercent = -1
-            if ($Line -match '(?<!\d)(\d{1,3})%(?!\d)') {
-                $DownloadPercent = [Math]::Max(0, [Math]::Min(100, [int]$Matches[1]))
-                $OverallPercent = 65 + [Math]::Floor(($DownloadPercent * 18) / 100)
-            }
-            Write-InstallerStatus `
-                -Message "正在下载并安装 Chromium" `
-                -Percent $OverallPercent `
-                -Detail $Line
-        }
-        $PlaywrightExitCode = $LASTEXITCODE
-    }
-    finally {
-        $ErrorActionPreference = $PreviousErrorActionPreference
-    }
-    if ($PlaywrightExitCode -ne 0) {
-        Stop-Install "Playwright Chromium 安装失败，请检查网络或代理后重试。"
-    }
-
-    Write-Step "Chromium 下载完成，正在验证浏览器" 84
-    & $VenvPython -c "from pathlib import Path; from playwright.sync_api import sync_playwright; p = sync_playwright().start(); path = p.chromium.executable_path; p.stop(); raise SystemExit(0 if Path(path).is_file() else 1)"
-    if ($LASTEXITCODE -ne 0) {
-        Stop-Install "Playwright 已执行安装，但 Chromium 运行时检查失败。"
-    }
-}
-
-Write-Step "准备链接摘要所需的 FFmpeg/FFprobe（首次运行需要下载）" 88
-& $VenvPython -c "import subprocess; from static_ffmpeg import run; ffmpeg, ffprobe = run.get_or_fetch_platform_executables_else_raise(); subprocess.run([ffmpeg, '-version'], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); subprocess.run([ffprobe, '-version'], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); print(f'FFmpeg: {ffmpeg}'); print(f'FFprobe: {ffprobe}')"
-if ($LASTEXITCODE -ne 0) {
-    Stop-Install "FFmpeg/FFprobe 自动安装或运行检查失败，请检查网络、代理或安全软件后重试。"
-}
-
 $EnvFile = Join-Path $ProjectRoot ".env"
 $EnvExample = Join-Path $ProjectRoot ".env.example"
 if (-not (Test-Path $EnvFile)) {
@@ -227,6 +188,55 @@ if (-not (Test-Path $EnvFile)) {
 
 foreach ($Directory in @("data", "logs", "tmp")) {
     New-Item -ItemType Directory -Force -Path (Join-Path $ProjectRoot $Directory) | Out-Null
+}
+
+# This marker covers the base runtime only; optional tools are verified by the wizard.
+Set-Content -Path $HashMarker -Value $RequirementHash -Encoding ASCII
+
+if ($IncludeOptionalComponents) {
+    if (-not $PlaywrightReady) {
+        Write-Step "安装链接摘要脑图所需的 Chromium（首次运行需要下载）" 65
+        $PreviousErrorActionPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            & $VenvPython -m playwright install chromium 2>&1 | ForEach-Object {
+                $Line = [string]$_
+                Write-Host $Line
+                $OverallPercent = -1
+                if ($Line -match '(?<!\d)(\d{1,3})%(?!\d)') {
+                    $DownloadPercent = [Math]::Max(0, [Math]::Min(100, [int]$Matches[1]))
+                    $OverallPercent = 65 + [Math]::Floor(($DownloadPercent * 18) / 100)
+                }
+                Write-InstallerStatus `
+                    -Message "正在下载并安装 Chromium" `
+                    -Percent $OverallPercent `
+                    -Detail $Line
+            }
+            $PlaywrightExitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $PreviousErrorActionPreference
+        }
+        if ($PlaywrightExitCode -ne 0) {
+            Stop-Install "Playwright Chromium 安装失败，请检查网络或代理后重试。"
+        }
+
+        Write-Step "Chromium 下载完成，正在验证浏览器" 84
+        & $VenvPython -c "from pathlib import Path; from playwright.sync_api import sync_playwright; p = sync_playwright().start(); path = p.chromium.executable_path; p.stop(); raise SystemExit(0 if Path(path).is_file() else 1)"
+        if ($LASTEXITCODE -ne 0) {
+            Stop-Install "Playwright 已执行安装，但 Chromium 运行时检查失败。"
+        }
+    }
+
+    Write-Step "准备链接摘要所需的 FFmpeg/FFprobe（首次运行需要下载）" 88
+    & $VenvPython -c "import subprocess; from static_ffmpeg import run; ffmpeg, ffprobe = run.get_or_fetch_platform_executables_else_raise(); subprocess.run([ffmpeg, '-version'], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); subprocess.run([ffprobe, '-version'], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); print(f'FFmpeg: {ffmpeg}'); print(f'FFprobe: {ffprobe}')"
+    if ($LASTEXITCODE -ne 0) {
+        Stop-Install "FFmpeg/FFprobe 自动安装或运行检查失败，请检查网络、代理或安全软件后重试。"
+    }
+
+}
+else {
+    Write-Step "基础环境已就绪；浏览器与媒体组件可在配置向导中按需安装" 98
 }
 
 Write-InstallerStatus -Message "运行环境准备完成" -Percent 100

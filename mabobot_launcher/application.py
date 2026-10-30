@@ -30,6 +30,7 @@ from .state import clear_launcher_state, consume_control_signal, write_launcher_
 from .supervisor import ServiceSupervisor
 from .compatibility import CompatibilityMonitor
 from .codex_environment import CodexEnvironmentMonitor
+from .setup_wizard import SetupWizard
 
 
 _UI_LOAD_TIMEOUT_SECONDS = 8.0
@@ -118,6 +119,37 @@ class LauncherApi:
     def open_web_console(self) -> dict[str, Any]:
         return self._application.open_url(self._application.web_console_url)
 
+    def save_setup_progress(self, status: str, step: str | None = None) -> dict[str, Any]:
+        try:
+            return self._application.setup_wizard.update(status, step)
+        except (ValueError, OSError) as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def refresh_setup(self) -> dict[str, Any]:
+        return self._application.setup_wizard.refresh()
+
+    def install_setup_component(self, component: str) -> dict[str, Any]:
+        if self._application._repairing:
+            return {"ok": False, "error": "正在修复基础环境，请稍后再安装组件"}
+        return self._application.setup_wizard.install(component)
+
+    def open_setup_page(self, page: str) -> dict[str, Any]:
+        destinations = {
+            "codex": self._application.web_console_url + "codex",
+            "models": self._application.web_console_url + "ai",
+            "chats": self._application.web_console_url + "chats",
+            "wsl_help": "https://learn.microsoft.com/zh-cn/windows/wsl/install",
+            "codex_help": "https://learn.chatgpt.com/docs/cli",
+        }
+        if page not in destinations:
+            return {"ok": False, "error": "未知的配置入口"}
+        if page in {"codex", "models", "chats"}:
+            web = next((s for s in self._application.supervisor.snapshot() if s["key"] == "web"), {})
+            if web.get("status") != "running":
+                self._application.supervisor.start_service("web")
+                return {"ok": False, "error": "Web 服务正在启动，请稍后再次打开配置页面"}
+        return self._application.open_url(destinations[page])
+
     def get_email_preferences(self) -> dict[str, Any]:
         from app.services.email_settings_service import open_settings_db, public_config
         with open_settings_db() as db:
@@ -200,6 +232,7 @@ class DesktopLauncher:
         self.compatibility = CompatibilityMonitor()
         self.codex_environment = CodexEnvironmentMonitor()
         self.preferences = PreferenceStore()
+        self.setup_wizard = SetupWizard()
         self.startup = WindowsLoginStartup()
         self.api = LauncherApi(self)
         self.window: Any = None
@@ -448,6 +481,7 @@ class DesktopLauncher:
             "compatibility": self.compatibility.snapshot(),
             "repairing": self._repairing,
             "startup_mode": self.startup_mode,
+            "setup": self.setup_wizard.snapshot(),
         }
 
     def _environment_status(self) -> list[dict[str, Any]]:
@@ -504,6 +538,8 @@ class DesktopLauncher:
             return False
 
     def repair_environment(self) -> dict[str, Any]:
+        if self.setup_wizard.snapshot()["operation"].get("status") == "running":
+            return {"ok": False, "error": "配置向导正在安装组件，请等待完成后再修复环境"}
         if not self._repair_lock.acquire(blocking=False):
             return {"ok": False, "error": "环境修复已经在进行中"}
         self._repairing = True

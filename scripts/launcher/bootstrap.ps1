@@ -129,13 +129,16 @@ function Test-EnvironmentReady {
     if (-not (Test-Path $Requirements) -or -not (Test-Path $HashMarker)) {
         return $false
     }
+    foreach ($RequiredPath in @(".env", "data", "logs", "tmp")) {
+        if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot $RequiredPath))) { return $false }
+    }
     $CurrentHash = (Get-FileHash $Requirements -Algorithm SHA256).Hash
     $SavedHash = (Get-Content $HashMarker -Raw).Trim()
     if ($CurrentHash -ne $SavedHash) {
         return $false
     }
     try {
-        & $VenvPython -c "import webview, pystray, psutil, dotenv, win32api, win32con, win32event, win32gui, win32process, win32security, win32ts, win32ui" 2>$null | Out-Null
+        & $VenvPython -c "import fastapi, flask, sqlalchemy, mabowx, webview, pystray, psutil, dotenv, win32api, win32con, win32event, win32gui, win32process, win32security, win32ts, win32ui" 2>$null | Out-Null
         return ($LASTEXITCODE -eq 0)
     }
     catch {
@@ -160,7 +163,7 @@ function New-ProgressWindow {
                 <Image Width="38" Height="38" Source="$AppIconImage" Stretch="Uniform"/>
                 <StackPanel Grid.Column="1" Margin="13,0,0,0">
                     <TextBlock Text="正在准备 Mabobot" Foreground="#141413" FontFamily="Microsoft YaHei UI" FontSize="16" FontWeight="SemiBold"/>
-                    <TextBlock Text="首次运行会安装依赖与浏览器组件" Foreground="#6C6A64" FontFamily="Microsoft YaHei UI" FontSize="11" Margin="0,5,0,0"/>
+                    <TextBlock Text="首次运行准备基础环境，其他组件可在向导中选装" Foreground="#6C6A64" FontFamily="Microsoft YaHei UI" FontSize="11" Margin="0,5,0,0"/>
                 </StackPanel>
                 <Button Name="CloseButton" Grid.Column="2" Width="28" Height="28" Content="×" FontSize="18" Foreground="#77736C" Background="Transparent" BorderThickness="0" Cursor="Hand"/>
             </Grid>

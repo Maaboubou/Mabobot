@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 
 from app.utils.plugin_config import get_config
+from app.utils.browser_executable import find_chrome_executable
 
 
 SHARED_CHROME_CONFIG_PLUGIN = "summary_plus"
@@ -49,13 +50,15 @@ def load_shared_chrome_settings() -> SharedChromeSettings:
 
     return SharedChromeSettings(
         debug_port=debug_port,
-        executable=str(
-            get_config(
-                "chrome_path",
-                DEFAULT_CHROME_PATH,
-                plugin_name=SHARED_CHROME_CONFIG_PLUGIN,
+        executable=find_chrome_executable(
+            str(
+                get_config(
+                    "chrome_path",
+                    DEFAULT_CHROME_PATH,
+                    plugin_name=SHARED_CHROME_CONFIG_PLUGIN,
+                )
+                or DEFAULT_CHROME_PATH
             )
-            or DEFAULT_CHROME_PATH
         ),
         user_data_dir=str(
             get_config(

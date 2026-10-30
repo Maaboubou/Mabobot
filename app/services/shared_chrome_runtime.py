@@ -233,7 +233,11 @@ class SharedChromeRuntimeMixin:
         return bool(self._debug_browser_identity())
 
     def _start_chrome_debug(self):
-        """启动 Chrome 调试模式"""
+        """启动 Chrome 调试模式。"""
+        from app.utils.browser_executable import find_chrome_executable
+
+        # A first-run browser install can finish after this service was created.
+        self.chrome_path = find_chrome_executable(self.chrome_path)
         if self._is_debug_port_ready():
             self.logger.info(f"✅ Chrome 调试端口 {self.chrome_debug_port} 已可用，跳过重复启动")
             return
