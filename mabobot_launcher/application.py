@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shutil
 import subprocess
 import sys
 import threading
@@ -30,6 +29,7 @@ from .settings import PreferenceStore, WindowsLoginStartup
 from .state import clear_launcher_state, consume_control_signal, write_launcher_state
 from .supervisor import ServiceSupervisor
 from .compatibility import CompatibilityMonitor
+from .codex_environment import CodexEnvironmentMonitor
 
 
 _UI_LOAD_TIMEOUT_SECONDS = 8.0
@@ -198,6 +198,7 @@ class DesktopLauncher:
         self.startup_mode = startup_mode
         self.supervisor = ServiceSupervisor()
         self.compatibility = CompatibilityMonitor()
+        self.codex_environment = CodexEnvironmentMonitor()
         self.preferences = PreferenceStore()
         self.startup = WindowsLoginStartup()
         self.api = LauncherApi(self)
@@ -457,7 +458,6 @@ class DesktopLauncher:
         version_ready = sys.version_info[:2] in {(3, 11), (3, 12)}
         requirements_ready = self._requirements_ready()
         wechat_running = self._process_running({"wechat.exe", "weixin.exe"})
-        codex_ready = bool(shutil.which("codex") or shutil.which("codex.exe"))
         checks = [
             {
                 "key": "python",
@@ -477,13 +477,7 @@ class DesktopLauncher:
                 "ready": wechat_running,
                 "detail": "运行中" if wechat_running else "未检测到",
             },
-            {
-                "key": "codex",
-                "label": "Codex",
-                "ready": codex_ready,
-                "optional": True,
-                "detail": "已就绪" if codex_ready else "可选 · 未检测到",
-            },
+            self.codex_environment.snapshot(),
         ]
         self._environment_cache = (now, checks)
         return checks
