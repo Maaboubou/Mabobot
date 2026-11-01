@@ -746,7 +746,7 @@ class CodexBrowserToolService:
             try:
                 function(*args)
             except Exception:
-                logger.debug("Browser client cleanup failed", exc_info=True)
+                logger.warning("Browser client cleanup failed", exc_info=True)
 
         with ExitStack() as stack:
             check_cancelled()
@@ -783,8 +783,10 @@ class CodexBrowserToolService:
                                  if not p.is_closed() and p.url.split('#', 1)[0] == match), None)
                     reused = page is not None
                 page = page or browser_context.new_page()
-                if not target_url:
-                    stack.callback(cleanup, page.close)  # temporary JSON-pagination tab
+                if not reused:
+                    # Own every tab created by this call, including failed opens.
+                    # Existing user tabs and the shared login session survive.
+                    stack.callback(cleanup, page.close)
                 # Target-local guards must not affect other shared Chrome tabs.
                 cdp = browser_context.new_cdp_session(page)
                 stack.callback(cleanup, cdp.detach)
