@@ -13,6 +13,7 @@ from typing import Callable
 from mabowx.core import uia
 from mabowx.core.clipboard import clear, get_text, read_files, set_text
 from mabowx.core.win32 import (
+    enum_windows_by_pid,
     force_foreground,
     get_cursor_position,
     get_foreground_window,
@@ -322,9 +323,46 @@ def _release_preview(control, pid):
     return closed
 
 
+def _find_media_previews(pid, *, diagnostics=None):
+    """Supplement UIA enumeration with HWND rebinding, never native class alone.
+
+    Qt may expose a new preview through ControlFromHandle before it appears in
+    the desktop UIA children. Use the same discovery before and after clicking
+    so an existing user preview cannot be mistaken for our new window.
+    """
+    controls = list(uia.find_top_level_controls(
+        "mmui::PreviewWindow", pid=pid, max_results=50, diagnostics=diagnostics,
+    ))
+    seen = set()
+    for control in controls:
+        try:
+            seen.add(int(control.NativeWindowHandle or 0))
+        except Exception:
+            pass
+    if not pid:
+        return controls
+    try:
+        windows = enum_windows_by_pid(pid)
+    except Exception:
+        return controls
+    for info in windows:
+        if not info.visible or info.hwnd in seen:
+            continue
+        try:
+            control = uia.control_from_handle(info.hwnd)
+            if not _preview_identity_is_safe(control, info.hwnd, pid):
+                continue
+        except Exception:
+            continue
+        controls.append(control)
+        seen.add(info.hwnd)
+        media_event("preview_hwnd_discovered", hwnd=info.hwnd)
+    return controls
+
+
 def _preview_baseline(pid):
     """Recover only a verified preview left by one of our finished operations."""
-    controls = uia.find_top_level_controls("mmui::PreviewWindow", pid=pid, max_results=10)
+    controls = _find_media_previews(pid)
     baseline = set()
     owned_busy = False
     seen = set()
@@ -396,12 +434,12 @@ def _wait_for_media_preview(
 
     retry_at = time.monotonic() + max(0.3, retry_after)
     retried = retry_click is None
-    while time.monotonic() < deadline:
+    # Always poll after a retry click, even if rebinding/clicking consumed the
+    # remaining budget. Otherwise a successfully opened preview is orphaned.
+    while True:
         query_diagnostics = {}
-        controls = uia.find_top_level_controls(
-            "mmui::PreviewWindow",
-            pid=pid,
-            max_results=5,
+        controls = _find_media_previews(
+            pid,
             diagnostics=query_diagnostics,
         )
         polls += 1
@@ -435,6 +473,8 @@ def _wait_for_media_preview(
                 f"点击后同时出现 {len(new_controls)} 个新媒体预览窗口，拒绝猜测"
             )
         now = time.monotonic()
+        if now >= deadline:
+            break
         if not retried and now >= retry_at:
             retried = True
             try:
@@ -447,7 +487,7 @@ def _wait_for_media_preview(
             except Exception as exc:
                 retry_result = f"{type(exc).__name__}: {exc}"[:240]
                 wxlog.warning(f"引用媒体预览安全重试失败: {exc}")
-        time.sleep(0.3)
+        time.sleep(min(0.3, max(0.0, deadline - time.monotonic())))
     report("timeout")
     return None
 

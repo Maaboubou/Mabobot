@@ -178,7 +178,7 @@
                             <div class="settings-line readonly"><span><strong>重复启动</strong><small>再次双击 START.bat 时恢复现有窗口</small></span><span class="value-pill">单实例</span></div>
                         </article>
                         <article class="panel settings-card wide-card" id="compatibilityPanel" aria-label="微信兼容性">
-                            <div class="settings-card-heading"><span class="setting-icon"><svg><use href="#i-message"/></svg></span><div><h2>微信兼容性</h2><p>检查前，请在微信主窗口打开会话。</p></div><span class="value-pill" id="compatibilityBadge">读取中</span></div>
+                            <div class="settings-card-heading"><span class="setting-icon"><svg><use href="#i-message"/></svg></span><div><h2>微信兼容性</h2><p>检查时自动显示微信主窗口；空白时打开文件传输助手，不发送消息。</p></div><span class="value-pill" id="compatibilityBadge">读取中</span></div>
                             <div class="compatibility-values">
                                 <div class="settings-line readonly"><span><strong>微信版本</strong></span><span class="value-pill" id="compatibilityVersion">—</span></div>
                                 <div class="settings-line readonly"><span><strong>适配配置</strong></span><span class="value-pill" id="compatibilityProfile">—</span></div>
@@ -186,6 +186,17 @@
                                 <div class="settings-line readonly"><span><strong>定位检查</strong><small>不含发送、下载验收</small></span><span class="value-pill" id="compatibilityMessage" role="status" aria-live="polite">未检查</span></div>
                             </div>
                             <p class="compatibility-notice" id="compatibilityDetail" role="status" hidden></p>
+                            <details id="compatibilityAcceptance">
+                                <summary>功能验收与配置验证</summary>
+                                <p>手动完成下列操作后记录结果与证据。全部通过才可标记配置已验证；此标记随配置发布，本机定位检查仍需单独运行。</p>
+                                <p id="compatibilityVerificationStatus" role="status"></p>
+                                <ul id="compatibilityFunctionResults"></ul>
+                                <label>验收功能 <select id="compatibilityFunction"></select></label>
+                                <label>结果 <select id="compatibilityFunctionStatus"><option value="pass">通过</option><option value="fail">失败</option><option value="blocked">受阻</option></select></label>
+                                <label>验收证据 <textarea id="compatibilityEvidence" rows="3" placeholder="填写实际操作、核对结果及证据位置；不会自动执行发送等操作"></textarea></label>
+                                <button class="button button-secondary" id="compatibilityRecord" data-action="compatibility-record">保存验收结果</button>
+                                <button class="button button-secondary" id="compatibilityVerify" data-action="compatibility-verify" disabled>标记配置已验证</button>
+                            </details>
                             <div class="settings-card-actions compatibility-actions">
                                 <button class="inline-link" id="compatibilityBaseline" data-action="compatibility-baseline" disabled>设为基线</button>
                                 <button class="button button-secondary" id="compatibilityReport" data-action="compatibility-report" disabled>查看报告</button>
@@ -281,6 +292,6 @@
     <div class="toast-stack" id="toastStack" aria-live="polite"></div>
     <script src="notifications/email_notifications.js"></script>
     <script src="setup_wizard.js"></script>
-    <script src="app.js?v=setup-wizard-1"></script>
+    <script src="app.js?v=3.10.2"></script>
 </body>
 </html>

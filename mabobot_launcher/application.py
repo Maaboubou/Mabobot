@@ -179,6 +179,12 @@ class LauncherApi:
     def set_compatibility_baseline(self) -> dict[str, Any]:
         return self._application.compatibility.set_baseline()
 
+    def record_compatibility_function(self, created_at, function, status, evidence):
+        return self._application.compatibility.record_function(created_at, function, status, evidence)
+
+    def verify_compatibility_profile(self, created_at):
+        return self._application.compatibility.mark_verified(created_at)
+
     def open_compatibility_report(self, diff: bool = False) -> dict[str, Any]:
         try:
             path = self._application.compatibility.document(bool(diff))

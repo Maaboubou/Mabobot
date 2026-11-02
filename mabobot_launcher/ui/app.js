@@ -93,7 +93,7 @@
         $('#compatibilityBadge').textContent = c.running ? '检查中' : warning ? '待检查' : current ? '已检查' : '等待微信';
         $('#compatibilityBadge').classList.toggle('is-warning', Boolean(warning));
         $('#compatibilityVersion').textContent = c.version || '未运行';
-        $('#compatibilityProfile').textContent = c.selection ? `${c.selection.profile_version}${c.selection.validation === 'pending' ? ' · 待验证' : ''}` : '—';
+        $('#compatibilityProfile').textContent = c.selection ? `${c.selection.profile_version}${c.selection.validation === 'verified' && c.selection.exact ? ' · 已验证' : ' · 待验证'}` : '—';
         $('#compatibilityProfile').title = c.copied_from ? `沿用 ${c.copied_from}，未自动修改定位规则` : '';
         $('#compatibilityBaseVersion').textContent = c.baseline_version || '未设置';
         $('#compatibilityMessage').textContent = c.running ? '正在检查…' : current ? `${latest.passed}/${latest.total} 项通过` : '未检查';
@@ -107,6 +107,22 @@
         $('#compatibilityReport').disabled = !c.has_report;
         $('#compatibilityDiff').disabled = !c.has_diff;
         $('#compatibilityBaseline').disabled = !c.can_set_baseline;
+        const functions = c.acceptance_functions || {};
+        const select = $('#compatibilityFunction');
+        if (select.options.length !== Object.keys(functions).length) {
+            select.replaceChildren(...Object.entries(functions).map(([key, label]) => new Option(label, key)));
+        }
+        const labels = {pass: '通过', fail: '失败', blocked: '受阻', not_run: '未验收'};
+        $('#compatibilityFunctionResults').replaceChildren(...Object.entries(functions).map(([key, label]) => {
+            const row = document.createElement('li');
+            const result = c.functional_results?.[key];
+            row.textContent = `${label}：${labels[result?.status] || '未验收'}${result?.evidence ? ' — ' + result.evidence : ''}`;
+            return row;
+        }));
+        $('#compatibilityRecord').disabled = c.running || !current;
+        $('#compatibilityVerify').disabled = !c.can_verify;
+        $('#compatibilityVerificationStatus').textContent = c.verification_error || '全部验收通过，可以标记配置已验证。';
+
     }
 
     function renderOverall() {
@@ -311,7 +327,12 @@
     }
 
     async function poll() {
-        if (ui.polling) return;
+        if (ui.polling) {
+            // An action's refreshNow() may own the request when this timer fires.
+            // Keep the polling chain alive without issuing a concurrent request.
+            window.setTimeout(poll, ui.connected ? 900 : 1600);
+            return;
+        }
         ui.polling = true;
         try {
             const snapshot = await apiCall('get_snapshot', ui.lastSequence);
@@ -424,6 +445,11 @@
             const action = actionButton.dataset.action;
             if (action === 'open-web') return execute('open_web_console');
             if (action === 'open-folder') return execute('open_project_folder');
+            if (action === 'compatibility-record') return execute('record_compatibility_function', [ui.snapshot.compatibility?.latest?.created_at, $('#compatibilityFunction').value, $('#compatibilityFunctionStatus').value, $('#compatibilityEvidence').value], '验收结果已保存');
+            if (action === 'compatibility-verify') {
+                const createdAt = ui.snapshot.compatibility?.latest?.created_at;
+                return confirmAction('标记配置已验证', '将根据本次验收记录标记此版本配置已验证。随更新发布后，其他机器可识别此标记；不会替代其本机检测。', '标记已验证', () => execute('verify_compatibility_profile', [createdAt], '适配配置已验证'));
+            }
             if (action === 'compatibility-run') return execute('run_compatibility_check', [], '兼容性检查已启动，结果将在此处更新');
             if (action === 'compatibility-report') return execute('open_compatibility_report', [false]);
             if (action === 'compatibility-diff') return execute('open_compatibility_report', [true]);

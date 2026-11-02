@@ -1,7 +1,8 @@
-"""Read-only compatibility evidence: capture, compare, draft, record.
+"""Compatibility evidence: capture, compare, draft, record.
 
 Run with Windows Python: python -m mabowx.tools.compatibility --help
 Comparisons and profile drafts also work without Windows.
+Capture is read-only unless --prepare-chat is requested.
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ import time
 
 import yaml
 
-from mabowx.core.selectors import FIELDS, load_profile, version_key
+from mabowx.core.selectors import FIELDS, load_profile, version_key, profile_fingerprint
 
 SCHEMA = 1
 # This is intentionally also a coverage manifest: untested actions stay pending.
@@ -116,15 +117,22 @@ def compare(before, after):
 
 def write_report(folder, report):
     (folder/'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+    preparation = report.get('preparation')
+    notice = ('**已自动显示主窗口并准备聊天场景；未执行发送、下载操作。**'
+              if preparation else '**这是只读定位检查；未执行发送、切换、下载操作。**')
     lines = ['# 微信兼容性检查', '', f"微信版本：{report['version']}",
              f"场景：{report['scenario']}", f"配置选择：`{report['selection']}`", '',
-             '**这是只读定位检查；未执行发送、切换、下载操作。**', '',
+             notice, '',
              '| 窗口 | 检查项 | 结果 | 匹配数 |', '|---|---|---|---|']
     lines += [f"| {r['window']} | {r['check']} | {r['status']} | {r['count']} |" for r in report['checks']]
     lines += ['', '## 功能验收', '', '| 功能 | 结果 | 验收内容 | 证据 |', '|---|---|---|---|']
     for k, v in report['functions'].items():
         evidence = v.get('evidence', '').replace('|', '\\|').replace('\n', ' ')
         lines.append(f"| {k} | {v['status']} | {FUNCTIONS[k]} | {evidence} |")
+    if preparation:
+        lines += ['', '## 场景准备', '',
+                  f"主窗口会话：{preparation['chat']}",
+                  '已打开备用会话。' if preparation['opened_chat'] else '已保留当前会话。']
     lines += ['', '## 采集限制', '', '失败也可能由未打开聊天、窗口布局、权限或控件读取失败导致，不自动判为版本不兼容。',
               'JSON 含当前界面文字，仅本地保存。截图可选。没有自动修改配置或标记版本已兼容。']
     for w in report['windows']:
@@ -133,7 +141,90 @@ def write_report(folder, report):
     (folder/'report.md').write_text('\n'.join(lines)+'\n', encoding='utf-8')
 
 
+def validation_error(report, profile, captured_profile):
+    if report['version'] != profile['version'] or not report.get('selection', {}).get('exact'):
+        return '必须使用当前微信版本的独立适配配置重新检测'
+    if profile_fingerprint(profile) != profile_fingerprint(captured_profile):
+        return '适配配置已变化，请重新检测和验收'
+    encoded = yaml.safe_dump(captured_profile, allow_unicode=True, sort_keys=True)
+    if hashlib.sha256(encoded.encode()).hexdigest() != report.get('profile_sha256'):
+        return '报告与采集配置不一致，请重新检测'
+    checks = evaluate(report.get('windows', []), profile)
+    if not checks or any(r['status'] != 'pass' for r in checks):
+        return '定位检查尚未全部通过'
+    if not any(w['kind'] == 'main' for w in report['windows']):
+        return '缺少主窗口检测结果'
+    for name in FUNCTIONS:
+        result = report.get('functions', {}).get(name, {})
+        if result.get('status') != 'pass' or not str(result.get('evidence', '')).strip():
+            return '所有功能均需验收通过并填写证据'
+    return ''
+
+
+def verify_profile(report_path, profile_path):
+    """Publish portable validation metadata; private evidence stays in the report."""
+    import os
+    from mabowx.core.selectors import _load
+    report = json.loads(report_path.read_text(encoding='utf-8'))
+    profile = yaml.safe_load(profile_path.read_text(encoding='utf-8'))
+    captured = yaml.safe_load((report_path.parent/'profile.yaml').read_text(encoding='utf-8'))
+    error = validation_error(report, profile, captured)
+    if error:
+        raise ValueError(error)
+    profile['validation'] = 'verified'
+    profile['verification'] = {
+        'verified_at': datetime.now(timezone.utc).isoformat(),
+        'profile_fingerprint': profile_fingerprint(profile),
+        'report_sha256': hashlib.sha256(report_path.read_bytes()).hexdigest(),
+        'functions': list(FUNCTIONS),
+    }
+    import tempfile
+    fd, temp = tempfile.mkstemp(dir=profile_path.parent, prefix='.verified-')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            yaml.safe_dump(profile, f, allow_unicode=True, sort_keys=False)
+        os.replace(temp, profile_path)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
+    _load.cache_clear()
+
+
+def prepare_main_chat():
+    """Prepare the main window without starting listeners or sending messages.
+
+    The caller holds ui_transaction through preparation and capture.
+    """
+    from mabowx.ui.main import WeChatMainWnd
+
+    try:
+        window = WeChatMainWnd(resize=False)
+        window.show()
+        if not window.switch_chat_page():
+            raise RuntimeError('无法切换到微信聊天页面')
+        current = window.get_current_chat_name()
+        target = current or '文件传输助手'
+        if not current:
+            response = window.get_session_box().switch_chat(target, exact=True)
+            if not response.is_success:
+                raise RuntimeError(response.get('message') or '打开会话失败')
+        if window.get_current_chat_name() != target:
+            raise RuntimeError('主窗口未显示目标会话')
+        return {'status': 'ready', 'chat': target, 'opened_chat': not bool(current)}
+    except Exception as exc:
+        raise RuntimeError(f'兼容性检查场景准备失败：{exc}') from exc
+
+
 def capture(args):
+    from mabowx.core.locks import ui_transaction
+
+    # Keep read-only CLI capture available; the launcher opts into preparation.
+    with ui_transaction(timeout=10):
+        preparation = prepare_main_chat() if getattr(args, 'prepare_chat', False) else None
+        _capture(args, preparation)
+
+
+def _capture(args, preparation=None):
     from mabowx.core import uia
     from mabowx.core.win32 import get_process_path, get_version_by_path
     from mabowx.core.locks import ui_transaction
@@ -210,6 +301,8 @@ def capture(args):
               'profile_sha256': hashlib.sha256(encoded.encode()).hexdigest(),
               'windows': windows, 'checks': evaluate(windows, profile),
               'functions': {k: {'status': 'not_run', 'evidence': ''} for k in FUNCTIONS}}
+    if preparation is not None:
+        report['preparation'] = preparation
     write_report(out, report)
     print(json.dumps({'report': str(out/'report.md'), 'version': version, 'selection': report['selection'],
                       'checks': dict(Counter(r['status'] for r in report['checks']))}, ensure_ascii=False))
@@ -218,12 +311,14 @@ def capture(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
-    p = sub.add_parser('capture', help='只读采集当前窗口和定位结果')
+    p = sub.add_parser('capture', help='采集当前窗口和定位结果，可选自动准备聊天场景')
     p.add_argument('--out', required=True)
     p.add_argument('--scenario', required=True, help='例如 main-chat；前后必须使用相同场景')
     p.add_argument('--profile-version', help='显式沿用旧配置进行诊断')
     p.add_argument('--max-nodes', type=int, default=2500)
     p.add_argument('--screenshot', action='store_true')
+    p.add_argument('--prepare-chat', action='store_true',
+                   help='显示主窗口并准备聊天场景；空白时打开文件传输助手，不发送消息')
     p = sub.add_parser('compare', help='比较两份报告，不访问微信')
     p.add_argument('before'); p.add_argument('after'); p.add_argument('--out', required=True)
     p = sub.add_parser('draft', help='复制内置配置到新版本草稿，不自动安装')
@@ -266,6 +361,7 @@ def main(argv=None):
         profile = load_profile(args.from_version)
         source = profile.pop('_selection')['profile_version']
         profile.update(version=args.version, copied_from=source, validation='pending')
+        profile.pop('verification', None)
         with Path(args.out).open('x', encoding='utf-8') as f:
             yaml.safe_dump(profile, f, allow_unicode=True, sort_keys=False)
     else:

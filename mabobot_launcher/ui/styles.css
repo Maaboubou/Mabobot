@@ -460,3 +460,10 @@ input:disabled + .switch { opacity: .55; }
 }
 @media (prefers-reduced-motion: reduce) { .setup-dialog, .setup-operation-dot { animation: none !important; } }
 .setup-log-tail { max-height: 140px; margin: 12px 0 0; padding: 10px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--hairline); border-radius: 7px; background: var(--surface); color: var(--body); font: 10px/1.65 var(--font-mono); user-select: text; }
+
+#compatibilityAcceptance { padding: 12px 16px; border-top: 1px solid var(--hairline); }
+#compatibilityAcceptance summary { cursor: pointer; }
+#compatibilityAcceptance p, #compatibilityFunctionResults { font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+#compatibilityAcceptance label { display: block; margin: 10px 0; font-size: 12px; }
+#compatibilityAcceptance select, #compatibilityAcceptance textarea { display: block; width: 100%; margin-top: 6px; padding: 8px; font: inherit; }
+#compatibilityAcceptance .button { margin: 4px 8px 4px 0; }

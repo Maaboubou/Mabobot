@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import importlib.resources
 import re
 import os
@@ -13,6 +15,17 @@ from typing import Any
 import yaml
 
 FIELDS = frozenset({'control_type', 'name', 'class_name', 'automation_id'})
+
+
+def profile_fingerprint(profile):
+    content = {k: v for k, v in profile.items() if k not in {'_selection', 'validation', 'verification'}}
+    return hashlib.sha256(json.dumps(content, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
+def validation_status(profile):
+    proof = profile.get('verification') or {}
+    return 'verified' if (profile.get('validation') == 'verified'
+                          and proof.get('profile_fingerprint') == profile_fingerprint(profile)) else 'pending'
 
 
 def version_key(version: str) -> tuple[int, ...]:
@@ -49,7 +62,7 @@ def _load(version: str, locale: str) -> dict[str, Any]:
         raise ValueError(f'配置元数据与文件名不符: {filename}')
     data['_selection'] = {'requested_version': version, 'profile_version': selected,
                           'locale': locale, 'exact': selected == version,
-                          'validation': data.get('validation', 'pending')}
+                          'validation': validation_status(data) if selected == version else 'pending'}
     return data
 
 
@@ -67,6 +80,7 @@ def create_version_profile(version: str, directory: Path | None = None) -> bool:
     profile = load_profile(version)
     source = profile.pop('_selection')['profile_version']
     profile.update(version=version, copied_from=source, validation='pending')
+    profile.pop('verification', None)
     folder.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix='.profile-', dir=folder)
     try:

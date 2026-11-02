@@ -88,7 +88,82 @@ class CompatibilityMonitor:
                           has_report=bool(self._report('latest') and self._report('latest').is_file()),
                           has_diff=bool(self._report('diff') and self._report('diff').is_file()),
                           can_set_baseline=bool(latest and latest['version'] == result['version'] and not latest['failures'] and not self.running))
+            from mabowx.tools.compatibility import FUNCTIONS
+            result['acceptance_functions'] = FUNCTIONS
+            result['can_verify'] = False
+            result['verification_error'] = '请先完成当前版本检测'
+            path = self._report('latest')
+            if path and path.is_file() and latest and latest['version'] == result['version']:
+                try:
+                    import yaml
+                    from mabowx.tools.compatibility import validation_error
+                    report = json.loads(path.read_text(encoding='utf-8'))
+                    profile = yaml.safe_load(self._profile_path(result['version']).read_text(encoding='utf-8'))
+                    captured = yaml.safe_load((path.parent/'profile.yaml').read_text(encoding='utf-8'))
+                    result['functional_results'] = report['functions']
+                    result['verification_error'] = validation_error(report, profile, captured)
+                    result['can_verify'] = not result['verification_error'] and not self.running
+                except (OSError, ValueError, KeyError) as exc:
+                    result['verification_error'] = f'无法验证报告：{exc}'
             return result
+
+    def _profile_path(self, version):
+        from mabowx.core.selectors import version_key
+        version_key(version)
+        return self.root/'mabowx'/'selectors'/f'wechat_{version}_cn.yaml'
+
+    def _acceptance_report(self, created_at):
+        if self.running:
+            raise ValueError('检测正在运行，请稍后重试')
+        path = self._report('latest')
+        if not path:
+            raise ValueError('请先运行检测')
+        report = json.loads(path.read_text(encoding='utf-8'))
+        if report['created_at'] != created_at or report['version'] != self.probe():
+            raise ValueError('微信版本或报告已变化，请刷新后重新检测')
+        return path, report
+
+    def record_function(self, created_at, function, status, evidence):
+        from datetime import datetime, timezone
+        from mabowx.tools.compatibility import FUNCTIONS, write_report
+        with self.lock:
+            try:
+                path, report = self._acceptance_report(created_at)
+                if function not in FUNCTIONS or status not in {'pass', 'fail', 'blocked'}:
+                    raise ValueError('无效的功能验收结果')
+                if not isinstance(evidence, str) or not evidence.strip():
+                    raise ValueError('请填写实际操作和结果作为验收证据')
+                report['functions'][function] = {'status': status, 'evidence': evidence.strip(),
+                    'recorded_at': datetime.now(timezone.utc).isoformat(), 'method': 'manual'}
+                write_report(path.parent, report)
+                # Rebuild the comparison so its functional results stay current.
+                baseline = self._report('baseline')
+                diff = self._report('diff')
+                if baseline and diff:
+                    from mabowx.tools.compatibility import compare
+                    value = compare(json.loads(baseline.read_text(encoding='utf-8')), report)
+                    diff.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8')
+                    md = diff.with_suffix('.md')
+                    if md.exists():
+                        content = md.read_text(encoding='utf-8')
+                        import re
+                        content = re.sub(rf'(?m)^- {function}: .*$', f'- {function}: {status}', content)
+                        md.write_text(content, encoding='utf-8')
+                self.register(path, diff)
+                return {'ok': True}
+            except Exception as exc:
+                return {'ok': False, 'error': str(exc)}
+
+    def mark_verified(self, created_at):
+        from mabowx.tools.compatibility import verify_profile
+        with self.lock:
+            try:
+                path, report = self._acceptance_report(created_at)
+                verify_profile(path, self._profile_path(report['version']))
+                self.cached = None
+                return {'ok': True}
+            except Exception as exc:
+                return {'ok': False, 'error': str(exc)}
 
     def start(self):
         with self.lock:
@@ -116,7 +191,7 @@ class CompatibilityMonitor:
         try:
             self.folder.mkdir(parents=True, exist_ok=True)
             out = self.folder / 'runs' / (time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:6])
-            self._run('capture', '--scenario', 'main-chat', '--out', out, '--screenshot')
+            self._run('capture', '--scenario', 'main-chat', '--out', out, '--screenshot', '--prepare-chat')
             with self.lock:
                 baseline = self._report('baseline')
             diff = None
