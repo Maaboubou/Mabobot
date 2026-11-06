@@ -104,6 +104,12 @@ def public_profile(value: Any) -> Optional[dict[str, Any]]:
 class CodexProfileService:
     """Bridge to a stdlib-only helper that runs in the target Linux home."""
 
+    def image_api_connection(self, profile_id: str) -> dict[str, str]:
+        """Host-only credentials; this method must not be wired to a public route."""
+        if not _PROFILE_NAME_RE.fullmatch(profile_id):
+            raise CodexProfileError("Profile 名称无效")
+        return self._run("image-api-connection", {"name": profile_id})
+
     def __init__(self, *, use_wsl: Optional[bool] = None) -> None:
         self.use_wsl = _default_use_wsl() if use_wsl is None else bool(use_wsl)
         self._cache_lock = threading.RLock()

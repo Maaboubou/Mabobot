@@ -8,6 +8,7 @@ import math
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from mabowx.core import uia
@@ -189,6 +190,32 @@ def control_anchor_token(control) -> tuple[str, str]:
     return runtime_id, signature
 
 
+def _has_distinct_anchor_content(signature: str) -> bool:
+    """A media placeholder is not evidence that two rebuilt rows are the same.
+
+    Accept both parsed message signatures and raw UIA signatures. Runtime IDs
+    can still identify a live row, but content-only recovery needs actual text
+    context instead of labels shared by every image or animated sticker.
+    """
+    kind, separator, rest = str(signature or "").partition("|")
+    if separator and "|" in rest and "\x1f" not in kind:
+        if kind in {"image", "emotion", "video", "voice", "time", "system"}:
+            return False
+        content = rest.rsplit("|", 1)[0]
+    else:
+        control_class, separator, content = str(signature or "").partition("\x1f")
+        if not separator:
+            content = str(signature or "")
+        elif getattr(classify(SimpleNamespace(ClassName=control_class, Name=content)), "type", "") in {
+            "image", "emotion", "video", "voice", "time", "system",
+        }:
+            return False
+    return content.strip() not in {
+        "", "图片", "[图片]", "动画表情", "[动画表情]", "表情", "[表情]",
+        "视频", "[视频]", "语音", "[语音]", "文件", "[文件]",
+    }
+
+
 def find_control_snapshot_overlap(
     current_snapshot: tuple[tuple[str, str], ...] | list[tuple[str, str]],
     previous_snapshot: tuple[tuple[str, str], ...] | list[tuple[str, str]],
@@ -216,7 +243,7 @@ def find_control_snapshot_overlap(
     # 两条相邻消息的原始签名序列足以消除绝大多数重复内容歧义。
     for previous_index in range(len(previous) - 1, 0, -1):
         pair = (previous[previous_index - 1][1], previous[previous_index][1])
-        if not all(pair):
+        if not all(pair) or not any(_has_distinct_anchor_content(s) for s in pair):
             continue
         for current_index in range(len(current) - 1, 0, -1):
             if pair == (
@@ -233,7 +260,7 @@ def find_control_snapshot_overlap(
         current_counts[signature] = current_counts.get(signature, 0) + 1
     for previous_index in range(len(previous) - 1, -1, -1):
         signature = previous[previous_index][1]
-        if not signature or previous_counts.get(signature) != 1:
+        if not _has_distinct_anchor_content(signature) or previous_counts.get(signature) != 1:
             continue
         if current_counts.get(signature) != 1:
             continue
@@ -316,13 +343,14 @@ def message_page_overlap_length(previous_page: list, current_page: list) -> int:
     previous_signatures = [token[1] for token in previous_tokens]
     current_signatures = [token[1] for token in current_tokens]
     for length in range(limit, 1, -1):
-        if previous_signatures[-length:] == current_signatures[:length]:
+        if (previous_signatures[-length:] == current_signatures[:length]
+                and any(_has_distinct_anchor_content(s) for s in current_signatures[:length])):
             return length
 
     if previous_signatures and current_signatures:
         boundary = previous_signatures[-1]
         if (
-            boundary
+            _has_distinct_anchor_content(boundary)
             and boundary == current_signatures[0]
             and previous_signatures.count(boundary) == 1
             and current_signatures.count(boundary) == 1
@@ -358,8 +386,10 @@ def messages_before_history_overlap(page: list, frontier: list) -> list | None:
             length = 0
             while index + length < len(left) and length < len(right) and left[index + length] == right[length]:
                 length += 1
-            if length and (not signatures_only or length >= 2 or
-                           (left.count(right[0]) == right.count(right[0]) == 1)):
+            if length and (not signatures_only or (
+                any(_has_distinct_anchor_content(s) for s in right[:length])
+                and (length >= 2 or left.count(right[0]) == right.count(right[0]) == 1)
+            )):
                 candidates.append((length, index))
         if candidates:
             best = max(length for length, _ in candidates)
@@ -368,7 +398,8 @@ def messages_before_history_overlap(page: list, frontier: list) -> list | None:
                 return page[:matches[0]]
             return None
         # A buffered subset of the preceding page adds no older occurrences.
-        if left and any(right[i:i + len(left)] == left for i in range(len(right))):
+        if (left and (not signatures_only or any(_has_distinct_anchor_content(s) for s in left))
+                and any(right[i:i + len(left)] == left for i in range(len(right)))):
             return []
     return None
 
@@ -504,7 +535,7 @@ def messages_after_anchor(
             ):
                 return list(messages[index + 1 :]), True
 
-    if anchor_signature:
+    if _has_distinct_anchor_content(anchor_signature):
         for index in range(len(messages) - 1, -1, -1):
             if message_anchor_signature(messages[index]) == anchor_signature:
                 return list(messages[index + 1 :]), True
@@ -574,7 +605,7 @@ def messages_after_previous_overlap(
     # 3) UIA 整体重建：RuntimeId 全变时以稳定签名找最后一个重叠项。
     for previous_index in range(len(previous_snapshot) - 1, -1, -1):
         previous_signature = previous_snapshot[previous_index][1]
-        if not previous_signature:
+        if not _has_distinct_anchor_content(previous_signature):
             continue
         for current_index in range(len(current_snapshot) - 1, -1, -1):
             if current_snapshot[current_index][1] == previous_signature:
@@ -906,6 +937,7 @@ class ChatBox(BaseUISubWnd):
         self._delivery_direction_snapshot = None
         self._oversized_tail_scroll_at = float("-inf")
         self._viewport_follow = None
+        self._unread_catchup_active = False
         self._sent_texts: dict[str, float] = {}
         self._sent_filenames: dict[str, float] = {}
         self._cache_chat_name: str | None = None
@@ -1907,6 +1939,8 @@ class ChatBox(BaseUISubWnd):
             return
         if current != self._cache_chat_name:
             self._viewport_follow = None
+            self._unread_catchup_active = False
+            self._source_time_recovery_chat = None
             self._cache_chat_name = current
             self._last_time = ""
             self._source_time_cache.clear()
@@ -2192,10 +2226,12 @@ class ChatBox(BaseUISubWnd):
             "state": ("cooldown" if failures >= ANCHOR_RECOVERY_MAX_FAILURES else "recovering")
                      if missing else ("viewport_stalled" if viewport_stalled else "healthy"),
             "anchor_missing": missing,
+            "unread_catchup_active": bool(getattr(self, "_unread_catchup_active", False)),
             "blocked_for_sec": (round(max(0.0, time.monotonic() - since), 1) if since is not None
                                 else follow["no_progress_sec"] if viewport_stalled else 0.0),
             "viewport_follow": ({key: follow[key] for key in
-                                 ("state", "no_progress_sec", "scroll_attempts")}
+                                 ("state", "no_progress_sec", "scroll_attempts", "cause", "unread_count")
+                                 if key in follow}
                                 if follow else None),
             "recovery_failures": failures,
             "retry_in_sec": round(self._anchor_retry_in(), 1) if missing else 0.0,
@@ -2264,6 +2300,9 @@ class ChatBox(BaseUISubWnd):
 
         try:
             if collection_ok:
+                # The upward probe may have landed on a completely different
+                # day. Only separators on that page can establish its clock.
+                self._last_time = ""
                 anchor_page = self.get_messages(
                     resolve_group_senders=False, probe_avatar_direction=False,
                 )
@@ -2360,6 +2399,10 @@ class ChatBox(BaseUISubWnd):
             result["error"] = f"{type(exc).__name__}: {exc}"
             collection_ok = False
         finally:
+            # End is only a navigation attempt, not proof of source time. Do
+            # not lend the scanned historical clock (or the old live clock)
+            # to an unverified viewport when returning from recovery.
+            self._last_time = ""
             try:
                 with ui_transaction(timeout=0.75):
                     self._return_to_latest(wait_time=0.1)
@@ -2443,15 +2486,52 @@ class ChatBox(BaseUISubWnd):
         self._follow_oversized_tail(rows)
         return True
 
+    def _visible_unread_count(self) -> int | None:
+        """Read only this chat's visible new-message indicator under the UI lock."""
+        root_control = getattr(self.root, "control", None)
+        hwnd = int(getattr(self.root, "HWND", 0) or 0)
+        if root_control is None or not hwnd:
+            return None
+        try:
+            bar = uia.find_descendant(
+                root_control,
+                control_type="ButtonControl",
+                class_name="mmui::UnreadBarView",
+                timeout=0,
+            )
+            if (bar is None
+                    or str(bar.ClassName) != "mmui::UnreadBarView"
+                    or str(bar.ControlTypeName) != "ButtonControl"
+                    or bool(bar.IsOffscreen) or not bool(bar.IsEnabled)
+                    or int(bar.GetTopLevelControl().NativeWindowHandle or 0) != hwnd):
+                return None
+            bounds = bar.BoundingRectangle
+            if bounds.right <= bounds.left or bounds.bottom <= bounds.top:
+                return None
+            label = str(bar.Name or "").strip()
+            suffix = "条新消息"
+            digits = label[:-len(suffix)] if label.endswith(suffix) else ""
+            if not digits.isdecimal():
+                return None
+            count = int(digits)
+            return count if count > 0 else None
+        except Exception:
+            return None
+
     def _follow_oversized_tail(self, rows: list) -> None:
-        """Advance a clipped tall tail without replacing the delivery baseline.
+        """Advance a consumed page with hidden arrivals without resetting its cursor.
 
         Qt can scroll a focused message back into view after sender probing.
         A row taller than the viewport then hides later arrivals indefinitely:
         its RuntimeId and text remain unchanged while its geometry moves.
+        An ordinary historical page can also stay unchanged while a verified
+        new-message indicator proves that later messages await below it.
+        Keep following after that indicator disappears or a page is consumed;
+        only two completed downward probes with no movement confirm the bottom.
         Take one targeted wheel step per second, only on an already consumed
         page. The next poll reads any newly visible rows through normal anchor
         matching/recovery, including repeated text and recycled RuntimeIds.
+        Never click the indicator: it jumps to an unread boundary, not the end.
         Called under the UI lock; never focus the row or jump/reset the cursor.
         """
         now = time.monotonic()
@@ -2466,16 +2546,23 @@ class ChatBox(BaseUISubWnd):
         tail = rows[-1].BoundingRectangle
         height = viewport.bottom - viewport.top
         if (height <= 4 or viewport.right <= viewport.left
-                or tail.right <= tail.left
-                or tail.bottom - tail.top <= height
-                or tail.top >= viewport.bottom or tail.bottom <= viewport.top
-                or tail.bottom <= viewport.bottom + 2):
+                or tail.right <= tail.left or tail.bottom <= tail.top):
+            self._viewport_follow = None
+            return
+        oversized = (tail.bottom - tail.top > height
+                     and tail.top < viewport.bottom and tail.bottom > viewport.top
+                     and tail.bottom > viewport.bottom + 2)
+        unread_count = self._visible_unread_count()
+        if unread_count is not None:
+            self._unread_catchup_active = True
+        catching_up = bool(getattr(self, "_unread_catchup_active", False))
+        if not oversized and unread_count is None and not catching_up:
             self._viewport_follow = None
             return
         # Observe before the throttle: even a one-pixel advance clears a stall.
         # Cache an immutable replacement for lock-free, UI-free health reads.
         position = (int(getattr(self.root, "HWND", 0) or 0),
-                    self._visible_control_snapshot[-1],
+                    tuple(self._visible_control_snapshot),
                     (viewport.left, viewport.top, viewport.right, viewport.bottom),
                     (tail.left, tail.top, tail.right, tail.bottom))
         previous = self._viewport_follow
@@ -2483,23 +2570,50 @@ class ChatBox(BaseUISubWnd):
         since = previous["since"] if unchanged else now
         attempts = previous["scroll_attempts"] if unchanged else 0
         elapsed = max(0.0, now - since)
+        tail_at_bottom = (tail.top < viewport.bottom and tail.bottom > viewport.top
+                          and tail.bottom <= viewport.bottom + 2)
+        checking_bottom = (catching_up and unread_count is None
+                           and not oversized and tail_at_bottom)
+        bottom_attempts = (previous.get("bottom_scroll_attempts", 0)
+                           if checking_bottom and unchanged else 0)
+        if checking_bottom and bottom_attempts >= 2:
+            # The indicator can vanish at the unread *start*. Its absence alone
+            # is not evidence of reaching the end. Both downward submissions
+            # must be followed by an unchanged snapshot and geometry.
+            self._unread_catchup_active = False
+            self._viewport_follow = None
+            return
         self._viewport_follow = {
             "position": position, "since": since,
             "scroll_attempts": attempts,
             "no_progress_sec": round(elapsed, 1),
             # Silence alone never means stalled. Require repeated successful
-            # wheel submissions and a later unchanged, still-clipped viewport.
-            "state": "viewport_stalled" if attempts >= 3 and elapsed >= 10.0 else "following",
+            # wheel submissions and a later unchanged viewport with evidence
+            # of either a clipped tail or pending unread messages.
+            "state": ("viewport_stalled"
+                      if not checking_bottom and attempts >= 3 and elapsed >= 10.0
+                      else "following"),
         }
+        if unread_count is not None:
+            self._viewport_follow.update(cause="unread_messages", unread_count=unread_count)
+        elif catching_up:
+            self._viewport_follow.update(
+                cause="unread_catchup", unread_count=None,
+            )
+            if checking_bottom:
+                self._viewport_follow["bottom_scroll_attempts"] = bottom_attempts
         if now - self._oversized_tail_scroll_at < 1.0:
             return
         self._oversized_tail_scroll_at = now
         self._scroll_message_list(-1)
         self._viewport_follow = {**self._viewport_follow, "scroll_attempts": attempts + 1}
+        if checking_bottom:
+            self._viewport_follow["bottom_scroll_attempts"] = bottom_attempts + 1
         wxlog.debug(
-            "超高尾消息继续向下跟随: "
+            ("超高尾消息继续向下跟随: " if oversized else "未读消息逐页向下跟随: ") +
             f"baseline={anchor_snapshot_summary(self._visible_control_snapshot)} "
-            f"row_height={tail.bottom - tail.top} viewport_height={height}"
+            f"row_height={tail.bottom - tail.top} viewport_height={height} "
+            f"unread_count={unread_count!r}"
         )
 
     def _get_new_messages_serialized(self) -> list:
@@ -2635,6 +2749,92 @@ class ChatBox(BaseUISubWnd):
             wxlog.debug(f"增量身份读取失败，回退完整识别: {exc}")
             return self.get_messages(resolve_group_senders=False)
 
+    def recover_source_time_for_baseline(self) -> bool:
+        """监听启动时从连续历史补齐时间，不推进已建立的消息投递基线。"""
+        # Match get_new_messages' lock order. This is called only when starting
+        # or rebinding a listener, never by ordinary Chat construction.
+        if not self._message_read_lock.acquire(timeout=0.75):
+            raise TimeoutError("监听来源时间恢复等待消息读取锁超时")
+        try:
+            with ui_transaction(timeout=0.75):
+                if self._last_time:
+                    return True
+                baseline_tokens = tuple(self._visible_control_snapshot)
+                chat_name = self.who
+                if (not baseline_tokens
+                        or getattr(self, "_source_time_recovery_chat", None) == chat_name):
+                    return False
+                self._source_time_recovery_chat = chat_name
+                baseline = [SimpleNamespace(ui_anchor_token=token) for token in baseline_tokens]
+                deadline = time.monotonic() + 4.0
+                recovered_time = ""
+                frontier = None
+
+                def read_page():
+                    if self.who != chat_name:
+                        raise RuntimeError("监听时间恢复期间聊天发生变化")
+                    self._last_time = ""
+                    # Explicit controls avoid synchronizing/mutating the delivery
+                    # cache while we temporarily inspect historical pages.
+                    return self.get_messages(
+                        controls=self.get_visible_messages(),
+                        resolve_group_senders=False,
+                        probe_avatar_direction=False,
+                    )
+
+                def nearest_separator(page):
+                    for message in reversed(page):
+                        if getattr(message, "is_time", False) or getattr(message, "type", "") == "time":
+                            return True, self._resolve_source_time_separator(
+                                message.content, _message_control_token(message),
+                            )
+                    return False, ""
+
+                try:
+                    for page_number in range(12):
+                        if time.monotonic() >= deadline:
+                            break
+                        page = read_page()
+                        if not page:
+                            break
+                        connected = (
+                            messages_after_history_overlap(baseline, page)
+                            if frontier is None
+                            else messages_before_history_overlap(page, frontier)
+                        )
+                        if connected is None:
+                            break
+                        found, recovered_time = nearest_separator(page)
+                        if found:
+                            # An invalid/future nearest separator is a barrier.
+                            # Never continue upward and borrow an older clock.
+                            break
+                        if page_number == 11 or time.monotonic() >= deadline:
+                            break
+                        frontier = page
+                        snapshot = tuple(_message_control_token(message) for message in page)
+                        self._scroll_message_list(4)
+                        self._wait_message_page(snapshot, timeout=0.3, deadline=deadline)
+                finally:
+                    self._last_time = ""
+                    self._return_to_latest(wait_time=0.1)
+                    final_page = read_page()
+                    found, final_time = nearest_separator(final_page)
+                    if found:
+                        self._last_time = final_time
+                    elif (recovered_time
+                            and messages_after_history_overlap(baseline, final_page) is not None):
+                        self._last_time = recovered_time
+                    else:
+                        self._last_time = ""
+                wxlog.info(
+                    f"监听启动来源时间恢复: chat={chat_name!r} "
+                    f"source_time={self._last_time!r} recovered={bool(self._last_time)}"
+                )
+                return bool(self._last_time)
+        finally:
+            self._message_read_lock.release()
+
     @uilock
     def prime_message_cache(
         self,
@@ -2763,7 +2963,7 @@ class ChatBox(BaseUISubWnd):
             token = _message_control_token(message)
             if control_anchor_token(message.control) != token:
                 raise RuntimeError("历史消息在读取前已变化")
-            self._last_time = str(getattr(message, "time", "") or self._last_time)
+            self._last_time = str(getattr(message, "time", "") or "")
             parsed = self.get_messages(controls=[message.control], resolve_group_senders=False)
             if len(parsed) != 1 or _message_control_token(parsed[0]) != token:
                 raise RuntimeError("历史消息无法确认身份")
@@ -2997,20 +3197,67 @@ class ChatBox(BaseUISubWnd):
     def _return_to_latest(self, wait_time: float = 0.5) -> None:
         """把消息列表滚回最新位置。
 
-        不点击消息列表内容，避免误触卡片/图片等消息；优先 SetFocus + End。
+        不点击消息内容；真实窗口必须验证向下滚动后底部连续稳定。
         """
         hwnd = int(getattr(self.root, "HWND", 0) or 0)
         if hwnd:
             import win32gui
-            if self.message_list is None or not self.message_list.Exists(0):
+            deadline = time.monotonic() + 5.0
+            message_list = self.message_list
+            if message_list is None or not message_list.Exists(0):
                 raise RuntimeError("消息列表不存在，无法返回最新位置")
-            self.message_list.SetFocus()
-            # Target End at this window; global SendKeys can reach a
-            # different foreground window after a callback or avatar probe.
-            win32gui.PostMessage(hwnd, 0x100, 0x23, 0)
-            win32gui.PostMessage(hwnd, 0x101, 0x23, 0)
-            time.sleep(max(0.15, float(wait_time)))
-            return
+            # SetFocus can fail while the editor still owns keyboard focus.
+            # Even directed End must not move that editor's caret. Failure to
+            # prove list focus simply skips this optional acceleration.
+            try:
+                focused = uia.get_focused_control() if message_list.SetFocus() else None
+                list_id = tuple(message_list.GetRuntimeId())
+                if (focused is not None and list_id
+                        and tuple(focused.GetRuntimeId()) == list_id
+                        and int(focused.GetTopLevelControl().NativeWindowHandle or 0) == hwnd):
+                    win32gui.PostMessage(hwnd, 0x100, 0x23, 0)
+                    win32gui.PostMessage(hwnd, 0x101, 0x23, 0)
+            except Exception:
+                pass
+            time.sleep(min(max(0.15, float(wait_time)), max(0.0, deadline - time.monotonic())))
+
+            def view_state():
+                current_list = self.message_list
+                if current_list is None or not current_list.Exists(0):
+                    raise RuntimeError("消息列表不存在，无法返回最新位置")
+                viewport = current_list.BoundingRectangle
+                bounds = tuple(int(getattr(viewport, edge)) for edge in ("left", "top", "right", "bottom"))
+                snapshot = self._read_control_anchor_snapshot()
+                position = self._message_scroll_position()
+                valid = bool(
+                    snapshot and len(position) == 2
+                    and bounds[2] > bounds[0] and bounds[3] > bounds[1]
+                    and all(bottom > top for _token, top, bottom in position)
+                    and position[0][1] < bounds[3]
+                    and position[-1][2] > bounds[1]
+                )
+                return snapshot, position, bounds, valid
+
+            stable_rounds = 0
+            before = view_state()
+            for _ in range(16):
+                if time.monotonic() >= deadline:
+                    break
+                self._scroll_message_list(-40)
+                # Qt may delay the first animation frame. Let the wheel take
+                # effect before asking the shared page waiter for stable rows.
+                time.sleep(min(0.12, max(0.0, deadline - time.monotonic())))
+                self._wait_message_page(before[0], timeout=0.35, deadline=deadline)
+                after = view_state()
+                tail_at_bottom = bool(after[3] and after[1][-1][2] <= after[2][3] + 2)
+                if tail_at_bottom and after == before and self._visible_unread_count() is None:
+                    stable_rounds += 1
+                    if stable_rounds >= 2:
+                        return
+                else:
+                    stable_rounds = 0
+                before = after
+            raise TimeoutError("返回最新消息超时：定向滚动后未确认列表底部稳定")
         try:
             if self.message_list is not None and self.message_list.Exists(0):
                 self.message_list.SetFocus()

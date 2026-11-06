@@ -753,6 +753,8 @@ class CodexAgentRuntime:
         )
 
     def _exec(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if self._requires_image_host(payload):
+            raise CodexProxyError("API 生图需要 Codex App Server；当前运行时不可用，任务已停止")
         async def call() -> Dict[str, Any]:
             timeout = _positive_int(payload.get("timeout"), 600)
             return await CodexCliClient(
@@ -781,6 +783,16 @@ class CodexAgentRuntime:
         if error:
             raise error[0]
         return result["value"]
+
+    @staticmethod
+    def _requires_image_host(payload, chat_id=""):
+        if payload.get("codex_text_only") is True:
+            return False
+        from app.services.image_generation_config import resolve_policy
+        policy = resolve_policy(chat_id=payload.get("codex_chat_user_id"),
+                              chat_name=chat_id or str(payload.get("codex_source_chat_name") or ""),
+                              plugin_name=str(payload.get("mabobot_image_plugin") or ""))
+        return policy["mode"] == "api" or bool(policy.get("allow_request_override"))
 
     def _fallback_exec(
         self,
@@ -965,8 +977,11 @@ class CodexAgentRuntime:
 
         # History is a host dynamic tool and cannot survive an exec fallback.
         # Fresh context is independent of process pooling and backend selection.
-        if request.get("mabobot_history_enabled"):
+        host_images = self._requires_image_host(request, chat_id)
+        if request.get("mabobot_history_enabled") or host_images:
             fallback = False
+        if host_images and (not persistent_session or not access.persistent_thread):
+            request["mabobot_fresh_context"] = True
 
         # Explicitly stateless requests still use exec. Normal isolated chats
         # are safe to persist because access.apply() injects the administrator-
@@ -1046,6 +1061,8 @@ class CodexAgentRuntime:
         if source_chat:
             request = codex_access_service.for_chat(source_chat, ensure=True).apply(request)
         fallback = profile.allow_exec_fallback if allow_exec_fallback is None else allow_exec_fallback
+        if self._requires_image_host(request, source_chat):
+            fallback = False
         pool = self._pool(profile.pool)
         if pool is None:
             if fallback:

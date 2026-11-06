@@ -2,7 +2,7 @@
 
 Mabobot 是运行在 Windows 上的本地微信自动化与 AI 助手。它使用内置 `mabowx` 连接微信，并提供 Web 控制台、AI 助手、插件、模型路由、聊天档案与文件处理能力。
 
-当前版本：`3.10.2`
+当前版本：`3.11.0`
 
 ## 启动
 
@@ -62,6 +62,8 @@ cd Mabobot
 
 AI 助手可在群聊回复时自主选择需要提醒的成员，调用 `wechat.mention_reply` 后，首段回复会带真正的微信 @。支持多人、群昵称与联系人备注差异；找不到或无法唯一定位成员时取消发送，不会退化为普通的“@昵称”文字。
 
+在“模型配置 → 图片生成”管理图片 API 渠道、模型与备用顺序，支持聊天及插件分别设置、参考图编辑、动图合成，以及已生成图片的继续编辑和恢复重发。升级后默认继续使用 Codex 内置生图；API 渠道需自行配置并启用。详见[图片生成](docs/IMAGE_GENERATION.md)。
+
 真实密钥、Cookie、数据库、聊天记录和下载文件不要提交到 Git。运行数据主要位于 `data/`、`logs/` 和 `tmp/`。
 
 ## 开发与排障
@@ -105,6 +107,7 @@ scripts/           安装、运维与文件工具
 进一步说明：
 
 - [内置图片与引用视频出处检索（Google Lens）](docs/google_lens.md)
+- [图片生成、编辑与资产恢复](docs/IMAGE_GENERATION.md)
 - [插件开发规范（Manifest / Runtime API v2）](app/plugins/README.md)
 - [每聊天插件配置与模板开发指南](docs/PLUGIN_CHAT_CONFIGURATION.md)
 - [翻译助手配置说明](docs/TRANSLATION_CHAT_CONFIG_UPGRADE.md)

@@ -116,11 +116,15 @@ class ChatListener:
             if fresh_core is None or not fresh_core.exists():
                 return False
             try:
-                fresh_core.get_chatbox().prime_message_cache(
+                box = fresh_core.get_chatbox()
+                box.prime_message_cache(
                     settle_time=0.6,
                     interval=0.15,
                     stable_rounds=2,
                 )
+                recover_time = getattr(box, "recover_source_time_for_baseline", None)
+                if callable(recover_time):
+                    recover_time()
             except Exception:
                 pass
             self.chat = fresh

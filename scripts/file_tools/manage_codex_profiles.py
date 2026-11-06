@@ -1081,6 +1081,23 @@ def list_profiles(*, home: Path) -> dict[str, Any]:
     }
 
 
+def image_api_connection(payload: dict[str, Any], *, home: Path) -> dict[str, str]:
+    """Private host bridge. Never expose this result through a public profile API."""
+    name = str(payload.get("name") or "")
+    if not PROFILE_NAME_RE.fullmatch(name):
+        raise ProfileError("Profile 名称无效")
+    paths = _paths(home.resolve(), name)
+    if any(paths[key].is_symlink() for key in ("metadata", "codex_home", "manifest", "secret")):
+        raise ProfileError("Profile 凭据路径无效")
+    profile = json.loads(paths["manifest"].read_text(encoding="utf-8"))
+    if profile.get("auth_type") != "api_key" or profile.get("name") != name:
+        raise ProfileError("生图 API 只能引用 API 类型 Profile")
+    if paths["secret"].stat().st_size > 4097:
+        raise ProfileError("Profile 凭据格式无效")
+    return {"base_url": _validate_base_url(profile.get("base_url")),
+            "api_key": _validate_api_key(paths["secret"].read_text(encoding="utf-8").strip())}
+
+
 def _request() -> dict[str, Any]:
     try:
         value = json.load(sys.stdin)
@@ -1095,7 +1112,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--action",
-        choices=("list", "create", "update", "delete", "import-local-auth", "clear-auth"),
+        choices=("list", "create", "update", "delete", "import-local-auth", "clear-auth", "image-api-connection"),
         required=True,
     )
     parser.add_argument("--home", help=argparse.SUPPRESS)
@@ -1104,6 +1121,8 @@ def main() -> int:
     try:
         if options.action == "list":
             result = list_profiles(home=home)
+        elif options.action == "image-api-connection":
+            result = image_api_connection(_request(), home=home)
         else:
             # Every mutating action first reconciles legacy profile data.
             # This prevents a duplicate create from hiding an existing legacy

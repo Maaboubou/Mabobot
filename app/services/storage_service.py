@@ -31,7 +31,8 @@ class StorageService:
     # Longest prefix wins. Every file belongs to exactly one category.
     PATHS = {
         'attachments': ['tmp/wechat_files', 'mabowx文件下载'],
-        'generated': ['tmp/images/codex', 'data/daily_reports', 'data/weekly_reports', 'data/chat_summaries', 'data/codex_chat_scopes'],
+        'generated': ['tmp/images/codex', 'data/image_generation', 'data/daily_reports',
+                      'data/weekly_reports', 'data/chat_summaries', 'data/codex_chat_scopes'],
         'chat_archive': ['data/chat_archive', 'data/chat_logs'],
         'models': ['data/models'], 'managed_plugins': ['data/plugins'],
         'cache': ['tmp/plugins'],

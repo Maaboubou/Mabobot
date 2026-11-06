@@ -42,8 +42,9 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
 
     <!-- App CSS -->
-    <link href="/static/assets/css/style.css?v=20261030-chat-picker" rel="stylesheet">
+    <link href="/static/assets/css/style.css?v=20261106-codex-updates" rel="stylesheet">
     <link href="/static/assets/css/dashboard.css?v=20260921-bot-activity" rel="stylesheet">
+    <link href="/static/assets/css/image_generation.css?v=20261104-models" rel="stylesheet">
     <link rel="stylesheet" href="/notification-assets/email_notifications.css?v=2">
 </head>
 
@@ -138,7 +139,7 @@
             </div>
 
             <div class="sidebar-footer p-3 border-top border-secondary border-opacity-25">
-                <small class="text-muted d-block mb-1">版本：3.10.2</small>
+                <small class="text-muted d-block mb-1">版本：3.11.0</small>
                 <div class="d-flex align-items-center text-muted gap-2">
                     <button id="themeToggle" type="button" class="sidebar-theme-toggle"
                         aria-label="切换到暗色模式" aria-pressed="false" title="切换到暗色模式">
@@ -159,6 +160,8 @@
                 <div class="d-flex align-items-center gap-3">
                     <div class="page-heading">
                         <h1 class="page-title" id="pageTitle">概览</h1>
+                        <a id="codexUpdateNotice" class="codex-update-notice" href="/system/tools#codex"
+                            onclick="UI.openCodexUpdates(event)" hidden>Codex 更新可用</a>
                     </div>
                 </div>
                 <div class="page-global-actions">
@@ -853,6 +856,11 @@
                             <i class="bi bi-diagram-3 me-1"></i> 任务路由
                         </button>
                     </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="llm-images-tab" data-bs-toggle="pill" data-bs-target="#llm-images" type="button">
+                            <i class="bi bi-images me-1"></i> 图片生成
+                        </button>
+                    </li>
 
 
 
@@ -911,6 +919,8 @@
                             </div>
                         </div>
                     </div>
+
+                    <div class="tab-pane fade d-none workspace-section" id="llm-images"><div id="imageGenerationRoot"></div></div>
 
 
 
@@ -1545,21 +1555,28 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
     <!-- App Scripts -->
+    <div class="modal fade" id="imageChannelModal" tabindex="-1" aria-labelledby="imageChannelModalTitle" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable"><div class="modal-content">
+            <div class="modal-header"><h5 class="modal-title" id="imageChannelModalTitle">生图配置</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button></div>
+            <div class="modal-body"></div><div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button><button type="button" class="btn btn-primary" onclick="ImageGeneration.saveEditor()">保存</button></div>
+        </div></div>
+    </div>
     <script src="/static/assets/js/api.js?v=20260925-backup-flow"></script>
     <script src="/static/assets/js/codex_permissions.js?v=20261028-permission-grid"></script>
-    <script src="/static/assets/js/ui.js?v=20261028-assistant-layout"></script>
+    <script src="/static/assets/js/ui.js?v=20261106-codex-updates"></script>
     <script src="/notification-assets/email_notifications.js?v=1"></script>
     <script src="/static/assets/js/system_storage.js?v=20260925-storage"></script>
     <script src="/static/assets/js/system_operations.js?v=20260925-backup-flow"></script>
-    <script src="/static/assets/js/system_tools.js?v=20260925-system-simplify"></script>
+    <script src="/static/assets/js/system_tools.js?v=20261106-codex-updates"></script>
     <script src="/static/assets/js/route_prompts.js?v=20261028-content-review"></script>
-    <script src="/static/assets/js/llm_manager.js?v=20261028-route-prompts"></script>
-    <script src="/static/assets/js/codex_center.js?v=20261017-search-capability"></script>
+    <script src="/static/assets/js/image_generation.js?v=20261105-image26"></script>
+    <script src="/static/assets/js/llm_manager.js?v=20261106-codex-updates"></script>
+    <script src="/static/assets/js/codex_center.js?v=20261106-codex-updates"></script>
     <script src="/static/assets/js/codex_skills.js?v=1.1.1-format-helpers"></script>
     <script src="/static/assets/js/dashboard.js?v=20260921-bot-activity"></script>
     <link href="/static/assets/css/scheduled_tasks.css?v=20261030-detail-layout" rel="stylesheet">
     <script src="/static/assets/js/scheduled_tasks.js?v=20261030-detail-layout"></script>
-    <script src="/static/assets/js/main.js?v=20261027-schedules"></script>
+    <script src="/static/assets/js/main.js?v=20261104-images"></script>
     <script src="/static/assets/js/assistant_prompts.js?v=20261028-content-review"></script>
     <script src="/static/assets/js/chat_archive.js?v=20260917-context-actions"></script>
 

@@ -901,6 +901,7 @@ class QuoteMessage(HumanMessage):
 
     def __init__(self, control=None, parent=None) -> None:
         super().__init__(control=control, parent=parent)
+        self._quote_source_chat_name = str(getattr(parent, "who", "") or "").strip()
         raw = str(getattr(control, "Name", "") or "")
         match = QUOTE_PATTERN.match(raw)
         if match:
@@ -911,6 +912,11 @@ class QuoteMessage(HumanMessage):
             self.content = raw
             self.quote_nickname = ""
             self.quote_content = ""
+
+    @property
+    def is_quote_emotion(self) -> bool:
+        content = str(self.quote_content or "").strip()
+        return bool(re.fullmatch(r"(?:\[动画表情\]|动画表情)(?:\s+\[[^\]\r\n]+\])?", content))
 
     @staticmethod
     def _control_is_clickable(control) -> bool:
@@ -1017,6 +1023,11 @@ class QuoteMessage(HumanMessage):
 
     def download_quote_media(self, dir_path: str | Path | None = None, timeout: int = 30) -> Path:
         """下载引用媒体；MP4 文件引用定位原文件后读取文件剪贴板。"""
+        if self.is_quote_emotion:
+            return _run_ordered_media_operation(
+                self,
+                lambda: self._download_quote_emoticon_unlocked(dir_path=dir_path, timeout=timeout),
+            )
         names = [
             line.strip() for line in str(self.quote_content or "").splitlines()
             if line.strip() and line.strip().casefold() not in {
@@ -1122,6 +1133,41 @@ class QuoteMessage(HumanMessage):
     def download_quote_image(self, dir_path: str | Path | None = None, timeout: int = 30) -> Path:
         """保留旧公开 API；底层与引用视频共用媒体下载路径。"""
         return self.download_quote_media(dir_path=dir_path, timeout=timeout)
+
+    def _download_quote_emoticon_unlocked(self, dir_path=None, timeout=30) -> Path:
+        from .emoticon import resolve_quote_emoticon
+        from .emoticon_identity import capture_quote_row, match_quote_emoticon
+
+        chat_name = str(getattr(self.parent, "who", "") or "").strip()
+        if not chat_name or (self._quote_source_chat_name and chat_name != self._quote_source_chat_name):
+            raise MediaIdentityError("引用表情的聊天窗口已变化")
+        if not self._refresh_visible_control() or not self._activate_source_window():
+            raise MediaIdentityError("引用表情原消息不再唯一可见，无法核对文件")
+        if str(getattr(self.parent, "who", "") or "").strip() != chat_name:
+            raise MediaIdentityError("核对引用表情时聊天窗口已变化")
+        if not control_fully_visible(self.control, getattr(self.parent, "message_list", None)):
+            raise MediaIdentityError("引用表情原消息没有完整显示")
+        # Capture before the potentially slow scan/download while the exact
+        # source row is bound, visible and protected by the shared UI lock.
+        row = capture_quote_row(self)
+        direction = self.direction
+        pid = int(getattr(self.parent, "pid", 0) or getattr(self.control, "ProcessId", 0) or 0)
+        result = resolve_quote_emoticon(
+            pid=pid, content=self.content, quote_nickname=self.quote_nickname,
+            chat_name=chat_name, output_dir=Path(dir_path or WxParam.DEFAULT_SAVE_PATH) / "emoticons",
+            timeout=max(1.0, float(timeout) - 4.0),
+        )
+        if result.status != "ready" or not result.path:
+            raise MediaIdentityError(f"无法读取引用表情：{result.status}", code="emoticon_" + result.status)
+        match = match_quote_emoticon(row, direction, result.path)
+        if not match["matched"]:
+            raise MediaFileMismatchError("表情文件与当前引用缩略图不一致，已拒绝使用", code="emoticon_visual_mismatch")
+        self._last_media_verification = {
+            "route": "emoticon_reference_md5", "verified": True,
+            "resource_md5": result.resource_md5, "reference_svrid": result.svrid,
+            "visual": match, "candidate_path": str(result.path),
+        }
+        return Path(result.path)
 
     def _download_quote_image_unlocked(
         self,

@@ -1,4 +1,4 @@
-"""通过全局默认官方 Codex Profile，在独立进程中编辑或生成图片。"""
+"""收集参考图，通过 Codex 内置能力或配置的图片 API 编辑和生成。"""
 
 import asyncio
 import base64
@@ -149,7 +149,7 @@ class ImageEditorPlugin:
         ).resolve()
         self._sessions: Dict[tuple[str, str], EditSession] = {}
         self._session_lock = threading.RLock()
-        logger.info("🖼️ 图片编辑插件初始化完成，使用全局默认官方 Codex Profile")
+        logger.info("🖼️ 图片编辑插件初始化完成，支持内置与 API 生图")
 
     def _resolve_profile(self) -> Dict[str, Any]:
         service = get_codex_profile_service()
@@ -337,15 +337,90 @@ class ImageEditorPlugin:
 
 
     def _process_images(self, session: Optional[EditSession] = None):
-        """每个任务只调用一次独立 Codex CLI，不使用聊天进程池或续接会话。"""
+        """按任务配置选择内置 Codex 或 API 队列，保留已有生成结果。"""
         if session is None:
             return
         sent_hashes = set()
         try:
-            profile = self._resolve_profile()
+            from app.services.image_generation_config import resolve_policy
+            policy = resolve_policy(plugin_name="image_editor")
             target = session.target_images or self.target_images
+            deadline = time.monotonic() + self.processing_timeout
+            source_mode = policy["mode"]
             task_dir = self.output_dir / uuid.uuid4().hex
             task_dir.mkdir(parents=True, exist_ok=False)
+
+            def stopping():
+                return bool(self.context and getattr(self.context.workers, "stop_event", None)
+                            and self.context.workers.stop_event.is_set() is True)
+
+            def update_delivery(asset_ids, status):
+                if not asset_ids:
+                    return
+                try:
+                    from app.services.image_generation_assets import mark_delivery
+                    mark_delivery(session.chat_name, asset_ids, status)
+                except Exception:
+                    logger.warning("图片交付状态未保存，原文件和资产仍保留")
+
+            def send_image(path):
+                path = Path(path)
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                if digest in sent_hashes:
+                    return
+                asset_ids = []
+                try:
+                    from app.services.image_generation_assets import finalize_images
+                    records = finalize_images(session.chat_name, [path], request_id=task_dir.name,
+                                              source="image_editor_" + source_mode)
+                    asset_ids = [record["asset_id"] for record in records]
+                except Exception:
+                    # Index failures must not discard an otherwise valid image
+                    # or prevent the existing delivery queue from draining.
+                    logger.warning("图片后续编辑索引未保存，继续交付原文件")
+                if stopping():
+                    update_delivery(asset_ids, "interrupted")
+                    raise RuntimeError("图片已生成，任务已停止，文件已保留可继续使用")
+                try:
+                    if not self._send_image_file(session, path):
+                        raise RuntimeError("图片已生成但发送失败，文件已保留可继续使用")
+                except Exception:
+                    update_delivery(asset_ids, "failed")
+                    raise
+                sent_hashes.add(digest)
+                update_delivery(asset_ids, "sent")
+
+            if policy["mode"] == "api":
+                from app.services.image_generation_service import (
+                    ImageInput, ImageRequest, ImageGenerationError, generate_images, native_fallback_count,
+                )
+                from app.services.image_generation_history import ImageReceipt
+                images = [ImageInput.from_bytes(base64.b64decode(value, validate=True), f"reference-{i}.png")
+                          for i, value in enumerate(session.images)]
+                receipt = ImageReceipt(session.chat_name)
+                request = ImageRequest(
+                    session.text_description or "", images=images, count=target,
+                    actor=session.chat_name, timeout=self.processing_timeout, cancelled=stopping,
+                )
+                try:
+                    generate_images(policy, request, task_dir, on_image=send_image, progress=receipt.progress)
+                    receipt.finish("completed")
+                    return
+                except ImageGenerationError as exc:
+                    receipt.finish("partial" if exc.paths else "failed")
+                    missing = native_fallback_count(policy, request, exc)
+                    if not missing or stopping() or deadline - time.monotonic() < 1:
+                        raise
+                    target = missing
+                    source_mode = "native"
+                    logger.info("🖼️ API 渠道已耗尽，内置生图补齐 %d 张，已完成 %d 张", target, len(exc.paths))
+                except Exception:
+                    receipt.finish("failed")
+                    raise
+            if stopping() or time.monotonic() >= deadline:
+                raise RuntimeError("图片任务已停止或总时限已到，已完成图片保留")
+            native_initial_count = len(sent_hashes)
+            profile = self._resolve_profile()
             content = [{"type": "text", "text": (
                 f"请根据以下要求编辑或生成图片，生成 {target} 张独立图片文件。"
                 f"全部 {len(session.images)} 张附件都是本次任务的参考图，请一起使用。\n"
@@ -361,25 +436,23 @@ class ImageEditorPlugin:
                 if not mime:
                     raise ValueError("参考图片格式无法识别，请重新发送图片")
                 content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}})
+            # Profile/auth resolution can take time or race with shutdown.
+            # Recheck immediately before starting a new generation process.
+            if stopping() or deadline - time.monotonic() < 1:
+                raise RuntimeError("图片任务已停止或总时限已到，已完成图片保留")
+            native_timeout = (self.processing_timeout if policy["mode"] == "native"
+                              else deadline - time.monotonic())
             client = CodexCliClient(
                 codex_bin=profile["wrapper_path"],
                 workdir=str(task_dir),
-                timeout_seconds=self.processing_timeout,
+                timeout_seconds=native_timeout,
                 permission_read_roots=_managed_profile_permission_roots(profile),
                 codex_home=profile.get("codex_home"),
             )
-            def send_image(path):
-                digest = hashlib.sha256(path.read_bytes()).hexdigest()
-                if digest in sent_hashes:
-                    return
-                if not self._send_image_file(session, path):
-                    raise RuntimeError("图片已生成但发送失败，文件已保留")
-                sent_hashes.add(digest)
-
             response = asyncio.run(client.chat({
                 "model": profile["model"],
                 "reasoning_effort": profile.get("reasoning_effort") or "high",
-                "timeout": self.processing_timeout,
+                "timeout": native_timeout,
                 "codex_runtime_profile": profile["name"],
                 "codex_config_policy": "inherit",
                 "codex_permission_profile": "mabobot-chat-isolated",
@@ -394,6 +467,7 @@ class ImageEditorPlugin:
                         "保留用户要求的主体和细节。不要追问，不要启动子代理或额外 Codex 进程。"
                         "保留生图工具产生的全部完整版本，不要删除或覆盖。"
                         "宿主负责收集和发送图片，你无需查找、检查或搬运生成文件；完成生成后直接结束。"
+                        "本任务使用 Codex 内置生图；失败后不要调用任何生图 API。"
                         "能力不可用时如实说明失败，禁止用代码绘制替代图片。"
                     )},
                     {"role": "user", "content": content},
@@ -408,7 +482,7 @@ class ImageEditorPlugin:
                     continue
                 if path not in paths:
                     paths.append(path)
-            if not paths and not sent_hashes:
+            if not paths and len(sent_hashes) == native_initial_count:
                 raise RuntimeError("Codex 未返回生成图片，请检查该官方 Profile 的生图能力或任务记录")
             for path in paths:
                 send_image(path)
@@ -419,7 +493,7 @@ class ImageEditorPlugin:
                     session.chat_name, session.user_sender, len(sent_hashes), exc,
                 )
             else:
-                logger.exception("🖼️ Codex 图片编辑失败")
+                logger.exception("🖼️ 图片任务失败")
                 self._send_error_message(session, str(exc))
         finally:
             with self._session_lock:
@@ -594,8 +668,9 @@ class ImageEditorPlugin:
 
             # 注意：权限检查已移至 EventBus 统一管理，此处不再检查 enabled_chats
 
-            # 仅当引用里含图片时触发
-            if "[图片]" not in quote_content:
+            # 表情与图片共用精确引用下载入口，保留原始 GIF 字节。
+            if not (data.get("has_quote_image") or data.get("has_quote_emotion")
+                    or "[图片]" in str(quote_content)):
                 return False
 
             # 检查是否在图片编辑会话中

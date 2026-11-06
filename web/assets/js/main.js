@@ -698,6 +698,7 @@ const App = {
         try {
             const userId = Number(parentForm.dataset.userId);
             const settings = await API.capabilities.getSettings(name, userId);
+            if (settings.groups.some(g => g.fields.some(f => f.key === 'image_generation'))) await ImageGeneration.catalog();
             if (!parentForm.isConnected || requestId !== this._capabilitySettingsRequest) return;
             const modal = document.getElementById('configModal');
             const chatName = this._selectedChatPolicy?.chat?.chat_name || `聊天 ${userId}`;
@@ -707,7 +708,7 @@ const App = {
             const form = modal.querySelector('#chatPluginSettingsForm');
             const translation = name === 'builtin_translation';
             const config = settings.chat_config;
-            const fields = settings.groups.flatMap(group=>group.fields);
+            const fields = settings.groups.flatMap(group=>group.fields).map(field => ({...field, image_parent: config.defaults?.image_generation}));
             const saveBtn = document.getElementById('configModalSaveBtn');
             const resetBtn = form.querySelector('[data-chat-config-reset]');
             const getValues = () => translation ? UI.readTranslationValues(form) : this.collectConfigValues(form);
@@ -897,6 +898,7 @@ const App = {
             ]);
             if (requestId !== this._capabilitySettingsRequest) return;
             const capability = detailResponse.capability || {};
+            if (settings.groups.some(g => g.fields.some(f => f.key === 'image_generation'))) await ImageGeneration.catalog();
             this.currentCapabilitySettings = settings;
             this.currentCapabilityId = name;
 
@@ -1390,6 +1392,7 @@ const App = {
                     judge_id: judgeValue ? Number(judgeValue) : null
                 } : { proactive_enabled: false, judge_id: null })
             },
+            image_generation: JSON.parse(form.elements.image_generation.value),
             codex: CodexPermissions.chatPatch(form),
             plugin_grants: pluginGrants,
             plugin_configs: JSON.parse(form.elements.plugin_config_draft?.value || '{}')

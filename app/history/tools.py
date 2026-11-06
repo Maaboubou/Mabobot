@@ -118,6 +118,13 @@ class HistorySession:
         return self.refs[identity]
 
     def execute(self, name: str, arguments: Any) -> dict | AttachmentImageResult:
+        return self._execute(name, arguments)
+
+    def read_image_input(self, attachment_id: str) -> dict | AttachmentImageResult:
+        """Host-only edit input, sharing archive scope, budgets and audit."""
+        return self._execute("read_attachment", {"attachment_id": attachment_id}, image_purpose="edit")
+
+    def _execute(self, name: str, arguments: Any, *, image_purpose="view") -> dict | AttachmentImageResult:
         started = time.monotonic()
         if isinstance(arguments, str):
             arguments = json.loads(arguments)
@@ -147,10 +154,11 @@ class HistorySession:
             self.calls += 1
             if name == 'read_attachment':
                 from app.history.image_reader import AttachmentImageResult, read_attachment_image
-                result = read_attachment_image(store, self.chat, arguments.get('attachment_id'))
+                result = read_attachment_image(store, self.chat, arguments.get('attachment_id'), purpose=image_purpose)
                 details = result.metadata if isinstance(result, AttachmentImageResult) else result
                 store.record_lookup(self.chat, self.request_id, name,
                                     {**details, 'attachment_id': arguments.get('attachment_id'),
+                                     'purpose': image_purpose,
                                      'elapsed_ms': round((time.monotonic() - started) * 1000, 2)})
                 return result
             if name in {'people','add_alias','merge_member'}:
@@ -230,7 +238,7 @@ class HistorySession:
                 part = {"ref": ref, "time": str(row.get("time") or row["occurred_at"])[:50],
                         "sender": row["sender"][:160], "kind": str(row.get("message_type") or "text")[:40],
                         "is_bot": row.get("is_bot"), "content": excerpt, "offset": content_offset}
-                if row.get("message_type") == "image" and (row.get("metadata") or {}).get("attachment"):
+                if row.get("message_type") in {"image", "emotion", "quote"} and (row.get("metadata") or {}).get("attachment"):
                     part["attachment_id"] = row["id"]
                 if row.get("sender_id"):
                     sender_id = str(row["sender_id"])
@@ -249,7 +257,7 @@ class HistorySession:
                 key = (row["id"], row["version"], content_offset, len(excerpt))
                 if key in self.returned:
                     part = {"ref": ref, "already_returned": True, "offset": content_offset}
-                    if row.get("message_type") == "image" and (row.get("metadata") or {}).get("attachment"):
+                    if row.get("message_type") in {"image", "emotion", "quote"} and (row.get("metadata") or {}).get("attachment"):
                         part["attachment_id"] = row["id"]
                     if len(encode({**result, "messages": result["messages"] + [part]}).encode()) > output_budget - 128:
                         result['truncated'] = True

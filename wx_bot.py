@@ -1313,20 +1313,30 @@ def message_callback(msg, chat):
             quote_content_one_line = quote_content_one_line[:20] + "..."
         quote_content_part = f", quote_content='{quote_content_one_line}'" if quote_content_one_line else ""
         delivery_trace = str(getattr(msg, "delivery_id", "") or getattr(msg, "delivery_sequence", "") or "")
+        received_at = time.time()
+        sent_at = valid_source_time(getattr(msg, 'sent_at', None))
+        source_timing = {
+            # msg.time is the inherited separator normalized by mabowx, not
+            # an exact per-message timestamp or the original relative UI label.
+            "source_time_label": str(getattr(msg, "time", "") or ""),
+            "source_time_kind": "wechat_separator" if sent_at is not None else "unknown",
+            "history_recovered": bool(getattr(msg, "history_recovered", False)),
+        }
         logger.info(
+            "%s source_sent_at=%r received_at=%r source_time_label=%r source_time_kind=%s history_recovered=%s",
             f"📥 Received message: "
             f"sender='{msg.sender}', "
             f"chat='{chat_name}', "
             f"type='{msg.type}', "
             f"content='{str(msg.content)}'"
             f"{quote_content_part}",
+            sent_at, received_at, source_timing["source_time_label"],
+            source_timing["source_time_kind"], source_timing["history_recovered"],
             extra={"event": "wechat.message.received", "trace_id": delivery_trace,
                    "delivery_id": delivery_trace},
             
         )
         
-        received_at = time.time()
-        sent_at = valid_source_time(getattr(msg, 'sent_at', None))
         archive_only = not source_is_fresh(sent_at, received_at)
         if archive_only:
             # Stop before file downloads, UI link resolution and plugin dispatch.
@@ -1345,6 +1355,7 @@ def message_callback(msg, chat):
                     "archive_message_id": str(getattr(msg, 'delivery_sequence', 0) or getattr(msg, 'id', '') or uuid.uuid4().hex),
                     "archive_source": "mabowx_delivery:" + _ARCHIVE_DELIVERY_SESSION,
                     "timestamp": received_at, "sent_at": sent_at,
+                    **source_timing,
                     "archive_only": True,
                 },
                 timeout=30,
@@ -1402,6 +1413,7 @@ def message_callback(msg, chat):
 
         # 处理图片消息 - 缓存消息对象以供后续下载
         has_quote_image = False
+        has_quote_emotion = False
         quote_image_path = None
         has_quote_video = False
         quote_video_path = None
@@ -1414,7 +1426,12 @@ def message_callback(msg, chat):
             quote_content = getattr(msg, 'quote_content', '')
             # 兼容不同客户端/库版本：引用图片可能表现为 "[图片]" 或仅为 "图片"
             quote_content_stripped = str(quote_content).strip()
-            if ('[图片]' in quote_content) or (quote_content_stripped == '图片'):
+            if bool(getattr(msg, 'is_quote_emotion', False)):
+                logger.info("🖼️ 检测到引用表情，缓存原消息以便按需读取完整文件")
+                has_quote_image = True
+                has_quote_emotion = True
+                normalized_quote_content = "[动画表情]"
+            elif ('[图片]' in quote_content) or (quote_content_stripped == '图片'):
                 logger.info("🖼️ 检测到引用图片，暂不下载（等待插件按需请求）")
                 has_quote_image = True
                 # 归一化：主程序与插件侧均以 "[图片]" 作为引用图片标记
@@ -1504,6 +1521,7 @@ def message_callback(msg, chat):
             "quote_nickname": quote_nickname or None,  # 被引用消息发送者的群内显示名
             "quote_content": normalized_quote_content,  # 添加引用内容字段（已做引用图片标记归一化）
             "has_quote_image": has_quote_image,  # 标记是否有引用图片需要按需下载
+            "has_quote_emotion": has_quote_emotion,
             "quote_video_path": quote_video_path,
             "has_quote_video": has_quote_video,
             "file_id": inbound_file.get("file_id"),
@@ -1528,6 +1546,7 @@ def message_callback(msg, chat):
             "tickle_suffix": tickle_suffix or None,
             "timestamp": received_at,
             "sent_at": sent_at,
+            **source_timing,
         }
         
         # 发送到主应用

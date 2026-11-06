@@ -40,7 +40,7 @@ from .core.plugin_manager import PluginManager
 from .core.wechat_manager import WeChatManager
 from .models.base import create_tables, SessionLocal
 from .api.endpoints import assistant, assistant_judges, assistant_roles, automation, backups, capabilities, chat_policies, codex_profiles, operations, system, settings, plugins, wechat, permissions, dashboard
-from .api.endpoints import codex_skills, codex_permissions, email_notifications
+from .api.endpoints import codex_skills, codex_permissions, email_notifications, image_generation
 from .api import internal as internal_api
 from .api import codex_proxy
 from .api import codex_jobs
@@ -561,11 +561,6 @@ async def lifespan(app: FastAPI):
             logger.warning("Could not connect to wx_bot service. Some features will be unavailable.")
         else:
             logger.info("WeChat manager connected to wx_bot service")
-            # 注入到全局上下文，便于插件在计划任务中直接发送
-            try:
-                event_bus.context["wx"] = wechat_manager
-            except Exception:
-                pass
 
         # 6. 同步所有已存在的监听器
         with SessionLocal() as db:
@@ -615,6 +610,15 @@ async def lifespan(app: FastAPI):
         app.state.scheduled_runtime = get_scheduled_runtime()
         app.state.scheduled_runtime.start(event_bus, lambda: assistant_runtime.handler if assistant_runtime else None)
 
+        # Check only Codex on the daily Beijing schedule, independent of the UI.
+        try:
+            from app.services.codex_update_monitor import get_codex_update_monitor
+
+            app.state.codex_update_monitor = get_codex_update_monitor()
+            app.state.codex_update_monitor.start()
+        except Exception:
+            logger.exception("Codex update monitor could not start")
+
         logger.info("Application startup completed")
 
         yield
@@ -626,6 +630,8 @@ async def lifespan(app: FastAPI):
     finally:
         # 清理资源
         logger.info("Shutting down application...")
+        if getattr(app.state, "codex_update_monitor", None):
+            await asyncio.to_thread(app.state.codex_update_monitor.stop)
         if getattr(app.state, "scheduled_runtime", None):
             app.state.scheduled_runtime.stop()
 
@@ -721,6 +727,7 @@ from app.api.endpoints import scheduled_tasks
 app.include_router(scheduled_tasks.router, prefix="/api/scheduled-tasks", tags=["scheduled-tasks"])
 app.include_router(chat_policies.router, prefix="/api/chats", tags=["chat-policies"])
 app.include_router(codex_profiles.router, prefix="/api/codex/profiles", tags=["codex-profiles"])
+app.include_router(image_generation.router, prefix="/api/image-generation", tags=["image-generation"])
 app.include_router(codex_permissions.router, prefix="/api/codex/permissions", tags=["codex-permissions"])
 app.include_router(codex_skills.router, prefix="/api/codex/profiles", tags=["codex-skills"])
 app.include_router(wechat.router, prefix="/api/wechat", tags=["wechat"])

@@ -21,12 +21,20 @@ class ChatLoggerPlugin:
     """聊天记录插件主类"""
 
     @staticmethod
-    def _archive_fields(event):
+    def _archive_fields(event, metadata=None):
         data = event.data
         fields = {"source_message_id": str(data.get("archive_message_id") or data.get("message_id") or event.id),
                   "source_id_namespace": str(data.get("archive_source") or ("wx_action" if data.get("message_id") else "event_bus"))}
         if data.get("timestamp"):
             fields["received_at"] = datetime.fromtimestamp(float(data["timestamp"])).strftime("%Y-%m-%d %H:%M:%S")
+        # Persist diagnostics in the original archive write; the displayed time
+        # and chronological ordering continue to use their existing semantics.
+        timing = {key: data[key] for key in (
+            "source_sent_at", "received_at", "source_time_label",
+            "source_time_kind", "history_recovered",
+        ) if key in data}
+        if metadata or timing:
+            fields["metadata"] = {**(metadata or {}), **timing}
         return fields
 
     def handle_other_message(self, event):
@@ -38,8 +46,9 @@ class ChatLoggerPlugin:
             data["chat_name"], str(data.get("sender") or "系统"),
             str(data.get("message") or f"[{kind}]"),
             sender_id=str(data.get("sender_id") or ""), message_type=kind,
-            metadata={key: data[key] for key in ("file_id", "file_name", "file_path", "file_size", "file_sha256", "file_status") if data.get(key) is not None},
-            **self._archive_fields(event))
+            **self._archive_fields(event, metadata={key: data[key] for key in (
+                "file_id", "file_name", "file_path", "file_size", "file_sha256", "file_status"
+            ) if data.get(key) is not None}))
         if kind == "file" and row_id and self.is_attachment_path_enabled(chat_id=(event.context or {}).get("chat_id")):
             self._save_attachment(data["chat_name"], row_id, str(data.get("file_path") or ""),
                                   str(data.get("file_name") or ""))
@@ -222,8 +231,7 @@ class ChatLoggerPlugin:
                 sender_id=sender_id,
                 sender_remark=sender_remark,
                 message_type="image",
-                **self._archive_fields(event),
-                metadata={"attachment": {"status": "pending"}} if path_enabled else None,
+                **self._archive_fields(event, metadata={"attachment": {"status": "pending"}} if path_enabled else None),
                 image_enrichment={"status": "pending"} if enrichment_enabled else {"status": "disabled"},
             )
             logger.debug(f"📝 记录图片消息: {chat_name} - {sender}")
@@ -361,6 +369,9 @@ class ChatLoggerPlugin:
 
     def handle_quote_message(self, event: Event):
         """处理引用消息事件"""
+        row_id = None
+        chat_name = ""
+        path_enabled = False
         try:
             if "quote" not in self.log_message_types:
                 return False
@@ -383,23 +394,73 @@ class ChatLoggerPlugin:
                 log_content = f"[引用消息] 引用：{quote_content}\n回复：{content}"
             else:
                 log_content = f"[引用消息] {content}"
-            self.chat_log_manager.save_message(
+            is_image_quote = bool(event.data.get("has_quote_image") or event.data.get("has_quote_emotion")
+                                  or quote_content in {"图片", "[图片]"})
+            chat_id = (event.context or {}).get("chat_id")
+            path_enabled = is_image_quote and self.is_attachment_path_enabled(chat_id=chat_id)
+            metadata = {
+                "quote_nickname": quote_nickname, "quote_content": quote_content,
+                "reply_to": event.data.get("quote_message_id"),
+            }
+            if is_image_quote:
+                metadata["has_quote_image"] = True
+                metadata["has_quote_emotion"] = bool(event.data.get("has_quote_emotion"))
+            if path_enabled:
+                metadata["attachment"] = {"status": "pending"}
+            row_id = self.chat_log_manager.save_message(
                 chat_name,
                 sender,
                 log_content,
                 sender_id=sender_id,
                 sender_remark=sender_remark,
                 message_type="quote",
-                metadata={"quote_nickname": quote_nickname, "quote_content": quote_content,
-                          "reply_to": event.data.get("quote_message_id")},
-                **self._archive_fields(event),
+                **self._archive_fields(event, metadata=metadata),
             )
             logger.debug(f"📝 记录引用消息: {chat_name} - {sender}")
+
+            if path_enabled and row_id:
+                from app.history.attachments import begin_attachment
+                begin_attachment(chat_name, row_id)
+                data = dict(event.data or {})
+                data["_quote_image_prefetch"] = (event.context or {}).get("quote_image_prefetch")
+                self.context.workers.start(
+                    f"quote-attachment-{chat_name}-{row_id}",
+                    self._process_quote_attachment,
+                    args=(data, (event.context or {}).get("wx"), row_id, chat_id),
+                )
 
             return False
         except Exception as e:
             logger.error(f"📝 记录引用消息失败: {e}")
+            if row_id and path_enabled:
+                from app.history.attachments import finish_attachment
+                self.chat_log_manager.update_attachment(chat_name, row_id, {"status": "failed"})
+                finish_attachment(chat_name, row_id)
             return False
+
+    def _process_quote_attachment(self, data, wx_manager, row_id: str, chat_id=None) -> None:
+        """Attach the exact quoted original without converting animation frames."""
+        chat_name = str(data.get("chat_name") or "")
+        try:
+            if not self.is_attachment_path_enabled(chat_id=chat_id):
+                self.chat_log_manager.update_attachment(chat_name, row_id, {"status": "disabled"})
+                return
+            path = str(data.get("quote_image_path") or "")
+            prefetch = data.get("_quote_image_prefetch")
+            if prefetch is not None:
+                result = prefetch.result(timeout=135)
+                if result and result.get("status") == "ready":
+                    path = str(result["path"])
+            if (prefetch is None and not data.get("quote_image_prefetch_attempted")
+                    and (not path or not os.path.isfile(path)) and wx_manager and data.get("message_id")):
+                path = wx_manager.download_quote_image(chat_name, message_id=data["message_id"]) or ""
+            self._save_attachment(chat_name, row_id, path)
+        except Exception:
+            logger.exception("📝 引用媒体附件保存失败: chat=%s message_id=%s", chat_name, data.get("message_id"))
+            self.chat_log_manager.update_attachment(chat_name, row_id, {"status": "failed"})
+        finally:
+            from app.history.attachments import finish_attachment
+            finish_attachment(chat_name, row_id)
 
     def save_bot_response(self, chat_name: str, bot_name: str, response: str):
         """保存机器人回复消息"""

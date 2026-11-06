@@ -17,10 +17,13 @@ import sqlite3
 import threading
 import time
 import uuid
-from app.utils.source_message_policy import event_is_fresh, archive_expired_event
+from app.utils.source_message_policy import (
+    ActionBlocked, DELIVERY_ACTIONS, admitted_task_scope, event_is_fresh, archive_expired_event,
+)
 
 logger = logging.getLogger(__name__)
 _task = ContextVar("assistant_task", default=None)
+DELIVERY_GRACE_SECONDS = 120
 
 
 def current_task(chat=None):
@@ -110,7 +113,7 @@ class TaskStore:
     def completions(self, chat, exclude):
         with self.connect() as db:
             rows = db.execute("SELECT id,result_json FROM assistant_tasks WHERE chat=? AND background=1 "
-                              "AND status IN ('completed','delivery_failed') AND result_json IS NOT NULL ORDER BY created DESC LIMIT 8", (chat,)).fetchall()
+                              "AND status IN ('completed','delivery_failed','delivery_blocked') AND result_json IS NOT NULL ORDER BY created DESC LIMIT 8", (chat,)).fetchall()
         return [(r['id'], json.loads(r['result_json'])) for r in reversed(rows) if r['id'] not in exclude]
 
     def recent(self, chat=None):
@@ -131,13 +134,27 @@ class TaskStore:
                        (delivery_id, task.id, method, json.dumps({'args': args, 'kwargs': kwargs}, ensure_ascii=False, default=str), time.time()))
         status, error = 'uncertain', None
         try:
+            if method in DELIVERY_ACTIONS:
+                owner = current_task()
+                if owner is not None and owner is not task:
+                    raise ActionBlocked('任务发送被拦截：不能复用其他任务的发送代理')
+                with task.lock:
+                    if task.result_ready:
+                        task.delivery_started = True
+                    task.require_delivery_allowed()
             result = send(*args, **kwargs)
             status = 'sent' if result else 'failed'
             return result
+        except ActionBlocked as exc:
+            status, error = 'blocked', str(exc)[:1000]
+            raise
         except Exception as exc:
             error = str(exc)[:1000]
             raise
         finally:
+            if method in DELIVERY_ACTIONS and status != 'sent':
+                task.delivery_status = status
+                task.delivery_error = error or '结果已生成，发送失败'
             with self.connect() as db:
                 db.execute("UPDATE assistant_outbox SET status=?,error=? WHERE id=?", (status, error, delivery_id))
 
@@ -173,10 +190,38 @@ class TaskScope:
         self.thread_id = self.turn_id = ''
         self.started = time.monotonic()
         self.deadline = None
+        self.source = None
+        self.cancel_requested = threading.Event()
+        self.delivery_deadline = None
+        self.delivery_started = False
+        self.generated_at = None
+        self.delivery_status = None
+        self.delivery_error = None
         self.error = None
         self.result_ready = False
         self.receipts = []
         self.lock = threading.RLock()
+
+    def require_delivery_allowed(self):
+        """Return whether an admitted result may outlive the source timestamp.
+
+        This is also rechecked under the outbound lock. It only reads in-memory
+        task state; no database lookup or renewed deadline is needed per part.
+        """
+        if self.cancel_requested.is_set():
+            raise ActionBlocked('任务发送被拦截：任务已请求取消')
+        if self.done.is_set():
+            raise ActionBlocked('任务发送被拦截：任务已结束')
+        now = time.monotonic()
+        if self.delivery_deadline is not None:
+            if self.generated_at >= self.deadline:
+                raise ActionBlocked('任务发送被拦截：结果在执行期限之后生成')
+            if now >= self.delivery_deadline:
+                raise ActionBlocked('任务发送被拦截：结果发送宽限期已结束')
+            return self.result_ready
+        if self.deadline is not None and now >= self.deadline:
+            raise ActionBlocked('任务发送被拦截：任务执行期限已结束')
+        return False
 
     def load_state(self, state_store):
         if not self.activated:
@@ -223,6 +268,12 @@ class TaskScope:
         message = (response.get('choices') or [{}])[0].get('message') or {}
         with self.lock:
             self.result_ready = True
+            # Output validation can request a corrected generation before any
+            # send. Once delivery starts, all parts share one frozen window.
+            if not self.delivery_started:
+                self.generated_at = time.monotonic()
+                if self.deadline is not None:
+                    self.delivery_deadline = min(self.generated_at, self.deadline) + DELIVERY_GRACE_SECONDS
             self.store.update(self.id, result_json=json.dumps({
                 'text': str(message.get('content') or '')[:12000],
                 'attachments': response.get('attachments') or [],
@@ -235,7 +286,7 @@ class TaskWechatProxy:
 
     def __getattr__(self, name):
         value = getattr(self._wx, name)
-        if name not in {'send_message', 'send_files', 'send_url_card'}:
+        if name not in DELIVERY_ACTIONS:
             return value
 
         def send(*args, **kwargs):
@@ -352,15 +403,20 @@ class AssistantTaskSupervisor:
             claim = shared.claim(chat=task.chat, capability="assistant.reply", subject=task.id,
                 owner="assistant", title="处理对话请求", reuse_seconds=0)
             from app.services.schedule_context import conversation_schedule_context
-            with conversation_schedule_context(event):
+            with conversation_schedule_context(event), admitted_task_scope(task, event):
                 result = shared.run(claim, lambda: handler(event))
             if not result:
                 shared.update(claim.work["id"], status="failed", message="本轮未交付回复")
-            status = 'failed' if task.error else 'completed' if result else 'delivery_failed' if task.result_ready else 'skipped'
-            self.store.update(task.id, status=status, error=task.error or ('结果已生成，发送未确认' if status == 'delivery_failed' else None))
+            status = ('delivery_blocked' if task.delivery_status == 'blocked' else
+                      'delivery_failed' if task.delivery_status else
+                      'failed' if task.error else 'completed' if result else
+                      'delivery_failed' if task.result_ready else 'skipped')
+            self.store.update(task.id, status=status, error=task.delivery_error or task.error or
+                              ('结果已生成，发送未确认' if status == 'delivery_failed' else None))
             return result
         except Exception as exc:
-            self.store.update(task.id, status='failed', error=str(exc)[:2000])
+            status = 'delivery_blocked' if isinstance(exc, ActionBlocked) else 'delivery_failed' if task.result_ready else 'failed'
+            self.store.update(task.id, status=status, error=str(exc)[:2000])
             logger.exception('Assistant task failed: task=%s chat=%s', task.id, task.chat)
             raise
         finally:
@@ -425,11 +481,13 @@ class AssistantTaskSupervisor:
             if action == '状态':
                 labels = {'queued': '排队中', 'running': '执行中', 'background': '后台执行中', 'completed': '已完成',
                           'network_wait': '等待连接恢复', 'delivering': '正在发送结果', 'interrupted': '已中断，需核对结果',
-                          'failed': '执行失败', 'skipped': '未触发回复', 'delivery_failed': '结果已生成，发送未确认'}
+                          'failed': '执行失败', 'skipped': '未触发回复', 'delivery_failed': '结果已生成，发送未确认',
+                          'delivery_blocked': '结果发送被拦截'}
                 text = f'任务 {prefix}：{labels.get(row["status"], row["status"])}'
             elif not active or not active.bound.is_set():
                 text = '该任务当前没有可操作的执行轮次。'
             elif action == '取消':
+                active.cancel_requested.set()
                 try:
                     active.manager._request('turn/interrupt', {'threadId': active.thread_id, 'turnId': active.turn_id}, timeout=10)
                     text = f'已请求取消任务 {prefix}。'
@@ -458,6 +516,7 @@ class AssistantTaskSupervisor:
         with self._lock:
             active = list(self._active.values())
         for task in active:
+            task.cancel_requested.set()
             if task.bound.is_set():
                 task.manager._interrupt_turn(task.thread_id, task.turn_id)
         self._pool.shutdown(wait=False, cancel_futures=False)

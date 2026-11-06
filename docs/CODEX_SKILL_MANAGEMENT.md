@@ -53,4 +53,14 @@ Codex 会先读取所有 Skill 的 `name` 与 `description`，命中任务后再
 
 GitHub Skill 当前按 Profile 独立安装，不会自动共享给其他 Profile。需要连同 MCP、连接器或账号授权分发时，应使用 Plugin 流程。
 
+## 计划任务使用 last30days
+
+last30days 安装到任务使用的 Profile 后，隔离聊天通过宿主工具 `news.research` 调用引擎。不要给聊天开放 Firefox 目录、Cookie 或宿主配置的读取权限。管理员在本机 `data/last30days.json` 配置 `enabled`、`profile_id` 和 `task_ids` 白名单；没有配置时工具关闭，普通聊天、其他任务和角色核对请求均不提供该工具。
+
+宿主每次仅从 Firefox 读取 X 的 `auth_token`、`ct0`，在子进程内短暂使用，不保存到 Skill 或聊天工作区。WSL 可读取 Windows Firefox 的登录态。引擎固定 Bird 后端，隔离付费 API Key、项目配置和凭据存储，只允许 X、Reddit、Hacker News、GitHub 免费检索；Reddit 使用上游公开接口，并不复用浏览器的 Reddit 登录。403、限流、登录失效会保留为来源状态，不能解释为没有新闻。
+
+每轮最多两次快速检索，每次引擎运行上限 210 秒。停止任务后丢弃结果；已经开始的检索可能继续运行至自身截止时间。只返回公开帖子、评论和来源状态，不返回凭据、配置或原始错误。X 帖子的完整发布时间由帖子 ID 恢复，便于新闻任务严格筛选过去 24 小时。宿主工具不发送微信消息，海报和交付仍使用原任务流程。
+
+任务正文应明确要求读取 last30days Skill 并通过 `news.research` 执行检索；宿主已处理运行环境和授权，不在群聊重复执行安装向导。先结合聊天档案确定具体主题，再检索、核验并生成原定交付物。升级上游 Skill 前应重新验证免费后端、结果格式及 X 登录态读取。
+
 格式与加载行为参考 [OpenAI Build skills 文档](https://learn.chatgpt.com/docs/build-skills) 和 [Agent Skills 规范](https://agentskills.io/specification)。

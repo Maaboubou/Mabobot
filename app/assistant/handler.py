@@ -1609,7 +1609,7 @@ class AssistantHandler:
         return self.handle_quote_image_message(event)
 
     def handle_quote_image_message(self, event: Event):
-        """处理引用图片或视频消息事件 (Unified Flow)。"""
+        """处理引用图片、表情或视频消息事件 (Unified Flow)。"""
         try:
             start_time = time.time()
 
@@ -1619,7 +1619,8 @@ class AssistantHandler:
             chat_type = event.data.get("chat_type", "private")
             quote_content = event.data.get("quote_content", "")
             is_video_quote = bool(event.data.get("has_quote_video")) or "[视频]" in str(quote_content)
-            media_label = "视频" if is_video_quote else "图片"
+            is_emotion_quote = bool(event.data.get("has_quote_emotion"))
+            media_label = "视频" if is_video_quote else "表情" if is_emotion_quote else "图片"
             logger.info("🤖 Assistant received quoted %s event", media_label)
 
             if self._is_sender_ignored(chat_name, sender):
@@ -1648,8 +1649,8 @@ class AssistantHandler:
 
             # 1. 验证是否为对应的媒体引用
             # 如果是通过兜底检测转发来的，跳过验证（我们已经通过正则确认了）
-            expected_marker = "[视频]" if is_video_quote else "[图片]"
-            expected_flag = "has_quote_video" if is_video_quote else "has_quote_image"
+            expected_marker = "[视频]" if is_video_quote else "[动画表情]" if is_emotion_quote else "[图片]"
+            expected_flag = "has_quote_video" if is_video_quote else "has_quote_emotion" if is_emotion_quote else "has_quote_image"
             logger.info(
                 "🔍 Quote validation: media=%s quote_content=%r flag=%s",
                 media_label,
@@ -1662,7 +1663,7 @@ class AssistantHandler:
                     logger.warning(f"🤖 Quote content verification failed. Content: {quote_content[:100]}...")
                     return False
                 else:
-                    logger.info(f"🔧 跳过quote验证：这是误识别的引用图片消息（已通过正则确认)")
+                    logger.info("🔧 引用媒体类型由显式标记确认: %s", expected_flag)
             else:
                 logger.info(f"✅ Quote validation passed")
 
@@ -1753,7 +1754,9 @@ class AssistantHandler:
                         event.data.get("message_id", ""),
                     )
                     if wx_manager and (is_mention or chat_type in {"private", "friend", "user"}):
-                        wx_manager.send_message(chat_name, "这条引用图片暂时读取失败，请把原图重新发送并附上问题。")
+                        error_reply = ("这条引用表情暂时读取失败，请重新发送原表情并附上问题。"
+                                       if is_emotion_quote else "这条引用图片暂时读取失败，请把原图重新发送并附上问题。")
+                        wx_manager.send_message(chat_name, error_reply)
                     return False
                 if is_video_quote and not visual_inputs and not video_transcript:
                     logger.warning(
@@ -2558,6 +2561,24 @@ class AssistantHandler:
         if not attachments:
             return True
 
+        pending_assets = {attachment["asset_id"] for attachment in attachments
+                          if isinstance(attachment, dict) and isinstance(attachment.get("asset_id"), str)}
+        assets_by_path = {}
+
+        def image_delivery(status, asset_ids=None):
+            ids = pending_assets.intersection(asset_ids) if asset_ids is not None else set(pending_assets)
+            if not ids:
+                return
+            try:
+                from app.services.image_generation_assets import mark_delivery
+                mark_delivery(chat_name, list(ids), status)
+            except Exception:
+                logger.warning("🤖 无法更新图片交付索引: chat=%s status=%s", chat_name, status, exc_info=True)
+            finally:
+                # A later failed send must not relabel an earlier successful
+                # image merely because recording its receipt was unavailable.
+                pending_assets.difference_update(ids)
+
         try:
             # The attachment collector writes into the artifact root selected by
             # the same per-chat access policy.  Re-resolve that trusted policy
@@ -2571,19 +2592,22 @@ class AssistantHandler:
                 callable(is_junction) and is_junction()
             ):
                 logger.error("🤖 聊天附件目录是链接，已拒绝发送: %s", configured_root)
+                image_delivery("failed")
                 return False
             allowed_root = configured_root.resolve(strict=True)
             if not allowed_root.is_dir():
+                image_delivery("failed")
                 return False
         except Exception:
             logger.exception("🤖 无法解析聊天附件的允许目录: %s", chat_name)
+            image_delivery("failed")
             return False
         allowed_suffixes = {
             ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff",
             ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".xlsm", ".ppt", ".pptx",
             ".rtf", ".odt", ".ods", ".odp", ".epub",
             ".txt", ".md", ".csv", ".tsv", ".json", ".jsonl", ".yaml", ".yml",
-            ".xml", ".html", ".htm", ".log", ".sql",
+            ".xml", ".svg", ".html", ".htm", ".log", ".sql",
             ".zip", ".7z", ".rar", ".tar", ".gz", ".tgz",
             ".mp3", ".wav", ".m4a", ".flac", ".mp4", ".mov", ".webm", ".avi", ".mkv",
         }
@@ -2620,6 +2644,9 @@ class AssistantHandler:
                 logger.warning(f"🤖 跳过不存在的附件: {resolved}")
                 rejected_count += 1
                 continue
+            asset_id = attachment.get("asset_id")
+            if isinstance(asset_id, str):
+                assets_by_path.setdefault(str(resolved), set()).add(asset_id)
             if str(resolved) in seen:
                 continue
 
@@ -2633,7 +2660,31 @@ class AssistantHandler:
                 len(file_paths),
                 rejected_count,
             )
+            image_delivery("failed")
             return False
+
+        # Legacy/CLI providers already return validated final files, but have no
+        # asset metadata. Index them after the same chat-boundary checks so a
+        # later API turn can edit or resend their output without regeneration.
+        from app.services.codex_delivery import finalize_attachment_images
+        from app.services.codex_proxy.client import _is_valid_image_file
+        legacy_groups = {}
+        for attachment in attachments:
+            if attachment.get("asset_id") or attachment.get("type") != "image":
+                continue
+            path = Path(attachment["path"]).expanduser().resolve()
+            if str(path) not in seen or not _is_valid_image_file(path):
+                continue
+            request_key = path.relative_to(allowed_root).parts[0]
+            legacy_groups.setdefault(request_key, []).append(attachment)
+        for request_key, legacy_images in legacy_groups.items():
+            finalize_attachment_images(chat_name, legacy_images, request_id=request_key)
+            for attachment in legacy_images:
+                identity = attachment.get("asset_id")
+                if isinstance(identity, str):
+                    pending_assets.add(identity)
+                    path = str(Path(attachment["path"]).expanduser().resolve())
+                    assets_by_path.setdefault(path, set()).add(identity)
 
         from app.services.wechat_content_review import get_wechat_content_review
         try:
@@ -2654,10 +2705,13 @@ class AssistantHandler:
                     else:
                         sent = wx_manager.send_files(chat_name, [file_path])
                     if not sent:
+                        image_delivery("failed")
                         return False
+                    image_delivery("sent", assets_by_path.get(original_path, set()))
                 return True
         except Exception:
             logger.exception("🤖 微信附件审核或发送未完成，已停止发送: %s", chat_name)
+            image_delivery("failed")
             return False
 
     def _save_response_parts_to_log(self, chat_name: str, response: str, role_name: str) -> None:
@@ -2810,7 +2864,7 @@ class AssistantHandler:
             chat_name = message.get("chat_name", "")
             message_id = message.get("message_id")
             quote_image_path = message.get("quote_image_path")
-            has_quote_image = message.get("has_quote_image", False)
+            has_quote_image = bool(message.get("has_quote_image") or message.get("has_quote_emotion"))
 
             image_path = None
 
@@ -2844,7 +2898,13 @@ class AssistantHandler:
 
             # 读取并编码为base64
             with open(image_path, "rb") as f:
-                image_base64 = base64.b64encode(f.read()).decode("utf-8")
+                image_bytes = f.read()
+                image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+
+            # Preserve the downloaded animation and its MIME type. The generic
+            # attachment helper otherwise labels an untyped base64 value JPEG.
+            if image_bytes.startswith((b"GIF87a", b"GIF89a")):
+                return f"data:image/gif;base64,{image_base64}"
 
 
             return image_base64

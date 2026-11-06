@@ -10,6 +10,7 @@ import litellm
 import json
 import logging
 import os
+import sqlite3
 import ssl
 import time
 import threading
@@ -2412,6 +2413,14 @@ class LLMManager:
             "role_name": str(safe_metadata.get("role_name") or ""),
             "trace_id": str(safe_metadata.get("trace_id") or ""),
         })
+        if plugin_name == "assistant" and call_type == "chat":
+            from app.assistant.task_supervisor import current_task
+            task = current_task(entry["chat_name"])
+            if task is not None:
+                # Share the existing history write; delivery stays in the task
+                # store and is read only when this history page is requested.
+                entry["assistant_task_id"] = task.id
+                entry["assistant_turn_id"] = str(getattr(task, "turn_id", "") or "")
         if isinstance(usage_capture, list):
             usage_capture.append(
                 {
@@ -2555,9 +2564,66 @@ class LLMManager:
             "chat_name": entry.get("chat_name") or "",
             "role_name": entry.get("role_name") or "",
             "trace_id": entry.get("trace_id") or "",
+            "assistant_task_id": entry.get("assistant_task_id") or "",
+            "assistant_turn_id": entry.get("assistant_turn_id") or "",
             "response_preview": response_text[:240],
             "error_preview": (entry.get("error") or "")[:240],
         }
+
+    @staticmethod
+    def _with_history_delivery_status(entries: List[dict]) -> List[dict]:
+        """Join only the requested page to existing tasks with one indexed read."""
+        candidates = [entry for entry in entries
+                      if entry.get("plugin_name") == "assistant"
+                      and entry.get("call_type") == "chat" and entry.get("success")]
+        for entry in candidates:
+            # Old records have no reliable task association. Do not infer one
+            # from timestamps or imply that generation success means sent.
+            entry["delivery_status"] = "unknown"
+            entry["delivery_error"] = ""
+        task_ids = list(dict.fromkeys(str(entry["assistant_task_id"]) for entry in candidates
+                                    if entry.get("assistant_task_id")))
+        if not task_ids:
+            return entries
+        path = Path(os.getenv("CODEX_RUNTIME_STATE_DB") or "data/codex_runtime.db").resolve()
+        try:
+            db = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=0.1)
+            try:
+                placeholders = ",".join("?" for _ in task_ids)
+                rows = db.execute(
+                    "SELECT id,status,error,updated,turn_id FROM assistant_tasks WHERE id IN ("
+                    + placeholders + ")", task_ids,
+                ).fetchall()
+            finally:
+                db.close()
+        except (sqlite3.Error, OSError):
+            # Telemetry must remain usable if its optional runtime store is
+            # unavailable; do not retry or hold up response delivery.
+            logger.debug("Call-history delivery status unavailable", exc_info=True)
+            return entries
+        states = {row[0]: row[1:] for row in rows}
+        labels = {
+            "completed": "sent", "delivery_blocked": "blocked",
+            "delivery_failed": "failed", "interrupted": "uncertain",
+            "queued": "pending", "running": "pending", "background": "pending",
+            "network_wait": "pending", "delivering": "pending",
+            "failed": "not_sent", "skipped": "not_sent",
+        }
+        for entry in candidates:
+            state = states.get(str(entry.get("assistant_task_id") or ""))
+            if state is not None:
+                recorded_turn = str(entry.get("assistant_turn_id") or "")
+                if not recorded_turn or not state[3]:
+                    continue
+                if recorded_turn != state[3]:
+                    # Format correction can generate twice in one task. The
+                    # task's final delivery must not mark an earlier reply sent.
+                    entry["delivery_status"] = "superseded"
+                    continue
+                entry["delivery_status"] = labels.get(state[0], "unknown")
+                entry["delivery_error"] = str(state[1] or "")[:1000]
+                entry["delivery_updated_at"] = state[2]
+        return entries
 
     def get_call_history_summaries(
         self,
@@ -2583,7 +2649,9 @@ class LLMManager:
             "total": total,
             "limit": limit,
             "offset": offset,
-            "entries": [self._history_entry_summary(entry, index) for index, entry in page],
+            "entries": self._with_history_delivery_status(
+                [self._history_entry_summary(entry, index) for index, entry in page]
+            ),
         }
 
     def get_call_history_entry(
@@ -2598,7 +2666,8 @@ class LLMManager:
             entries = self.call_history.get(key, [])
             if index < 0 or index >= len(entries):
                 return None
-            return dict(entries[index])
+            entry = dict(entries[index])
+        return self._with_history_delivery_status([entry])[0]
 
     def get_call_history_summary(self) -> list:
         """获取调用历史概览：列出所有已记录的 plugin.call_type 及其最新调用时间"""

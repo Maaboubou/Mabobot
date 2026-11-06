@@ -79,6 +79,7 @@ class BackupService:
         "plugins",
     }
     GENERATED_DATA_DIRECTORIES = {
+        "image_generation",
         "daily_reports",
         "weekly_reports",
     }

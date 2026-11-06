@@ -47,6 +47,7 @@ const UI = {
         '/ai/calls': 'usage',
         '/usage/calls': 'usage',
         '/ai/network': 'llm',
+        '/ai/images': 'llm',
         '/operations': 'logs'
     },
 
@@ -467,8 +468,28 @@ const UI = {
         };
         const currentTitle = titleMap[tabId] || '概览';
         document.getElementById('pageTitle').textContent = currentTitle;
+        this.renderCodexUpdateNotice();
         const mobileNavCurrent = document.querySelector('[data-mobile-nav-current]');
         if (mobileNavCurrent) mobileNavCurrent.textContent = `当前页面 · ${currentTitle}`;
+    },
+
+    renderCodexUpdateNotice(upgrade) {
+        if (upgrade && typeof upgrade === 'object') this.codexUpgradeStatus = upgrade;
+        const notice = document.getElementById('codexUpdateNotice');
+        if (!notice) return;
+        const status = this.codexUpgradeStatus || {};
+        const inCodex = document.getElementById('codex')?.classList.contains('d-none') === false;
+        notice.hidden = !inCodex || !(status.update_available || status.operation_running);
+        const label = status.operation_running ? 'Codex 更新中' : 'Codex 更新可用';
+        if (notice.textContent !== label) notice.textContent = label;
+        notice.setAttribute('aria-label', `${label}，打开工具与更新`);
+    },
+
+    openCodexUpdates(event) {
+        if (event && (event.defaultPrevented || event.ctrlKey || event.metaKey
+            || event.shiftKey || event.altKey || event.button > 0)) return;
+        event?.preventDefault();
+        Dashboard.navigate({ tab: 'settings', path: '/system/tools#codex' });
     },
 
     showLoading(elementId) {
@@ -1908,6 +1929,7 @@ const UI = {
                         <div class="chat-policy-field-grid two">
                             <label class="chat-horizontal-field"><span class="chat-field-label"><span>Codex Profile</span><a href="/codex" onclick="event.preventDefault(); UI.switchTab('codex')">管理</a></span><select class="form-select" name="codex_profile_id">${profileOptions}</select></label>
                             <label class="chat-horizontal-field"><span class="chat-field-label"><span>角色</span><a href="/assistant/roles" onclick="event.preventDefault(); App.openAssistantRoleManager()">管理</a></span><select class="form-select" name="role_id"><option value="">继承全局默认角色</option>${roleOptions}</select></label>
+                            <div class="chat-horizontal-field"><span class="chat-field-label">图片生成</span>${ImageGeneration.policyEditor(policy.image_generation, policy.image_channels, 'name="image_generation"')}</div>
 
                         </div>
                     </section>
@@ -2870,7 +2892,7 @@ const UI = {
         const config = settings.chat_config;
         const customized = Object.keys(config.overrides || {}).length > 0;
         return `<form id="chatPluginSettingsForm" class="chat-config-form">${this.renderChatConfigHeader(customized)}<p class="text-danger small mt-2" data-chat-config-error role="alert" hidden></p>${settings.groups.map(group => `
-            <details class="prompt-block" ${group.fields.some(field=>field.level==='basic')?'open':''}><summary>${this.escapeHtml(group.title)}</summary><div class="prompt-block-body">${group.fields.map(field => this.renderCapabilitySettingsField(field)).join('')}</div></details>`).join('')}</form>`;
+            <details class="prompt-block" ${group.fields.some(field=>field.level==='basic')?'open':''}><summary>${this.escapeHtml(group.title)}</summary><div class="prompt-block-body">${group.fields.map(field => this.renderCapabilitySettingsField({...field, image_parent: config.defaults?.image_generation})).join('')}</div></details>`).join('')}</form>`;
     },
 
     renderCapabilitySettingsField(field, {compact = false} = {}) {
@@ -2882,7 +2904,9 @@ const UI = {
         const step = field.step !== null && field.step !== undefined ? ` step="${this.escapeHtml(String(field.step))}"` : (field.type === 'number' ? ' step="any"' : '');
         let control = '';
 
-        if (!field.editable) {
+        if (field.key === 'image_generation') {
+            control = ImageGeneration.policyEditor(value, null, `${common} data-config-control="json"`, field.image_parent || {}, false);
+        } else if (!field.editable) {
             control = `<div class="cap-settings-readonly"><i class="bi bi-braces"></i><span>结构化配置将在专用编辑器中管理，当前已保护原值。</span></div>`;
         } else if (field.control === 'json' || field.type === 'object' || (field.type === 'array' && Array.isArray(value) && value.some(item=>typeof item!=='string'))) {
             control = `<textarea class="form-control font-monospace cap-settings-prompt-editor" id="${id}" rows="8" ${common} data-config-control="json">${this.escapeHtml(JSON.stringify(value, null, 2))}</textarea>`;

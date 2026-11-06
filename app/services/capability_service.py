@@ -100,6 +100,7 @@ GROUP_META = OrderedDict(
         ("trigger", {"title": "触发与范围", "description": "触发关键词、聊天范围与执行条件", "order": 20}),
         ("reply", {"title": "回复行为", "description": "回复方式、角色和输出规则", "order": 30}),
         ("model", {"title": "模型与提示词", "description": "模型选择和任务提示词", "order": 40}),
+        ("image_generation", {"title": "图片生成", "description": "", "order": 42}),
         ("tools", {"title": "工具与理解", "description": "网页搜索、图片理解与其他辅助能力", "order": 45}),
         ("context", {"title": "上下文", "description": "上下文窗口与消息预算", "order": 50}),
         ("schedule", {"title": "计划任务", "description": "定时执行与推送计划", "order": 70}),
@@ -264,6 +265,12 @@ class CapabilityConfigError(ValueError):
 
 
 def _normalize_config_value(key: str, field: Mapping[str, Any], value: Any) -> Any:
+    if key == "image_generation":
+        from app.services.image_generation_config import validate_policy
+        try:
+            return validate_policy(value)
+        except ValueError as exc:
+            raise CapabilityConfigError(str(exc)) from exc
     normalized_type, _ = _normalize_type(field)
 
     if normalized_type == "boolean":

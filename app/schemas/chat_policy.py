@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 from app.schemas.codex_permission import ChatPermissionPatch
+from app.services.image_generation_config import ImagePolicy
 
 
 class ChatSettingsPatch(BaseModel):
@@ -50,6 +51,7 @@ class ChatPolicyPatch(BaseModel):
     expected_version: int = Field(ge=1)
     chat: Optional[ChatSettingsPatch] = None
     assistant: Optional[AssistantSettingsPatch] = None
+    image_generation: Optional[ImagePolicy] = None
     codex: Optional[CodexSettingsPatch] = None
     # Omitted means preserve. An explicit empty list removes every plugin grant.
     plugin_grants: Optional[List[PluginGrantPatch]] = Field(default=None, max_length=200)

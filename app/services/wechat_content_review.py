@@ -191,6 +191,18 @@ class WechatContentReview:
             return text, []
         if suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
             return "", self._image(path.read_bytes(), policy["max_visuals"])
+        if suffix == ".svg":
+            # File-type permission was checked before this point. Review a
+            # rendering of validated static content; deliver the original SVG.
+            import pymupdf
+            from app.services.image_generation_media import inspect_svg
+            data = path.read_bytes()
+            inspect_svg(data)
+            with pymupdf.open(stream=data, filetype="svg") as document:
+                page = document[0]
+                factor = min(2, 1600 / max(page.rect.width, page.rect.height))
+                pixmap = page.get_pixmap(matrix=pymupdf.Matrix(factor, factor), alpha=False)
+                return "", self._image(pixmap.tobytes("png"), policy["max_visuals"])
         if suffix in {".mp4", ".webm", ".mov", ".mp3", ".wav", ".m4a"}:
             return self._media(path, scratch, policy)
         if suffix == ".pdf":

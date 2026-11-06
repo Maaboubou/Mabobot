@@ -60,3 +60,6 @@ Thumbs.db
 
 # Persistent private scheduled-task attachments
 /.scheduled-resources/
+
+# Local conversation attachments
+/.codex-attachments/

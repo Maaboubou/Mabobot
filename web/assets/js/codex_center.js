@@ -57,6 +57,9 @@ const CodexCenter = {
                 Boolean(jobs.upgrade?.operation_running)
             );
         } catch (error) {
+            // Resume quiet polling after transient failures so a daily update
+            // result can still reach an already-open runtime page.
+            LLMManager.scheduleCodexJobsPoll();
             if (!quiet) UI.showError(`加载 Codex 运行中心失败：${error.message}`);
             if (!quiet) {
                 const jobs = document.getElementById('codexJobsList');

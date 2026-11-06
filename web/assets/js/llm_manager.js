@@ -403,12 +403,13 @@ const LLMManager = {
             '/ai/mappings': 'llm-mappings',
             '/ai/usage': 'llm-stats',
             '/ai/calls': 'llm-history',
+            '/ai/images': 'llm-images',
             '/ai/network': 'llm-proxy'
         }[path] || 'llm-models';
     },
 
     async activateSubTab(targetId, options = {}) {
-        const panes = ['llm-history', 'llm-models', 'llm-mappings', 'llm-stats', 'llm-proxy'];
+        const panes = ['llm-images', 'llm-history', 'llm-models', 'llm-mappings', 'llm-stats', 'llm-proxy'];
         if (!panes.includes(targetId)) targetId = 'llm-models';
         panes.forEach(id => {
             const pane = document.getElementById(id);
@@ -432,6 +433,7 @@ const LLMManager = {
                 'llm-mappings': '/ai/mappings',
                 'llm-stats': '/usage',
                 'llm-history': '/usage/calls',
+                'llm-images': '/ai/images',
                 'llm-proxy': '/ai/network'
             };
             const path = paths[targetId];
@@ -445,6 +447,7 @@ const LLMManager = {
     },
 
     async loadSubTab(targetId) {
+        if (targetId === 'llm-images') return ImageGeneration.load();
         if (targetId === 'llm-models') return this.loadModels();
         if (targetId === 'llm-mappings') {
             if (!Object.keys(this.currentModels || {}).length) {
@@ -2920,7 +2923,7 @@ const LLMManager = {
                     html += `<div class="call-history-date">${this.escapeHtml(date)}</div>
                         <div class="call-history-grid call-history-head" aria-hidden="true">
                             <span>时间 / 状态</span><span>模型 / 聊天</span><span>输入 / 输出</span>
-                            <span>缓存命中</span><span>总耗时</span><span>首字</span><span>速度 t/s</span>
+                            <span>缓存命中</span><span>生成耗时</span><span>首字</span><span>速度 t/s</span>
                         </div>`;
                     previousDate = date;
                 }
@@ -2965,6 +2968,16 @@ const LLMManager = {
             ? `${entry.response_time.toFixed(1)}s` : '—';
         const speed = timing.speed === '—' ? '—' : `${timing.estimated ? '≈' : ''}${timing.speed.replace(' t/s', '')}`;
         const estimated = usage.estimated || entry.estimated;
+        const generationStatus = entry.success ? '生成成功' : '生成失败';
+        const deliveryStates = {
+            sent: ['已发送', 'text-success'], pending: ['待发送', 'text-muted'],
+            blocked: ['发送被拦截', 'text-danger'], failed: ['发送未完成', 'text-danger'],
+            uncertain: ['发送待核对', 'text-warning'], not_sent: ['未发送', 'text-danger'],
+            superseded: ['已由后续生成替代', 'text-muted'],
+            unknown: ['交付未记录', 'text-muted'],
+        };
+        const delivery = entry.delivery_status
+            ? deliveryStates[entry.delivery_status] || deliveryStates.unknown : null;
         const field = (label, value) => `<div><dt>${escape(label)}</dt><dd>${escape(value)}</dd></div>`;
         const metric = (label, value, extra = '') => `<span class="call-history-metric"><span class="call-history-mobile-label">${label}</span><span>${value}</span>${extra}</span>`;
         const panels = [
@@ -2973,14 +2986,15 @@ const LLMManager = {
             ['resp', `响应${Number(entry.attachment_count) > 0 ? ` · ${Number(entry.attachment_count)} 附件` : ''}`],
         ];
         return `<details class="call-history-entry" data-history-row="${index}">
-            <summary class="call-history-grid" aria-label="${escape(time)} ${escape(model)} ${escape(chat)}，${entry.success ? '成功' : '失败'}，展开详情">
-                <span class="call-history-time">${escape(time)}<span class="call-history-status ${entry.success ? 'text-success' : 'text-danger'}"><i class="bi ${entry.success ? 'bi-check-circle' : 'bi-x-circle'}" aria-hidden="true"></i> ${entry.success ? '成功' : '失败'}</span></span>
+            <summary class="call-history-grid" aria-label="${escape(time)} ${escape(model)} ${escape(chat)}，${generationStatus}${delivery ? '，' + delivery[0] : ''}，展开详情">
+                <span class="call-history-time" title="生成结束时间">${escape(time)}<span class="call-history-status ${entry.success ? 'text-success' : 'text-danger'}"><i class="bi ${entry.success ? 'bi-check-circle' : 'bi-x-circle'}" aria-hidden="true"></i> ${generationStatus}</span>${delivery ? `<span class="call-history-status ${delivery[1]}" title="${escape(entry.delivery_error || delivery[0])}">${delivery[0]}</span>` : ''}</span>
                 <span class="call-history-identity"><strong title="${escape(fullModel)}">${escape(model)}</strong><span class="call-history-chat">${escape(chat)}</span></span>
                 ${metric('输入 / 输出', escape(prompt), `<span class="call-history-secondary">/ ${escape(completion)}${estimated ? ' · 估算' : ''}</span>`)}
-                ${metric('缓存命中', cacheRate)}${metric('总耗时', duration)}${metric('首字', timing.first)}
+                ${metric('缓存命中', cacheRate)}${metric('生成耗时', duration)}${metric('首字', timing.first)}
                 ${metric('速度 t/s', speed, `<span class="call-history-secondary">${timing.estimated ? '估算' : speed === '—' ? '未提供' : ''}</span>`)}
             </summary>
             <div class="call-history-expanded">
+                ${entry.delivery_error ? `<p class="call-history-delivery-error text-danger">交付原因：${escape(entry.delivery_error)}</p>` : ''}
                 <div class="call-history-tabs" aria-label="调用详情">
                     ${panels.map(([kind, label], i) => `<button type="button" aria-pressed="${i === 0}" aria-controls="history-${index}-${kind}" data-history-tab="${kind}" onclick="LLMManager.toggleCallHistoryBody(${index}, '${kind}')">${label}</button>`).join('')}
                 </div>
@@ -2990,7 +3004,7 @@ const LLMManager = {
                     <div class="call-history-provider">服务 / 模型：${escape(fullModel)}</div>
                 </div>
                 <div id="history-${index}-performance" data-history-panel="performance" class="d-none">
-                    <dl class="call-history-fields">${field('总耗时', duration)}${field('首字耗时', timing.first)}${field('生成速度', speed === '—' ? '—' : speed + ' t/s')}</dl>
+                    <dl class="call-history-fields">${field('生成耗时', duration)}${field('首字耗时', timing.first)}${field('生成速度', speed === '—' ? '—' : speed + ' t/s')}</dl>
                     <p class="call-history-explanation">首字：从请求开始到首个可见文本块。${escape(timing.explanation)}</p>
                 </div>
                 <div id="history-${index}-req" class="history-req-body d-none" data-history-panel="req" data-history-index="${index}" data-history-kind="req">
@@ -3281,6 +3295,7 @@ const LLMManager = {
     },
 
     renderCodexJobs(active, recent, stats, sessions = [], sessionStats = {}, runtime = {}, upgrade = {}, fileTools = {}) {
+        UI.renderCodexUpdateNotice(upgrade);
         const container = document.getElementById('codexJobsList');
         if (!container) return;
         this.codexExpandedSessions ||= new Set();

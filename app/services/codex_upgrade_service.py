@@ -13,9 +13,9 @@ import threading
 import time
 import uuid
 from contextlib import closing
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from app.services.agent_runtime import CodexAgentRuntime, get_agent_runtime
 from app.services.file_tools_runtime import get_file_tools_runtime
@@ -27,10 +27,25 @@ logger = logging.getLogger(__name__)
 _VERSION_PATTERN = re.compile(r"(?<!\d)(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?!\d)")
 _STABLE_VERSION_PATTERN = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")
 _VERSION_CHECK_FORMAT = 1
+_CHECK_LEASE_SECONDS = 180
+_BEIJING = timezone(timedelta(hours=8))
 
 
 def _now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _check_time(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp, timezone.utc).isoformat(timespec="seconds")
+
+
+def _daily_check_slot(timestamp: float) -> float:
+    """Most recent 08:00 in Beijing, independent of the server's timezone."""
+    now = datetime.fromtimestamp(timestamp, _BEIJING)
+    slot = now.replace(hour=8, minute=0, second=0, microsecond=0)
+    if slot > now:
+        slot -= timedelta(days=1)
+    return slot.timestamp()
 
 
 def _version_number(value: Any) -> str:
@@ -78,12 +93,14 @@ class CodexUpgradeService:
         *,
         runtime: Optional[CodexAgentRuntime] = None,
         database_path: Optional[Path] = None,
+        clock: Optional[Callable[[], float]] = None,
     ) -> None:
         self.runtime = runtime or get_agent_runtime()
         configured = database_path or os.getenv("CODEX_RUNTIME_STATE_DB") or "data/codex_runtime.db"
         self.database_path = Path(configured)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._clock = clock or time.time
         self._worker: Optional[threading.Thread] = None
         self._operation: Optional[Dict[str, Any]] = None
         self._available_version = ""
@@ -122,6 +139,24 @@ class CodexUpgradeService:
                     updated_at REAL NOT NULL
                 )
                 """
+            )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS codex_update_checks (
+                    state_key TEXT PRIMARY KEY,
+                    state_json TEXT NOT NULL,
+                    lease_owner TEXT NOT NULL DEFAULT '',
+                    lease_until REAL NOT NULL DEFAULT 0
+                )"""
+            )
+            initial = {
+                "check_state": "idle", "check_error": None,
+                "last_attempt_at": None, "last_error_at": None,
+                "next_check_at": _check_time(_daily_check_slot(self._clock())),
+                "last_scheduled_slot": 0,
+            }
+            connection.execute(
+                "INSERT OR IGNORE INTO codex_update_checks (state_key, state_json) VALUES ('daily', ?)",
+                (json.dumps(initial),),
             )
 
     def _load_state(self) -> None:
@@ -321,21 +356,153 @@ class CodexUpgradeService:
             self._install_cache = None
             self._install_cache_at = 0.0
 
-    def check_latest(self) -> Dict[str, Any]:
-        installation = self.detect_installation(force=True)
-        result = self._run(["npm", "view", "@openai/codex", "version", "--json"], timeout=45)
-        available = _npm_stable_version(result.stdout or "")
+    def _read_check_state(self) -> Dict[str, Any]:
+        with closing(self._connect()) as connection:
+            row = connection.execute("SELECT * FROM codex_update_checks WHERE state_key = 'daily'").fetchone()
+        return {**json.loads(row["state_json"]), "lease_owner": row["lease_owner"], "lease_until": row["lease_until"]}
+
+    def _claim_check(self, *, scheduled: bool) -> tuple[str, Dict[str, Any]]:
+        now = self._clock()
+        slot = _daily_check_slot(now)
         with self._lock:
-            self._available_version = available
-            self._checked_at = _now_iso()
-            self._persist_state()
-        current = installation.get("version_number") or ""
+            with closing(self._connect()) as connection, connection:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute("SELECT * FROM codex_update_checks WHERE state_key = 'daily'").fetchone()
+                state = json.loads(row["state_json"])
+                if scheduled and float(state.get("last_scheduled_slot") or 0) >= slot:
+                    return "skip", state
+                if row["lease_owner"] and row["lease_until"] > now:
+                    return ("skip" if scheduled else "join"), {**state, "lease_owner": row["lease_owner"]}
+                owner = uuid.uuid4().hex
+                state.update(
+                    check_state="checking", check_error=None,
+                    last_attempt_at=_check_time(now),
+                    next_check_at=_check_time(slot + 86400),
+                )
+                connection.execute(
+                    "UPDATE codex_update_checks SET state_json = ?, lease_owner = ?, lease_until = ? WHERE state_key = 'daily'",
+                    (json.dumps(state), owner, now + _CHECK_LEASE_SECONDS),
+                )
+        return "claimed", {**state, "lease_owner": owner, "slot": slot}
+
+    def _finish_check(self, owner: str, slot: float, *, result=None, error: Optional[str] = None) -> None:
+        with self._lock, closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT * FROM codex_update_checks WHERE state_key = 'daily'").fetchone()
+            if row["lease_owner"] != owner:
+                raise CodexUpgradeError("版本检查已超时，请重试")
+            state = json.loads(row["state_json"])
+            # A first-launch/manual check already in flight at 08:00 serves
+            # that daily slot too; do not immediately repeat the same query.
+            slot = max(slot, _daily_check_slot(self._clock()))
+            state.update(
+                check_state="failed" if error else "succeeded",
+                check_error=error,
+                last_error_at=_check_time(self._clock()) if error else None,
+                last_scheduled_slot=slot,
+                next_check_at=_check_time(slot + 86400),
+                result=result,
+            )
+            if result is not None:
+                payload = {
+                    "version_check_format": _VERSION_CHECK_FORMAT,
+                    "available_version": result["available_version"],
+                    "checked_at": result["checked_at"],
+                }
+                connection.execute(
+                    """INSERT INTO codex_upgrade_state (state_key, state_json, updated_at)
+                    VALUES ('current', ?, ?) ON CONFLICT(state_key) DO UPDATE SET
+                    state_json = excluded.state_json, updated_at = excluded.updated_at""",
+                    (json.dumps(payload), self._clock()),
+                )
+                self._available_version = result["available_version"]
+                self._checked_at = result["checked_at"]
+            connection.execute(
+                "UPDATE codex_update_checks SET state_json = ?, lease_owner = '', lease_until = 0 WHERE state_key = 'daily'",
+                (json.dumps(state),),
+            )
+
+    def _join_check(self, owner: str) -> Dict[str, Any]:
+        deadline = time.monotonic() + _CHECK_LEASE_SECONDS
+        while time.monotonic() < deadline:
+            state = self._read_check_state()
+            if state["lease_owner"] != owner:
+                if state.get("check_state") == "failed":
+                    raise CodexUpgradeError(state.get("check_error") or "版本检查失败")
+                result = state.get("result")
+                if result:
+                    with self._lock:
+                        self._available_version = result["available_version"]
+                        self._checked_at = result["checked_at"]
+                    return dict(result)
+                raise CodexUpgradeError("版本检查已中断，请重试")
+            if state["lease_until"] <= self._clock():
+                break
+            time.sleep(0.05)
+        raise CodexUpgradeError("版本检查已超时，请重试")
+
+    def check_latest(self, *, allow_during_update: bool = False, scheduled: bool = False) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            # The updater itself is allowed to check; timer/manual checks must
+            # not race with an installation or its compatibility validation.
+            running = bool(self._worker and self._worker.is_alive())
+            if running and not allow_during_update:
+                if scheduled:
+                    return None
+                raise CodexUpgradeError("Codex 更新正在进行，请稍后检查版本")
+            action, state = self._claim_check(scheduled=scheduled)
+        if action == "skip":
+            return None
+        if action == "join":
+            return self._join_check(state["lease_owner"])
+        try:
+            installation = self.detect_installation(force=True)
+            response = self._run(["npm", "view", "@openai/codex", "version", "--json"], timeout=45)
+            available = _npm_stable_version(response.stdout or "")
+            current = installation.get("version_number") or ""
+            result = {
+                "installed_version": current,
+                "available_version": available,
+                "update_available": bool(current and _version_key(available) > _version_key(current)),
+                "checked_at": _check_time(self._clock()),
+                "installation": installation,
+            }
+        except Exception as exc:
+            error = str(exc)[:1500] or type(exc).__name__
+            self._finish_check(state["lease_owner"], state["slot"], error=error)
+            raise CodexUpgradeError(error) from exc
+        self._finish_check(state["lease_owner"], state["slot"], result=result)
+        return result
+
+    def check_metadata(self) -> Dict[str, Any]:
+        state = self._read_check_state()
+        if state.get("check_state") == "checking" and state["lease_until"] <= self._clock():
+            slot = _daily_check_slot(self._clock())
+            next_check = slot + 86400 if float(state.get("last_scheduled_slot") or 0) >= slot else self._clock()
+            state.update(
+                check_state="failed",
+                check_error="上次版本检查已超时或中断，可重试",
+                last_error_at=_check_time(state["lease_until"]),
+                next_check_at=_check_time(next_check),
+            )
+        # Read the successful cache too so another web worker's check becomes
+        # visible without each worker making its own upstream request.
+        with closing(self._connect()) as connection:
+            row = connection.execute("SELECT state_json FROM codex_upgrade_state WHERE state_key = 'current'").fetchone()
+        if row:
+            cached = json.loads(row["state_json"])
+            available = cached.get("available_version")
+            if cached.get("version_check_format") == _VERSION_CHECK_FORMAT and isinstance(available, str) and _STABLE_VERSION_PATTERN.fullmatch(available):
+                with self._lock:
+                    self._available_version = available
+                    self._checked_at = str(cached.get("checked_at") or "")
         return {
-            "installed_version": current,
-            "available_version": available,
-            "update_available": bool(current and _version_key(available) > _version_key(current)),
-            "checked_at": self._checked_at,
-            "installation": installation,
+            key: state.get(key)
+            for key in ("check_state", "check_error", "last_attempt_at", "last_error_at", "next_check_at")
+        } | {
+            "last_success_at": self._checked_at or None,
+            "check_schedule_timezone": "Asia/Shanghai",
+            "check_schedule_time": "08:00",
         }
 
     def _set_stage(self, stage: str, progress: int, message: str) -> None:
@@ -411,7 +578,7 @@ class CodexUpgradeService:
                 target_version = previous_version
             else:
                 self._set_stage("check", 15, "检查最新稳定版本")
-                latest = self.check_latest()
+                latest = self.check_latest(allow_during_update=True)
                 target_version = str(latest["available_version"])
                 operation["target_version"] = target_version
                 if not latest.get("update_available"):
@@ -571,6 +738,7 @@ class CodexUpgradeService:
         return previous
 
     def status(self) -> Dict[str, Any]:
+        check = self.check_metadata()
         installation = self.detect_installation()
         current = str(installation.get("version_number") or "")
         available = self._available_version
@@ -579,6 +747,7 @@ class CodexUpgradeService:
             running = bool(self._worker and self._worker.is_alive())
         rollback_version = self._find_rollback_version(current)
         return {
+            **check,
             "installation": installation,
             "installed_version": current,
             "available_version": available,

@@ -39,6 +39,27 @@ The console is organized around operator tasks, not backend modules:
 Plugin lifecycle controls and raw internal identifiers belong to an explicit
 developer mode. They are not part of the default operator workflow.
 
+## Codex update checks
+
+The Web service checks only Codex for a new stable version every day at 08:00
+in `Asia/Shanghai`. The check runs without an open browser and never installs
+an update. A missed schedule is checked once after startup; the latest slot
+is persisted so restarting does not repeat a completed check. Failures retain
+the last successful version result and expose an explicit error for retry.
+
+The Codex runtime page reads this cached result through its existing jobs
+poll. A small theme-colored, dashed-underlined link beside the page title
+opens `/system/tools#codex`; opening the link does not dismiss the update.
+It remains available until a successful installation and validation, and
+shows the update-in-progress state while the existing upgrade task runs.
+
+Tools and updates shows every component in a compact list. Version state is
+separate from runtime health: an unchecked version is not "up to date", and
+FFmpeg / FFprobe and Playwright Chromium show environment health rather than
+an upstream version check. Codex is first; version and the main action remain
+visible, while installation paths, recovery actions and other diagnostics
+live in expandable details. All displayed Codex check times use Beijing time.
+
 ## Configuration model
 
 Configuration has three visible layers:
@@ -107,6 +128,7 @@ history. The implemented routes are:
 /automations
 /ai
 /ai/models
+/ai/images
 /ai/mappings
 /ai/usage
 /ai/sessions

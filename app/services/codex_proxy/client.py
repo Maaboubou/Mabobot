@@ -358,6 +358,7 @@ _TEXT_DATA_ATTACHMENT_SUFFIXES = {
     ".yaml",
     ".yml",
     ".xml",
+    ".svg",
     ".html",
     ".htm",
     ".log",
@@ -378,6 +379,7 @@ _ATTACHMENT_MIME_TYPES = {
     ".jpeg": "image/jpeg",
     ".webp": "image/webp",
     ".gif": "image/gif",
+    ".svg": "image/svg+xml",
     ".bmp": "image/bmp",
     ".tif": "image/tiff",
     ".tiff": "image/tiff",
@@ -1070,6 +1072,15 @@ def _collect_artifact_attachments(output_dir: Path) -> List[Dict[str, Any]]:
         if suffix in _IMAGE_ATTACHMENT_SUFFIXES and not _is_valid_image_file(path):
             logger.warning("Skipping structurally invalid image artifact: %s", path)
             continue
+        if suffix == ".svg":
+            from app.services.image_generation_media import MAX_MEDIA_BYTES, inspect_svg
+            try:
+                if stat.st_size > MAX_MEDIA_BYTES:
+                    continue
+                inspect_svg(path.read_bytes())
+            except (OSError, ValueError):
+                logger.warning("Skipping invalid or non-static SVG artifact: %s", path)
+                continue
         if sha256 in seen_hashes:
             continue
         seen_hashes.add(sha256)

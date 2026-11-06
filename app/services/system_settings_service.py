@@ -367,7 +367,7 @@ class SystemSettingsConsoleService:
             if setting.category == "model_credentials" or key in MODEL_MANAGED_KEYS or is_model_credential_setting(key):
                 hidden_model_keys.append(key)
                 continue
-            if "MIGRATION" in key.upper() or key in NON_UI_INTERNAL_KEYS:
+            if "MIGRATION" in key.upper() or key in NON_UI_INTERNAL_KEYS or key.startswith("IMAGE_GENERATION_"):
                 continue
             spec = {
                 "group": "developer",

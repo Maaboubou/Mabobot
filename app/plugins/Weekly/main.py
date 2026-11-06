@@ -77,6 +77,10 @@ def _cfg_str(key: str, default: str) -> str:
     return str(value if value is not None else default).strip()
 
 
+def _editor_name() -> str:
+    return _cfg_str("WEEKLY_EDITOR_NAME", "微信助手") or "微信助手"
+
+
 def _cfg_int(key: str, default: int, minimum: int | None = None, maximum: int | None = None) -> int:
     try:
         value = int(get_config(key, default, plugin_name="Weekly"))
@@ -489,9 +493,10 @@ def _build_plan_prompt(
     logs_text: str,
 ) -> str:
     issue_label = f"第{issue}期"
+    editor_name = _editor_name()
     now_bj = datetime.now(pytz.timezone("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S %Z")
     return f"""
-你是刘局，也是一本群聊杂志的主编。现在要为群聊「{chat_name}」主编一期只属于这 7 天的群聊杂志。
+你是{editor_name}，也是一本群聊杂志的主编。现在要为群聊「{chat_name}」主编一期只属于这 7 天的群聊杂志。
 
 它不是工作周报、会议纪要、数据简报，也不是把聊天记录换一种顺序复述。你要从真实聊天里找到本周独有的编辑主题、戏剧线索、人物关系、意外转折和余味，把零散聊天编成一期让群友愿意翻完、看完会笑、还能想起当时情景的杂志。
 最终会生成固定 {page_count} 张横版 4:3 图片，然后每张作为 PDF 的一页。
@@ -534,8 +539,8 @@ def _build_plan_prompt(
 7. 如果不是逐字原话，就必须写成编辑口吻，不要伪装成聊天截图。
 8. 每页都要适合单独生成一张 4:3 横版图片。
 9. 周报期数「{issue_label}」只允许出现在首页。
-10. 「编辑：刘局」只允许出现在首页。
-11. 第 2 页到第 {page_count} 页不要出现期数、不要出现“编辑：刘局”。
+10. 「编辑：{editor_name}」只允许出现在首页。
+11. 第 2 页到第 {page_count} 页不要出现期数、不要出现“编辑：{editor_name}”。
 12. 图片模型中文能力有限，所以每页 visible_text 要短而准：每页核心可见中文尽量控制在 60-140 字，不要塞满小字。
 13. 不要让 image_prompt 像“本地画图脚本说明”或网页排版模板；它应该是面向真实图像模型的开放式创意 brief，允许模型自由选择画面语言。
 14. image_prompt 里不要要求把“Prompt:”“Title:”“Guard:”“可见文字:”等任务标签画到图上；这些标签只是给模型理解任务，不是画面内容。
@@ -573,7 +578,7 @@ def _build_plan_prompt(
       "visible_text": ["本页可见文案"],
       "source_basis": ["支撑本页内容的真实聊天事实或逐字短引，不会直接画到图片上"],
       "layout_intent": "本页排版设计思路",
-      "image_prompt": "用于生成这一页图片的完整提示词。必须包含 title、非空 subtitle、visible_text 中全部需要画出的文字，以及本页视觉意图、构图方向和 4:3 横版要求。source_basis 只用于事实校验，不得画出。保持开放式、轻松、有杂志感，不要固化成模板或正式汇报；首页必须包含 {issue_label} 和 编辑：刘局；其他页不得包含期数和编辑署名；不要把提示词标签/任务说明画进图片。"
+      "image_prompt": "用于生成这一页图片的完整提示词。必须包含 title、非空 subtitle、visible_text 中全部需要画出的文字，以及本页视觉意图、构图方向和 4:3 横版要求。source_basis 只用于事实校验，不得画出。保持开放式、轻松、有杂志感，不要固化成模板或正式汇报；首页必须包含 {issue_label} 和 编辑：{editor_name}；其他页不得包含期数和编辑署名；不要把提示词标签/任务说明画进图片。"
     }}
   ]
 }}
@@ -619,6 +624,7 @@ def _codex_chat(
                 f"恰好生成 {image_page_count} 张最终图片；在最终交付协议的 _mabobot_files 中"
                 "按页序列出各次成功工具调用返回的原始 savedPath。"
                 "不要把图片复制到项目目录，也不要以子代理回复中的路径作为附件。"
+                "本次只使用内置生图；失败即结束，不要调用任何生图 API 或再次生成已完成页面。"
             ),
         })
     messages.append({"role": "user", "content": prompt})
@@ -627,6 +633,8 @@ def _codex_chat(
             "model": model,
             "timeout": timeout,
             "messages": messages,
+            "mabobot_image_plugin": "Weekly",
+            "mabobot_native_image_generation": image_page_count is not None,
             "extra_body": {
                 "reasoning_effort": "high",
                 "web_search": True,
@@ -683,6 +691,8 @@ def _create_weekly_plan(
 
 def _normalize_plan_pages(plan: dict[str, Any], page_count: int) -> None:
     issue_label = str(plan.get("issue_label") or "")
+    editor_label = f"编辑：{_editor_name()}"
+    ascii_editor_label = editor_label.replace("：", ":", 1)
     for idx, page in enumerate(plan.get("pages") or [], start=1):
         page["page_no"] = idx
         title = str(page.get("title") or f"第{idx}页")
@@ -695,24 +705,24 @@ def _normalize_plan_pages(plan: dict[str, Any], page_count: int) -> None:
             text = str(item or "").strip()
             if not text:
                 continue
-            if idx != 1 and ("编辑：刘局" in text or "编辑:刘局" in text or issue_label in text):
+            if idx != 1 and (editor_label in text or ascii_editor_label in text or issue_label in text):
                 continue
             clean_visible.append(text)
         if idx == 1:
             if issue_label and not any(issue_label in item for item in clean_visible):
                 clean_visible.insert(0, issue_label)
-            if not any("编辑：刘局" in item or "编辑:刘局" in item for item in clean_visible):
-                clean_visible.append("编辑：刘局")
+            if not any(editor_label in item or ascii_editor_label in item for item in clean_visible):
+                clean_visible.append(editor_label)
         page["visible_text"] = clean_visible
 
         prompt = str(page.get("image_prompt") or "")
         if idx != 1:
-            prompt = prompt.replace("编辑：刘局", "").replace("编辑:刘局", "")
+            prompt = prompt.replace(editor_label, "").replace(ascii_editor_label, "")
             if issue_label:
                 prompt = prompt.replace(issue_label, "")
-            prompt += "\n本页不是首页，不要显示周报期数，不要显示“编辑：刘局”。"
+            prompt += f"\n本页不是首页，不要显示周报期数，不要显示“{editor_label}”。"
         else:
-            prompt += f"\n首页必须清晰显示：{issue_label}；编辑：刘局。"
+            prompt += f"\n首页必须清晰显示：{issue_label}；{editor_label}。"
         page["image_prompt"] = prompt.strip()
 
 
@@ -735,11 +745,12 @@ def _copy_image_attachment(src: Path, dst: Path) -> Path:
 
 def _build_batch_image_prompt(plan: dict[str, Any]) -> str:
     pages = sorted(plan["pages"], key=lambda item: int(item.get("page_no") or 0))
+    editor_name = _editor_name()
     now_bj = datetime.now(pytz.timezone("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S %Z")
     page_blocks = []
     for page in pages:
         page_no = int(page.get("page_no") or 0)
-        guard = "首页必须显示周报期数和“编辑：刘局”。" if page_no == 1 else "本页不是首页，不要显示周报期数，不要显示“编辑：刘局”。"
+        guard = f"首页必须显示周报期数和“编辑：{editor_name}”。" if page_no == 1 else f"本页不是首页，不要显示周报期数，不要显示“编辑：{editor_name}”。"
         page_blocks.append(
             f"""
 PAGE {page_no:02d}
@@ -751,20 +762,20 @@ Prompt:
 """.strip()
         )
     return f"""
-你是刘局，现在要把一期根据本周聊天动态选题的群聊杂志生成成图片。
+你是{editor_name}，现在要把一期根据本周聊天动态选题的群聊杂志生成成图片。
 
 当前北京时间：{now_bj}。涉及年份、日期或“本周”的画面文字必须以当前时间和计划中的统计周期为准，不要生成 2025 或其他旧年份。
 
 请生成 exactly {len(pages)} 张横版 4:3 周报页面图片，并把最终图片作为本次调用的文件附件输出。
 
 执行方式：
-1. 必须由当前主 Codex 线程亲自调用原生图片生成工具，严格按 PAGE 01 到 PAGE {len(pages):02d} 的顺序逐页生成。不要使用子代理；子代理的生图结果无法通过本次请求的附件校验。
+1. 必须由当前主 Codex 线程亲自调用原生图片生成工具，严格按下面列出的 PAGE 页码顺序逐页生成，只生成列出的页面。不要使用子代理；子代理的生图结果无法通过本次请求的附件校验。
 2. 每页只保留一张最终图片。若需重做某页，只交付重做后的版本；最终交付列表必须严格按页序列出 {len(pages)} 个原生生图工具返回的 savedPath。
 3. 每张图必须是真实图像模型生成的高质量 raster image 文件；不要用 PIL/Canvas/SVG/HTML 截图等本地工具临时拼字排版来冒充成品。如果当前 Codex 环境没有可用的真实图片生成能力，必须明确失败，不要交付占位图或脚本生成图。
 4. 严禁复制、重命名、复用项目目录、历史 run、tmp 或 mabowx文件下载中的任何既有图片、微信截图、聊天截图或上次失败产物。
 5. PAGE 与交付列表按顺序一一对应，周报插件会将图片保存为这些文件名：{", ".join(f"page_{int(page.get('page_no') or 0):02d}.png" for page in pages)}。不要自行复制或重命名原生图片。
 6. 不要额外生成封面、索引、说明图、草稿图或中间图。
-7. 如果某一页生成失败，请在本次调用内重试该页；最终回复前必须确认每页都有一个成功工具调用返回的 savedPath。
+7. 如果某一页内置生图失败，直接结束并报告已完成页面，不要重试、切回 API 或重新生成已完成页面。
 8. 每页保持横版 4:3；中文要尽量清晰，字号大、对比高、不要密密麻麻的小字。
 9. 不要添加二维码、水印、无关话题。
 10. 只能使用下面每页 prompt 指定的内容，不要自行补充不存在的聊天记录。
@@ -823,11 +834,15 @@ def _map_batch_attachments_to_pages(image_attachments: list[dict[str, Any]], pag
     return results
 
 
-def _generate_pages_with_codex(plan: dict[str, Any], run_dir: Path) -> list[Path]:
+def _generate_pages_with_codex(plan: dict[str, Any], run_dir: Path, *, timeout=None, cancelled=None) -> list[Path]:
+    if cancelled and cancelled():
+        raise WeeklyGenerationError("周报图片生成已取消，已完成页面已保留")
     pages = sorted(plan["pages"], key=lambda item: int(item.get("page_no") or 0))
     prompt = _build_batch_image_prompt(plan)
     (run_dir / "batch_image_prompt.txt").write_text(prompt, encoding="utf-8")
-    timeout = _cfg_int("WEEKLY_IMAGE_BATCH_TIMEOUT_SECONDS", 3600, minimum=300)
+    timeout = timeout if timeout is not None else _cfg_int("WEEKLY_IMAGE_BATCH_TIMEOUT_SECONDS", 3600, minimum=300)
+    if timeout < 1:
+        raise WeeklyGenerationError("周报图片生成超时，已完成页面已保留")
     logger.info(
         "🗞️ Weekly: 启动 Codex 主线程逐页生图 pages=%s prompt_chars=%s timeout=%ss",
         len(pages),
@@ -835,6 +850,8 @@ def _generate_pages_with_codex(plan: dict[str, Any], run_dir: Path) -> list[Path
         timeout,
     )
     response = _codex_chat(prompt, timeout=timeout, image_page_count=len(pages))
+    if cancelled and cancelled():
+        raise WeeklyGenerationError("周报图片生成已取消，已完成页面已保留")
     text = response["choices"][0]["message"].get("content") or ""
     (run_dir / "batch_image_response.txt").write_text(text, encoding="utf-8")
     image_attachments = _extract_image_attachments(response)
@@ -868,10 +885,58 @@ def _validate_generated_pages(image_paths: list[Path], expected_count: int) -> N
         raise WeeklyGenerationError(f"图片存在完全重复文件，拒绝生成 PDF: duplicates={duplicate_count}")
 
 
-def _generate_pages(plan: dict[str, Any], run_dir: Path) -> list[Path]:
+def _generate_pages(plan: dict[str, Any], run_dir: Path, *, cancelled=None) -> list[Path]:
     pages = sorted(plan["pages"], key=lambda item: int(item.get("page_no") or 0))
+    from app.services.image_generation_config import resolve_policy
+    policy = resolve_policy(plugin_name="Weekly")
+    if policy["mode"] == "api":
+        from app.services.image_generation_service import (
+            ImageRequest, ImageGenerationError, generate_images, native_fallback_count,
+        )
+        from app.services.image_generation_history import ImageReceipt
+        deadline = time.monotonic() + _cfg_int("WEEKLY_IMAGE_BATCH_TIMEOUT_SECONDS", 3600, minimum=300)
+        image_paths = []
+        attempts = []
+        for index, page in enumerate(pages):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise WeeklyGenerationError("周报图片生成超时，已完成页面已保留")
+            prompt = (f"{plan.get('overall_design_intent') or ''}\n"
+                      f"{page.get('image_prompt') or ''}\n生成一张完整的 4:3 横版周报页面。")
+            receipt = ImageReceipt("Weekly")
+            request = ImageRequest(prompt, count=1, parameters={"output_format": "png"},
+                                   timeout=remaining, cancelled=cancelled)
+            def record_attempt(attempt):
+                receipt.progress(attempt)
+                attempts.append({"page": page["page_no"], **attempt})
+                (run_dir / "image_api_attempts.json").write_text(
+                    json.dumps(attempts, ensure_ascii=False, indent=2), encoding="utf-8")
+            try:
+                # PDF pages need still raster images even if this shared channel
+                # defaults to GIF or SVG for chat requests.
+                result = generate_images(policy, request,
+                                         run_dir / "api_images", progress=record_attempt)
+                receipt.finish("completed")
+            except ImageGenerationError as exc:
+                receipt.finish("partial" if exc.paths else "failed")
+                remaining = deadline - time.monotonic()
+                if (not native_fallback_count(policy, request, exc) or remaining < 1
+                        or (cancelled and cancelled())):
+                    raise
+                pending_plan = {**plan, "pages": pages[index:]}
+                logger.info("🗞️ Weekly: API 渠道已耗尽，内置补齐剩余 %d 页", len(pending_plan["pages"]))
+                image_paths.extend(_generate_pages_with_codex(
+                    pending_plan, run_dir, timeout=remaining, cancelled=cancelled))
+                break
+            except Exception:
+                receipt.finish("failed")
+                raise
+            path = _copy_image_attachment(result.paths[0], run_dir / f"page_{int(page['page_no']):02d}.png")
+            image_paths.append(path)
+        _validate_generated_pages(image_paths, len(pages))
+        return image_paths
     logger.info("🗞️ Weekly: 使用 Codex 主线程逐页生图模式")
-    image_paths = _generate_pages_with_codex(plan, run_dir)
+    image_paths = _generate_pages_with_codex(plan, run_dir, **({"cancelled": cancelled} if cancelled else {}))
     _validate_generated_pages(image_paths, len(pages))
     return image_paths
 
@@ -939,7 +1004,7 @@ def _make_pdf_under_size(image_paths: list[Path], pdf_path: Path) -> Path:
     raise WeeklyGenerationError(f"PDF 体积仍超过限制: {last_size_mb:.2f}MB > {max_mb}MB")
 
 
-def _generate_weekly_pdf_for_chat(chat_name: str, active_plugin: WeeklyPlugin | None = None) -> tuple[Path, int]:
+def _generate_weekly_pdf_for_chat(chat_name: str, active_plugin: WeeklyPlugin | None = None, *, cancelled=None) -> tuple[Path, int]:
     active_plugin = active_plugin or plugin
     if active_plugin is None:
         raise WeeklyGenerationError("Weekly plugin 尚未初始化")
@@ -977,7 +1042,7 @@ def _generate_weekly_pdf_for_chat(chat_name: str, active_plugin: WeeklyPlugin | 
         stage = "plan"
         plan = _create_weekly_plan(chat_name, issue, page_count, records, meta, run_dir)
         stage = "image_batch"
-        image_paths = _generate_pages(plan, run_dir)
+        image_paths = _generate_pages(plan, run_dir, **({"cancelled": cancelled} if cancelled else {}))
 
         stage = "pdf"
         pdf_name = f"群聊周报_{issue_label}.pdf"
@@ -1009,7 +1074,7 @@ def _send_file(wx: Any, chat_name: str, file_path: Path) -> bool:
 
 
 def _send_text(wx: Any, chat_name: str, message: str) -> bool:
-    if wx is None:
+    if wx is None or not chat_name.strip():
         return False
     if hasattr(wx, "send_message"):
         try:
@@ -1027,7 +1092,7 @@ def _failure_stage_label(stage: str) -> str:
         "prepare": "准备任务",
         "extract_logs": "读取聊天记录",
         "plan": "生成页计划",
-        "image_batch": "Codex 主线程逐页生图",
+        "image_batch": "逐页生图",
         "pdf": "生成 PDF",
         "send": "发送 PDF",
         "admin_retry": "手动重试",
@@ -1036,13 +1101,15 @@ def _failure_stage_label(stage: str) -> str:
 
 
 def _admin_chat_name() -> str:
-    return _cfg_str("WEEKLY_ADMIN_CHAT", "Gerry") or "Gerry"
+    return _cfg_str("WEEKLY_ADMIN_CHAT", "")
 
 
 def _notify_failure(wx: Any, chat_name: str, issue: int, failure: dict[str, Any]) -> None:
-    if not _cfg_bool("WEEKLY_NOTIFY_FAILURE", True):
+    if not _cfg_bool("WEEKLY_NOTIFY_FAILURE", False):
         return
     admin_chat = _admin_chat_name()
+    if not admin_chat:
+        return
     message = (
         "Weekly 周报生成失败\n\n"
         f"群聊：{chat_name}\n"
@@ -1116,6 +1183,7 @@ def _execute_one_chat_task(
     *,
     triggered_by: str,
     notify_admin: bool = True,
+    cancelled=None,
 ) -> bool:
     state_path = active_plugin.state_path
     issue_for_log = _next_issue_for_chat(state_path, chat_name)
@@ -1124,7 +1192,10 @@ def _execute_one_chat_task(
     record_plugin_trigger("Weekly")
     try:
         logger.info("🗞️ Weekly: 开始处理 chat=%s issue=%s triggered_by=%s", chat_name, issue_for_log, triggered_by)
-        pdf_path, issue = _generate_weekly_pdf_for_chat(chat_name, active_plugin)
+        pdf_path, issue = _generate_weekly_pdf_for_chat(chat_name, active_plugin, **({"cancelled": cancelled} if cancelled else {}))
+        if cancelled and cancelled():
+            from app.services.runtime_operations import OperationCancelled
+            raise OperationCancelled("操作已取消")
         if wx is None:
             error = WeeklyGenerationError("wx 实例不可用，PDF 已生成但未发送")
             setattr(error, "weekly_stage", "send")
@@ -1145,6 +1216,9 @@ def _execute_one_chat_task(
             _notify_failure(wx, chat_name, issue, failure)
         return False
     except Exception as e:
+        if cancelled and cancelled():
+            from app.services.runtime_operations import OperationCancelled
+            raise OperationCancelled("操作已取消") from e
         stage = str(getattr(e, "weekly_stage", "") or "unknown")
         run_dir = str(getattr(e, "weekly_run_dir", "") or "")
         failure = _record_weekly_failure(state_path, chat_name, issue_for_log, stage, str(e), run_dir, triggered_by)
@@ -1203,6 +1277,7 @@ def _start_admin_retry(chat_name: str, wx: Any, active_plugin: WeeklyPlugin) -> 
                     active_plugin,
                     triggered_by="admin_retry",
                     notify_admin=True,
+                    cancelled=lambda: bool(operation.cancelled),
                 )
             if not succeeded:
                 raise WeeklyGenerationError(f"{chat_name} 周报重试失败")
@@ -1235,7 +1310,7 @@ def _handle_admin_text(event: Event) -> bool:
     chat_name = str(event.data.get("chat_name") or "").strip()
     chat_type = str(event.data.get("chat_type") or "").strip()
     message = str(event.data.get("message") or event.data.get("content") or "").strip()
-    if chat_name != admin_chat:
+    if not admin_chat or chat_name != admin_chat:
         return False
     if chat_type and chat_type != "user":
         return False
@@ -1272,7 +1347,7 @@ def _handle_admin_text(event: Event) -> bool:
     return False
 
 
-def _execute_weekly_task(event_bus, target_chat=None) -> None:
+def _execute_weekly_task(event_bus, target_chat=None, operation=None) -> None:
     active_plugin = plugin
     if not active_plugin:
         return
@@ -1302,6 +1377,8 @@ def _execute_weekly_task(event_bus, target_chat=None) -> None:
                 active_plugin,
                 triggered_by="schedule",
                 notify_admin=True,
+                **({"cancelled": lambda: bool(operation.cancelled) or active_plugin.context.workers.stop_event.is_set()}
+                   if operation else {}),
             )
     finally:
         _release_task_file_lock(task_lock_path)
@@ -1316,7 +1393,7 @@ def _start_weekly_scheduler(event_bus, context):
         _scheduler_thread = start_chat_schedule(
             context, event_bus, time_key="WEEKLY_PUSH_TIME", weekday_key="WEEKLY_PUSH_WEEKDAY", weekday_parser=_parse_weekday,
             execution_lock=_execution_lock,
-            callback=lambda chat_name, operation: _execute_weekly_task(event_bus, target_chat=chat_name),
+            callback=lambda chat_name, operation: _execute_weekly_task(event_bus, target_chat=chat_name, operation=operation),
         )
 
 

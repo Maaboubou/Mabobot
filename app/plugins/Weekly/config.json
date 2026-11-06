@@ -71,6 +71,18 @@
       "type": "string",
       "description": "周报首页显示的编辑署名",
       "default": "微信助手"
+    },
+    "image_generation": {
+      "type": "object",
+      "control": "json",
+      "title": "图片生成",
+      "group": "image_generation",
+      "level": "basic",
+      "description": "",
+      "default": {
+        "mode": "inherit",
+        "channel_ids": null
+      }
     }
   },
   "features": [

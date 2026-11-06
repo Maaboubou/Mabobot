@@ -30,7 +30,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from app.services.codex_job_manager import codex_job_manager
 from app.services.generation_timing import GenerationTiming
 from app.services.codex_delivery import (
-    DeliveryError, collect_selected_files, provider_instructions, delivery_schema, parse_delivery,
+    DeliveryError, collect_selected_files, finalize_attachment_images, provider_instructions, delivery_schema, parse_delivery,
 )
 from app.services.codex_browser_tool import (
     BrowserToolContext,
@@ -113,6 +113,7 @@ class _TurnTracker:
     commentary_messages: List[str] = field(default_factory=list)
     reasoning: List[str] = field(default_factory=list)
     generated_image_paths: List[str] = field(default_factory=list)
+    registered_image_events: set = field(default_factory=set)
     usage: Dict[str, Any] = field(default_factory=dict)
     usage_source: str = ""
     usage_segments: List[Dict[str, Any]] = field(default_factory=list)
@@ -194,9 +195,15 @@ class _ActiveDynamicToolContext:
     call_ids: set[str] = field(default_factory=set)
     history: Any = None
     history_exports: List[Path] = field(default_factory=list)
+    news: Any = None
     lens: Any = None
     schedules: Any = None
     mentions: Any = None
+    images: Any = None
+    native_image_asset_ids: List[str] = field(default_factory=list)
+    native_recovery_dirs: Dict[str, Path] = field(default_factory=dict)
+    native_asset_lock: Any = field(default_factory=threading.RLock)
+    image_assets_interrupted: bool = False
 
 
 def _positive_int(value: Any, default: int) -> int:
@@ -880,11 +887,16 @@ class CodexAppServerManager:
         self.dynamic_tool_specs += history_specs()
         from app.services.codex_work_tool import dynamic_tool_specs as work_specs
         self.dynamic_tool_specs += work_specs()
+        from app.services.codex_image_tool import dynamic_tool_specs as image_specs
+        self.dynamic_tool_specs += image_specs()
         from app.services.codex_mention_tool import dynamic_tool_specs as mention_specs
         self.dynamic_tool_specs += mention_specs()
         from app.services.codex_schedule_tool import dynamic_tool_specs as schedule_specs
         self.dynamic_tool_specs += schedule_specs()
-        self.dynamic_tool_signature = self.browser_tool.tool_signature() + ":history-v5-keywords:attachment-image-v1:shared-work-v2"
+        from app.services.codex_news_tool import dynamic_tool_specs as news_specs
+        self.dynamic_tool_specs += news_specs()
+        self.dynamic_tool_signature = self.browser_tool.tool_signature() + ":history-v5-keywords:attachment-image-v1:shared-work-v2:image-assets-v5-multimodal"
+        self.dynamic_tool_signature += ":last30days-scheduled-v1"
         from app.services.codex_lens_tool import VERSION as lens_version, dynamic_tool_specs as lens_specs
         from app.services.lens_management import LensSettings
         lens_tools = lens_specs(LensSettings())
@@ -1482,10 +1494,18 @@ class CodexAppServerManager:
                 ),
             )
             normalized_tool = str(tool or "")
-            if str(namespace or "") == "wx_lens" or normalized_tool.startswith("wx_lens."):
+            if str(namespace or "") == "images" or normalized_tool.startswith("images."):
+                if active.images is None:
+                    raise CodexBrowserToolError("API 生图未启用")
+                result = active.images.execute(normalized_tool.removeprefix("images."), params.get("arguments"))
+            elif str(namespace or "") == "wx_lens" or normalized_tool.startswith("wx_lens."):
                 if active.lens is None:
                     raise CodexBrowserToolError("Lens is unavailable for this task")
                 result = active.lens.execute(normalized_tool.removeprefix("wx_lens."), params.get("arguments"))
+            elif str(namespace or "") == "news" or normalized_tool.startswith("news."):
+                if active.news is None:
+                    raise CodexBrowserToolError("当前任务未授权使用last30days")
+                result = active.news.execute(normalized_tool.removeprefix("news."), params.get("arguments"))
             elif str(namespace or "") == "schedules" or normalized_tool.startswith("schedules."):
                 from app.services.codex_schedule_tool import execute as execute_schedule
                 try:
@@ -1519,7 +1539,8 @@ class CodexAppServerManager:
                     context=active.browser,
                 )
             from app.history.image_reader import AttachmentImageResult
-            if isinstance(result, AttachmentImageResult):
+            from app.services.codex_image_tool import ImageToolResult
+            if type(result) in (AttachmentImageResult, ImageToolResult):
                 content_items = result.content_items()
                 output_text = ""
             else:
@@ -1608,6 +1629,72 @@ class CodexAppServerManager:
                         self._append_unique(tracker.reasoning, part)
         for saved_path in _successful_generated_image_paths(item):
             self._append_unique(tracker.generated_image_paths, saved_path)
+            self._register_native_images(tracker, [saved_path], event_id=str(item.get("id") or ""))
+
+    def _register_native_images(self, tracker: _TurnTracker, paths, *, event_id="") -> None:
+        """Snapshot completed native outputs without making intermediates deliverable."""
+        with self._dynamic_tool_lock:
+            active = self._dynamic_tool_contexts.get(tracker.thread_id)
+        if active is None or not tracker.request_id or active.browser.request_id != tracker.request_id:
+            return
+        context = active.browser
+        if not _artifact_request_dir_is_safe(context.request_dir):
+            return
+        with active.native_asset_lock:
+            for saved_path in paths:
+                key = (event_id, saved_path)
+                if key in tracker.registered_image_events:
+                    continue
+                # Repeated item/turn completion notifications keep the same origin
+                # identity, while a new byte version at that path remains distinct.
+                staging = active.native_recovery_dirs.setdefault(
+                    saved_path, context.request_dir / (".image-recovery-" + uuid.uuid4().hex))
+                try:
+                    staging.mkdir(exist_ok=True)
+                    # This uses the same native-path authorization and image validation
+                    # as final delivery, without granting the model broader file access.
+                    copied = _materialize_codex_generated_image(
+                        saved_path, output_dir=staging, index=1, use_wsl=self.use_wsl)
+                    if copied is None:
+                        continue
+                    from app.services.image_generation_assets import register_images
+                    records = register_images(context.chat_id, [copied], request_id=context.request_id,
+                                              source="native", role="intermediate",
+                                              parent_asset_ids=getattr(active.images, "reference_asset_ids", []),
+                                              source_attachment_ids=getattr(active.images, "reference_attachment_ids", []))
+                    for record in records:
+                        self._append_unique(active.native_image_asset_ids, record["asset_id"])
+                    if active.image_assets_interrupted:
+                        from app.services.image_generation_assets import mark_delivery
+                        mark_delivery(context.chat_id, [record["asset_id"] for record in records], "interrupted")
+                    tracker.registered_image_events.add(key)
+                except Exception:
+                    logger.warning("Could not preserve completed native image: request=%s", context.request_id, exc_info=True)
+                finally:
+                    # register_images retains its own immutable snapshot. Keep a
+                    # failed-registration copy available for host diagnosis/recovery.
+                    if key in tracker.registered_image_events or not any(staging.glob("*")):
+                        shutil.rmtree(staging, ignore_errors=True)
+
+    def _mark_interrupted_image_assets(self, thread_id: str, request_id: str) -> None:
+        with self._dynamic_tool_lock:
+            active = self._dynamic_tool_contexts.get(thread_id)
+        if active is None or active.browser.request_id != request_id:
+            return
+        if active.images is not None:
+            active.images.interrupt()
+        with active.native_asset_lock:
+            active.image_assets_interrupted = True
+            asset_ids = list(dict.fromkeys([*active.native_image_asset_ids,
+                *getattr(active.images, "generated_asset_ids", [])]))
+            if not asset_ids:
+                return
+            try:
+                from app.services.image_generation_assets import mark_delivery
+                mark_delivery(active.browser.chat_id, asset_ids, "interrupted")
+                codex_job_manager.record_event(request_id, "image_assets_recoverable", {"count": len(asset_ids)})
+            except Exception:
+                logger.warning("Could not mark interrupted image assets: request=%s", request_id, exc_info=True)
 
     def _collect_response_attachments(
         self,
@@ -1617,6 +1704,7 @@ class CodexAppServerManager:
         image_request_mode: Optional[str],
         request_id: str,
         selected_paths: Optional[List[str]] = None,
+        chat_id: str = "",
     ) -> List[Dict[str, Any]]:
         """Collect outputs and host-recover direct imagegen results when needed."""
         if not _artifact_output_dir_is_safe(output_dir):
@@ -1649,7 +1737,7 @@ class CodexAppServerManager:
                         "Codex attachment delivery validated: request=%s selected=%s attachments=%s elapsed_ms=%s",
                         request_id, len(selected_paths), len(attachments), elapsed_ms,
                     )
-                return attachments
+                return finalize_attachment_images(chat_id, attachments, request_id=request_id)
             except DeliveryError as exc:
                 codex_job_manager.record_event(request_id, "artifact_delivery_failed", {})
                 raise CodexAppServerError(str(exc)) from exc
@@ -1658,7 +1746,7 @@ class CodexAppServerManager:
         # Actual tool events trigger recovery even for colloquial follow-ups.
         attachments = _collect_artifact_attachments(output_dir)
         if attachments:
-            return attachments
+            return finalize_attachment_images(chat_id, attachments, request_id=request_id)
         if not generated_paths:
             return attachments
 
@@ -1715,7 +1803,7 @@ class CodexAppServerManager:
                 len(recovered_images),
                 request_id,
             )
-            return attachments
+            return finalize_attachment_images(chat_id, attachments, request_id=request_id)
 
         codex_job_manager.record_event(
             request_id,
@@ -1923,6 +2011,11 @@ class CodexAppServerManager:
                 tracker.generation.observe_output()
         elif method == "item/started":
             item = params.get("item") if isinstance(params.get("item"), dict) else {}
+            if item.get("type") == "imageGeneration":
+                with self._dynamic_tool_lock:
+                    active = self._dynamic_tool_contexts.get(tracker.thread_id or str(params.get("threadId") or ""))
+                    if active and active.images:
+                        active.images.generation_started.set()
             if tracker.generation.first_output is not None and item.get("type") not in {"agentMessage", "reasoning", "userMessage"}:
                 tracker.generation.interrupted = True
             public_item = self._public_item_event(item)
@@ -2148,6 +2241,10 @@ class CodexAppServerManager:
         history_max_bytes: int = 0,
         lens_bindings: Optional[dict] = None,
         lens_settings=None,
+        image_policy=None,
+        image_inputs=(),
+        image_timeout=300,
+        image_request_text="",
     ) -> str:
         if not self.dynamic_tool_specs:
             return ""
@@ -2159,10 +2256,23 @@ class CodexAppServerManager:
                 token=token,
                 browser=browser_context,
             )
+            from app.services.codex_image_tool import ImageToolSession
+            def image_progress(attempt):
+                codex_job_manager.record_event(browser_context.request_id, "image_api_attempt", attempt,
+                    current_item_type="dynamicToolCall", current_item_status=attempt["status"],
+                    current_item_summary="生图 · " + attempt["channel"])
+            self._dynamic_tool_contexts[thread_id].images = ImageToolSession(
+                browser_context, image_policy or {"mode": "native", "channels": []},
+                inputs=image_inputs, timeout=image_timeout, progress=image_progress,
+                request_text=image_request_text)
             from app.services.codex_mention_tool import current_mention_context
             self._dynamic_tool_contexts[thread_id].mentions = current_mention_context(browser_context.chat_id)
             from app.services.schedule_context import current_schedule_context
             self._dynamic_tool_contexts[thread_id].schedules = current_schedule_context(browser_context.chat_id)
+            from app.services.codex_news_tool import NewsSession
+            self._dynamic_tool_contexts[thread_id].news = NewsSession(
+                self.managed_profile_id, browser_context,
+                self._dynamic_tool_contexts[thread_id].schedules)
             from app.services.codex_lens_tool import LensSession
 
             def lens_progress(stage):
@@ -2196,6 +2306,11 @@ class CodexAppServerManager:
                 self._dynamic_tool_contexts[thread_id].history = history_session_for(
                     browser_context.chat_id, history_request_id, browser_context.request_id,
                     max_calls=history_max_calls, max_bytes=history_max_bytes, files_provider=files_provider)
+            active = self._dynamic_tool_contexts[thread_id]
+            if active.images is not None:
+                # Reuse the same chat scope, read budget and archive audit as
+                # history.read_attachment; never grant access by an old path.
+                active.images.history_session = active.history
         return token
 
     def _bind_dynamic_tool_turn(self, thread_id: str, turn_id: str) -> None:
@@ -2218,6 +2333,8 @@ class CodexAppServerManager:
             return
         if active.lens is not None:
             active.lens.close()
+        if active.images is not None:
+            active.images.close()
         for folder in active.history_exports:
             try:
                 if (_artifact_request_dir_is_safe(active.browser.request_dir)
@@ -2248,6 +2365,7 @@ class CodexAppServerManager:
         reasoning_effort: str,
         web_search_mode: str,
         reasoning_summary: str,
+        image_mode: str = "native",
     ) -> Dict[str, Any]:
         config: Dict[str, Any] = {
             "model_reasoning_effort": reasoning_effort,
@@ -2255,6 +2373,9 @@ class CodexAppServerManager:
             "approvals_reviewer": CODEX_APPROVALS_REVIEWER,
             "features.memories": False,
             "features.external_agent_memory_import": False,
+            # API tasks need native image_gen available for the host-authorized
+            # one-way fallback after the configured API queue is exhausted.
+            "features.image_generation": True,
         }
         if reasoning_summary != "inherit":
             config["model_reasoning_summary"] = reasoning_summary
@@ -2305,12 +2426,14 @@ class CodexAppServerManager:
         developer_instructions: str = "",
         online_research: bool = True,
         lens_settings=None,
+        image_mode: str = "native",
     ) -> str:
         runtime_workdir = _as_runtime_path(Path(workdir or self.workdir), self.use_wsl)
         thread_config = self._thread_config(
             reasoning_effort,
             web_search_mode,
             reasoning_summary,
+            image_mode,
         )
         execution_policy: Dict[str, Any]
         if permission_profile:
@@ -2331,7 +2454,7 @@ class CodexAppServerManager:
                 "ephemeral": bool(ephemeral),
                 "config": thread_config,
                 "developerInstructions": developer_instructions,
-                **({"dynamicTools": self._permission_tool_specs(online_research, lens_settings)} if self.dynamic_tool_specs else {}),
+                **({"dynamicTools": self._permission_tool_specs(online_research, lens_settings, image_mode)} if self.dynamic_tool_specs else {}),
                 **execution_policy,
             },
             timeout=min(timeout, 120),
@@ -2350,20 +2473,29 @@ class CodexAppServerManager:
         )
         return thread_id
 
-    def _permission_tool_specs(self, online_research: bool, lens_settings=None):
+    def _permission_tool_specs(self, online_research: bool, lens_settings=None, image_mode="native"):
         from app.services.lens_management import defaults
         from app.services.schedule_context import current_schedule_context
         schedule = current_schedule_context()
         from app.services.scheduled_tasks import get_scheduled_tasks
         schedules_enabled = get_scheduled_tasks().context_enabled(schedule)
+        from app.services.codex_news_tool import available as news_available
+        news_enabled = online_research and news_available(schedule, self.managed_profile_id)
         settings = lens_settings or defaults()
         from app.services.codex_mention_tool import current_mention_context
         mentions_enabled = current_mention_context() is not None
-        return [spec for spec in self.dynamic_tool_specs
+        specs = [spec for spec in self.dynamic_tool_specs
                 if (online_research or spec.get("name") not in {"wx_browser", "wx_lens"})
                 and (spec.get("name") != "schedules" or schedule is not None and not schedule.scheduled and schedules_enabled)
                 and (settings.enabled or spec.get("name") != "wx_lens")
                 and (mentions_enabled or spec.get("name") != "wechat")]
+        specs = [spec for spec in specs if spec.get("name") != "news" or news_enabled]
+        local_image_tools = {"recent", "read", "export", "capabilities"}
+        specs = [{**spec, "tools": [tool for tool in spec["tools"]
+                    if (image_mode != "native" or tool.get("name") in local_image_tools)
+                    and (image_mode.endswith("_switchable") or tool.get("name") != "select_mode")]}
+                 if spec.get("name") == "images" else spec for spec in specs]
+        return specs
 
     def _verify_thread_permissions(self, result, profile, approval, roots, *, sandbox=None):
         if profile == ":danger-full-access" or not profile and sandbox == "danger-full-access":
@@ -2399,11 +2531,13 @@ class CodexAppServerManager:
         approval_policy: str = CODEX_APPROVAL_POLICY,
         runtime_workspace_roots: Optional[List[Path]] = None,
         developer_instructions: str = "",
+        image_mode: str = "native",
     ) -> None:
         thread_config = self._thread_config(
             reasoning_effort,
             web_search_mode,
             reasoning_summary,
+            image_mode,
         )
         config_signature = self._runtime_config_signature(
             thread_config,
@@ -2460,6 +2594,8 @@ class CodexAppServerManager:
         assistant_task=None,
     ) -> Tuple[str, _TurnTracker]:
         """Start one App Server turn and wait for its terminal notification."""
+        if assistant_task and assistant_task.cancel_requested.is_set():
+            raise CodexAppServerError("Assistant task cancelled before starting another turn")
         generation_started = time.monotonic()
         from app.services.schedule_context import current_schedule_context
         schedule = current_schedule_context()
@@ -2486,6 +2622,8 @@ class CodexAppServerManager:
         initial_generation.started = generation_started
         tracker.request_id = request_id
         tracker.thread_id = thread_id
+        # A fast provider can complete images before turn/start returns its ID.
+        self._register_native_images(tracker, tracker.generated_image_paths)
         task = assistant_task
         if task:
             task.bind(self, thread_id, turn_id)
@@ -2495,12 +2633,16 @@ class CodexAppServerManager:
         schedules_enabled = get_scheduled_tasks().context_enabled(schedule)
         if schedule and schedule.scheduled and schedule.bind:
             schedule.bind(self, thread_id, turn_id)
+        def cancel_turn():
+            if task:
+                task.cancel_requested.set()
+            return self._interrupt_turn(thread_id, turn_id)
         codex_job_manager.update(
             request_id,
             status="running",
             turn_id=turn_id,
             recovery_attempt=bool(recovery_attempt),
-            _cancel_callback=lambda: self._interrupt_turn(thread_id, turn_id),
+            _cancel_callback=cancel_turn,
         )
         if not tracker.started_recorded:
             codex_job_manager.record_event(
@@ -2516,6 +2658,9 @@ class CodexAppServerManager:
             tracker.started_recorded = True
 
         try:
+            if task and task.cancel_requested.is_set():
+                self._interrupt_turn(thread_id, turn_id)
+                raise CodexAppServerError("Assistant task cancelled")
             deadline = min(time.monotonic() + timeout, task.deadline) if task and task.deadline else time.monotonic() + timeout
             network_limit = 1800
             if task:
@@ -2523,6 +2668,9 @@ class CodexAppServerManager:
                 network_limit = max(30, min(7200, int(get_config('codex_network_wait_seconds', 1800, plugin_name='assistant') or 1800)))
             network_waiting = False
             while not tracker.completed.wait(timeout=min(0.5, max(0, deadline - time.monotonic()))):
+                if task and task.cancel_requested.is_set():
+                    self._interrupt_turn(thread_id, turn_id)
+                    raise CodexAppServerError("Assistant task cancelled")
                 if schedule and schedule.scheduled and schedule.cancelled and schedule.cancelled():
                     self._interrupt_turn(thread_id, turn_id)
                     raise CodexAppServerError("计划任务已停止或调度租约失效")
@@ -2546,6 +2694,7 @@ class CodexAppServerManager:
                 )
             return turn_id, tracker
         except Exception:
+            self._mark_interrupted_image_assets(thread_id, request_id)
             with self._turn_lock:
                 self._turns.pop(turn_id, None)
             raise
@@ -2772,6 +2921,8 @@ class CodexAppServerManager:
         runtime_profile = str(request.get("codex_runtime_profile") or "").strip()
         from app.assistant.task_supervisor import current_task
         task = current_task(chat_id)
+        if task and task.cancel_requested.is_set():
+            raise CodexAppServerError("Assistant task cancelled")
         if task and task.deadline is None:
             task.deadline = task.started + timeout
         if task and time.monotonic() >= task.deadline:
@@ -2787,7 +2938,17 @@ class CodexAppServerManager:
         lens_rules = read_rules()
         from app.services.scheduled_tasks import get_scheduled_tasks
         schedule_signature = ":schedules-on" if get_scheduled_tasks().context_enabled(schedule) else ":schedules-off"
-        effective_tool_signature = schedule_signature + self.dynamic_tool_signature + (":lens-on" if lens_settings.enabled else ":lens-off")
+        from app.services.image_generation_config import resolve_policy as resolve_image_policy, runtime_image_mode
+        image_policy = resolve_image_policy(chat_id=request.get("codex_chat_user_id"), chat_name=chat_id,
+                                            plugin_name=str(request.get("mabobot_image_plugin") or ""))
+        # Weekly's host has already run the API queue before invoking its native
+        # page renderer. Do not re-enter that queue inside the renderer.
+        if request.get("mabobot_image_plugin") == "Weekly" and request.get("mabobot_native_image_generation") is True:
+            image_policy = {**image_policy, "mode": "native", "allow_request_override": False}
+        image_mode = runtime_image_mode(image_policy)
+        effective_tool_signature = (schedule_signature + self.dynamic_tool_signature
+                                    + (":lens-on" if lens_settings.enabled else ":lens-off")
+                                    + ":images-fallback-v1-" + image_mode)
         developer_instructions = "\n\n".join(
             text for message in messages
             if message.get("role") in {"system", "developer"}
@@ -2795,7 +2956,7 @@ class CodexAppServerManager:
         )
         if structured_delivery:
             developer_instructions += "\n\n" + provider_instructions(
-                reply_is_json=reply_is_json, web_search_enabled=web_search_enabled,
+                reply_is_json=reply_is_json, web_search_enabled=web_search_enabled, image_mode=image_mode,
             )
         developer_instructions += "\n\n" + "\n\n".join(b["content"] for b in policy_blocks(lens_rules["texts"]))
         developer_instructions += "\n\n【本轮 Lens 运行参数】" + json.dumps(lens_state["settings"], ensure_ascii=False)
@@ -2814,7 +2975,7 @@ class CodexAppServerManager:
                     "threadId": state["thread_id"], "lastTurnId": state["last_turn_id"],
                     "model": model, "cwd": _as_runtime_path(workdir, self.use_wsl),
                     "approvalPolicy": approval_policy, "developerInstructions": developer_instructions,
-                    "config": self._thread_config(reasoning_effort, web_search_mode, reasoning_summary), **policy,
+                    "config": self._thread_config(reasoning_effort, web_search_mode, reasoning_summary, image_mode), **policy,
                 }, timeout=min(timeout, 120))
                 self._verify_thread_permissions(result, permission_profile, approval_policy, runtime_workspace_roots, sandbox=sandbox)
                 fork_id = str((result.get("thread") or {}).get("id") or "")
@@ -2892,6 +3053,7 @@ class CodexAppServerManager:
                     approval_policy=approval_policy,
                     runtime_workspace_roots=runtime_workspace_roots,
                     developer_instructions=developer_instructions,
+                    image_mode=image_mode,
                 )
             except _ResumeThreadError as exc:
                 if migrating_instructions:
@@ -2980,6 +3142,7 @@ class CodexAppServerManager:
                 approval_policy=approval_policy,
                 runtime_workspace_roots=runtime_workspace_roots,
                 developer_instructions=developer_instructions,
+                image_mode=image_mode,
                 online_research=bool(request.get("codex_online_research", True)),
                 lens_settings=lens_settings,
             )
@@ -3039,7 +3202,8 @@ class CodexAppServerManager:
                 workspace_access=str(request.get("codex_workspace_access") or "read_write"),
                 permission_chat_id=request.get("codex_chat_user_id"),
                 policy_signature=str(request.get("codex_permission_signature") or ""),
-                cancelled=schedule.cancelled if scheduled_run else None,
+                cancelled=lambda: bool(task and task.cancel_requested.is_set()) or bool(
+                    scheduled_run and schedule.cancelled and schedule.cancelled()),
             )
 
         image_urls = extract_image_urls(delta.messages, allow_image_input=allow_image_input)
@@ -3100,7 +3264,9 @@ class CodexAppServerManager:
             "developer_instructions": developer_instructions,
             "instruction_fingerprint": hashlib.sha256(developer_instructions.encode()).hexdigest(),
             "turn_input": turn_input, "output_schema": output_schema,
-            "tools": self._permission_tool_specs(bool(request.get("codex_online_research", True)), lens_settings),
+            "tools": self._permission_tool_specs(bool(request.get("codex_online_research", True)), lens_settings, image_mode),
+            "image_policy": {"default_mode": image_policy["mode"],
+                             "allow_request_override": image_policy.get("allow_request_override", False)},
             "lens_policy": {"version": lens_state["version"], "settings": lens_state["settings"],
                             "rules_version": lens_rules["version"], "scope": "所有 App Server Profiles 继承全局配置"},
             "model": model, "role": role_name,
@@ -3200,6 +3366,11 @@ class CodexAppServerManager:
                     history_max_bytes=int(request.get("mabobot_history_max_bytes") or 0),
                     lens_bindings=lens_bindings,
                     lens_settings=lens_settings,
+                    image_policy=image_policy,
+                    image_inputs=host_image_paths,
+                    image_timeout=max(1, task.deadline - time.monotonic()) if task and task.deadline else timeout,
+                    image_request_text=next((_content_to_text(m.get("content")) for m in reversed(messages)
+                                             if m.get("role") == "user"), ""),
                 )
             turn_id, tracker = self._start_tracked_turn(
                 request_id=request_id,
@@ -3228,6 +3399,7 @@ class CodexAppServerManager:
                 image_request_mode=image_request_mode,
                 request_id=request_id,
                 selected_paths=selected_paths,
+                chat_id=chat_id,
             )
             _write_artifact_manifest(
                 request_dir,
@@ -3265,6 +3437,7 @@ class CodexAppServerManager:
                             approval_policy=approval_policy,
                             runtime_workspace_roots=runtime_workspace_roots,
                             developer_instructions=developer_instructions,
+                            image_mode=image_mode,
                         )
                         recovery_search_disabled = True
                     except Exception as exc:
@@ -3319,6 +3492,7 @@ class CodexAppServerManager:
                                 approval_policy=approval_policy,
                                 runtime_workspace_roots=runtime_workspace_roots,
                                 developer_instructions=developer_instructions,
+                                image_mode=image_mode,
                             )
                         except Exception as exc:
                             self._loaded_threads.pop(thread_id, None)
@@ -3347,6 +3521,7 @@ class CodexAppServerManager:
                     image_request_mode=image_request_mode,
                     request_id=request_id,
                     selected_paths=selected_paths,
+                    chat_id=chat_id,
                 )
                 _write_artifact_manifest(
                     request_dir,
@@ -3555,7 +3730,7 @@ class CodexAppServerManager:
                 "codex_version": self.codex_version,
                 "schema_hash": self.schema_hash,
                 "config_signature": self._runtime_config_signature(
-                    self._thread_config(reasoning_effort, web_search_mode, reasoning_summary),
+                    self._thread_config(reasoning_effort, web_search_mode, reasoning_summary, image_mode),
                     developer_instructions=developer_instructions,
                     workdir=workdir,
                     permission_profile=permission_profile,
@@ -3650,6 +3825,7 @@ class CodexAppServerManager:
                 "attachments": attachments,
             }
         except Exception as exc:
+            self._mark_interrupted_image_assets(thread_id, request_id)
             if incremental_context:
                 if task:
                     broken = dict(task.state or {})

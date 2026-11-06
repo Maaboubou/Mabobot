@@ -2,7 +2,7 @@
     "name": "image_editor",
     "display_name": "图片编辑",
     "version": "2.0.0",
-    "description": "通过全局默认官方 ChatGPT Codex Profile，在独立进程中编辑或生成图片，支持多张参考图",
+    "description": "通过 Codex 内置能力或图片 API 编辑和生成图片，支持多张参考图",
     "author": "System",
     "category": "image",
     "requires": [],
@@ -25,13 +25,25 @@
         },
         "processing_timeout": {
             "type": "integer",
-            "description": "图片处理超时时间(秒)",
+            "description": "内置 Codex 执行超时（秒）",
             "default": 300
         },
         "target_images": {
             "type": "integer",
-            "description": "默认生成图片数量，可用 +数字 覆盖；每次任务只启动一个 Codex 进程",
+            "description": "默认生成图片数量，可用 +数字 覆盖",
             "default": 1
+        },
+        "image_generation": {
+            "type": "object",
+            "control": "json",
+            "title": "图片生成",
+            "group": "image_generation",
+            "level": "basic",
+            "description": "",
+            "default": {
+                "mode": "inherit",
+                "channel_ids": null
+            }
         }
     },
     "trigger_keyword": "P图",

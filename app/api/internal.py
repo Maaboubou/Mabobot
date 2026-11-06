@@ -54,6 +54,7 @@ class WeChatMessage(BaseModel):
     quote_nickname: Optional[str] = None
     quote_content: Optional[str] = None
     has_quote_image: Optional[bool] = False
+    has_quote_emotion: Optional[bool] = False
     quote_video_path: Optional[str] = None
     has_quote_video: Optional[bool] = False
     file_id: Optional[str] = None
@@ -78,6 +79,9 @@ class WeChatMessage(BaseModel):
     tickle_suffix: Optional[str] = None
     timestamp: float
     sent_at: Optional[float] = None
+    source_time_label: str = ""
+    source_time_kind: str = "unknown"
+    history_recovered: bool = False
     archive_only: bool = False
     archive_message_id: Optional[str] = None
     archive_source: Optional[str] = None
@@ -98,6 +102,13 @@ async def receive_wechat_message(
     # Old deliveries are archived directly, before even the generic quote event.
     # Do not invoke logger plugin handlers: image enrichment can download media.
     message.sent_at = valid_source_time(message.sent_at)
+    source_timing = {
+        "source_sent_at": message.sent_at,
+        "received_at": message.timestamp,
+        "source_time_label": message.source_time_label,
+        "source_time_kind": message.source_time_kind,
+        "history_recovered": message.history_recovered,
+    }
     if message.archive_only or not source_is_fresh(message.sent_at):
         from app.services.chat_logging_policy import is_chat_logging_enabled
         if not is_chat_logging_enabled(message.chat_name):
@@ -112,7 +123,7 @@ async def receive_wechat_message(
             occurred_at=datetime.fromtimestamp(message.sent_at).strftime('%Y-%m-%d %H:%M:%S') if message.sent_at is not None else '',
             received_at=datetime.fromtimestamp(message.timestamp).strftime('%Y-%m-%d %H:%M:%S'),
             metadata={"archive_only": True, "quote_nickname": message.quote_nickname,
-                      "quote_content": message.quote_content},
+                      "quote_content": message.quote_content, **source_timing},
         )
         if not row_id and not is_chat_logging_enabled(message.chat_name):
             return {"status": "success", "archive_only": True, "recorded": False}
@@ -149,7 +160,7 @@ async def receive_wechat_message(
         quote_content = message.quote_content or ""
         if message.has_quote_video or "[视频]" in quote_content:
             event_type = EventType.QUOTE_VIDEO_MESSAGE_RECEIVED
-        elif "[图片]" in quote_content:
+        elif message.has_quote_image or message.has_quote_emotion or "[图片]" in quote_content:
             event_type = EventType.QUOTE_IMAGE_MESSAGE_RECEIVED
         else:
             event_type = EventType.QUOTE_TEXT_MESSAGE_RECEIVED
@@ -175,6 +186,7 @@ async def receive_wechat_message(
                 "quote_nickname": message.quote_nickname,
                 "quote_content": message.quote_content,
                 "has_quote_image": message.has_quote_image,
+                "has_quote_emotion": message.has_quote_emotion,
                 "quote_video_path": message.quote_video_path,
                 "has_quote_video": message.has_quote_video,
                 "has_quote_file": message.has_quote_file,
@@ -187,7 +199,7 @@ async def receive_wechat_message(
                 "quoted_file_candidate_count": message.quoted_file_candidate_count,
                 "quoted_file_error": message.quoted_file_error,
                 "timestamp": message.timestamp,
-                "source_sent_at": message.sent_at, "source_time_policy": "wechat_v1",
+                **source_timing, "source_time_policy": "wechat_v1",
             },
             context={
                 "wx": wechat_manager
@@ -240,6 +252,7 @@ async def receive_wechat_message(
             "quote_nickname": message.quote_nickname,
             "quote_content": message.quote_content,
             "has_quote_image": message.has_quote_image,
+            "has_quote_emotion": message.has_quote_emotion,
             "quote_video_path": message.quote_video_path,
             "has_quote_video": message.has_quote_video,
             "file_id": message.file_id,
@@ -263,7 +276,7 @@ async def receive_wechat_message(
             "tickle_to": message.tickle_to,
             "tickle_suffix": message.tickle_suffix,
             "timestamp": message.timestamp,
-            "source_sent_at": message.sent_at, "source_time_policy": "wechat_v1",
+            **source_timing, "source_time_policy": "wechat_v1",
         },
         context={
             "wx": wechat_manager

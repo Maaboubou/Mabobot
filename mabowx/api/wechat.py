@@ -234,28 +234,34 @@ class WeChat:
 
     @uilock
     def GetMyGroupNickname(self, who: str) -> str:
-        """只读返回当前账号在指定群里的昵称。"""
+        """从主窗口群资料只读返回当前账号的群昵称，再恢复原聊天。"""
         who = str(who or "").strip()
         if not who:
             raise ValueError("群名称不能为空")
-        chat = self.GetListenChat(who, include_open_window=True)
-        if chat is not None:
-            bound_name = str(getattr(chat, "who", "") or "").strip()
-            if bound_name != who:
-                raise RuntimeError(
-                    f"监听窗口绑定错位：期望={who!r}，实际={bound_name!r}"
-                )
-            return chat.GetMyGroupNickname()
-        response = self.ChatWith(who, exact=True)
-        if not response.is_success:
-            raise RuntimeError(response["message"])
-        info = self.ChatInfo()
-        if (
-            str(info.get("chat_name") or "").strip() != who
-            or str(info.get("chat_type") or "").lower() != "group"
-        ):
-            raise RuntimeError(f"群聊校验失败：{who}")
-        return self.main_wnd.get_chatbox().get_group_my_nickname()
+        # Detached chat-info panels can retain an old nickname even while that
+        # window's messages show the new one. Reopening the main chat reads the
+        # current settings; repeating a detached read only confirms stale data.
+        previous = str(self.ChatInfo().get("chat_name") or "").strip()
+        try:
+            response = self.ChatWith(who, exact=True)
+            if not response.is_success:
+                raise RuntimeError(response["message"])
+            info = self.ChatInfo()
+            if (
+                str(info.get("chat_name") or "").strip() != who
+                or str(info.get("chat_type") or "").lower() != "group"
+            ):
+                raise RuntimeError(f"群聊校验失败：{who}")
+            return self.main_wnd.get_chatbox().get_group_my_nickname()
+        finally:
+            if previous and previous != who:
+                try:
+                    if str(self.ChatInfo().get("chat_name") or "").strip() != previous:
+                        restored = self.ChatWith(previous, exact=True)
+                        if not restored.is_success:
+                            raise RuntimeError(restored["message"])
+                except Exception as exc:
+                    wxlog.warning(f"群昵称读取后恢复原聊天失败: chat={previous!r} error={exc}")
 
     # ------------------------------------------------------------------
     # M3：消息发送
@@ -669,6 +675,9 @@ class WeChat:
             # Chat construction already captured an existing populated window.
             # Only newly materialising/empty lists need the readiness wait.
             if box._visible_control_snapshot:
+                recover_time = getattr(box, "recover_source_time_for_baseline", None)
+                if callable(recover_time):
+                    recover_time()
                 return
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
@@ -680,6 +689,9 @@ class WeChat:
                 interval=0.15,
                 stable_rounds=3,
             )
+            recover_time = getattr(box, "recover_source_time_for_baseline", None)
+            if callable(recover_time):
+                recover_time()
         except Exception as exc:
             wxlog.warning(f"初始化监听消息缓存失败: {chat.core.who}: {exc}")
 

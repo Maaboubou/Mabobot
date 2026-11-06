@@ -96,6 +96,7 @@ class ChatPolicyService:
             for permission in sorted(user.permissions, key=lambda item: item.plugin_name)
             if permission.plugin_name not in RESERVED_PLUGIN_GRANTS
         ]
+        from app.services.image_generation_config import chat_policy, channel_summary, read_settings
         return {
             "user_id": user.id,
             "version": int(user.policy_version or 1),
@@ -125,6 +126,8 @@ class ChatPolicyService:
                 "judge_id": judge.judge_id if judge else None,
             },
             "codex": codex,
+            "image_generation": chat_policy(self.db, user.id),
+            "image_channels": channel_summary(read_settings(self.db)),
             "plugin_grants": grants,
             "plugin_configs": PluginChatConfigService(self.db, self.plugin_manager).describe_all(user.id),
         }
@@ -243,6 +246,10 @@ class ChatPolicyService:
                     PluginChatConfigService(self.db, self.plugin_manager).apply(user.id, request.plugin_configs)
                 except PluginChatConfigError as exc:
                     raise ChatPolicyError(str(exc)) from exc
+            if getattr(request, "image_generation", None) is not None:
+                from app.services.image_generation_config import set_chat_policy
+                set_chat_policy(self.db, user.id, request.image_generation.model_dump())
+                codex_changed = True
             self.db.commit()
         except Exception:
             self.db.rollback()

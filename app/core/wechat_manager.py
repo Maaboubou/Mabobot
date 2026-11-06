@@ -110,6 +110,10 @@ class WeChatManager:
     def start(self) -> bool:
         """启动微信管理器并检查与wx_bot的连接"""
         self.logger.info("Starting WeChat manager (API client mode)...")
+        # Scheduled/plugin deliveries must keep this client even when the
+        # bridge starts later. The monitor recovers this same instance; initial
+        # connectivity must not decide whether a send channel exists at all.
+        self.event_bus.context["wx"] = self
         self._last_health = self._get_health()
         self._last_connection_id = self._last_health.get("connection_id") or None
         if self._last_health.get('wechat_connected'):
