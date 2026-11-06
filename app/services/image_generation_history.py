@@ -31,7 +31,8 @@ class ImageReceipt:
         values = {key: attempt[key] for key in (
             "channel_id", "channel", "model", "protocol", "operation", "parameters", "output_sizes", "outputs",
             "status", "images", "elapsed", "error", "error_type", "outcome_unknown",
-            "provider_error_code", "provider_error_type", "provider_error_param", "provider_request_id"
+            "provider_error_code", "provider_error_type", "provider_error_param", "provider_request_id",
+            "failure_stage", "download_error_code", "download_url", "download_url_length", "download_rejection_reason"
         ) if key in attempt}
         previous = next((i for i, a in enumerate(self.value["attempts"])
                          if a["channel_id"] == values["channel_id"]), None)

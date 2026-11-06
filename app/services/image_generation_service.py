@@ -13,6 +13,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlsplit
 
 import httpx
 from PIL import Image
@@ -49,6 +50,16 @@ class ImageGenerationDeadlineExceeded(ImageGenerationError):
 
 class ImageDeliveryError(ImageGenerationError):
     pass
+
+
+class ImageDownloadError(ImageDeliveryError):
+    """An API result exists; a failed asset fetch must not start another generation."""
+
+    def __init__(self, message, *, code="download_failed", diagnostics=None):
+        super().__init__(message, provider_details={
+            **(diagnostics or {}),
+            "failure_stage": "download", "download_error_code": code,
+        })
 
 
 class ImageChannelsExhausted(ImageGenerationError):
@@ -327,22 +338,129 @@ def _read_payloads(response, request, deadline):
         yield json.loads(b"\n".join(data_lines))
 
 
+def _download_url_diagnostics(url):
+    """Expose an asset origin and shape, never a signed path, query or payload."""
+    raw = str(url or "").strip()
+    details = {"download_url_length": len(raw)}
+    if raw.lower().startswith("data:"):
+        match = re.match(r"data:(image/(?:png|jpe?g|webp|gif|bmp|svg\+xml))(?:;|,)", raw[:100], re.I)
+        media = match[1].lower() if match else "[类型已隐藏]"
+        details["download_url"] = "data:" + media + ";[图片数据已隐藏]"
+        return details
+    try:
+        # The authority is enough for diagnosis. Bound parsing even when a
+        # provider accidentally places a large encoded image in its url field.
+        parsed = urlsplit(raw[:4096])
+        host = (parsed.hostname or "").encode("idna").decode("ascii")
+        if parsed.scheme.lower() not in {"http", "https"} or not host or len(host) > 253 or not re.fullmatch(r"[A-Za-z0-9._:-]+", host):
+            raise ValueError()
+        authority = "[" + host + "]" if ":" in host else host
+        try:
+            port = parsed.port
+            if port is not None:
+                authority += ":" + str(port)
+        except ValueError:
+            authority += ":[端口无效]"
+        masked = parsed.scheme.lower() + "://" + authority
+        if parsed.path and parsed.path != "/":
+            masked += "/[路径已隐藏]"
+        elif parsed.path:
+            masked += "/"
+        if "?" in raw:
+            masked += "?[参数已隐藏]"
+        if "#" in raw:
+            masked += "#[片段已隐藏]"
+        details["download_url"] = masked
+    except (ValueError, UnicodeError):
+        details["download_url"] = "[无法识别的 HTTP(S) 图片链接]"
+    return details
+
+
 def _download_image(url, request, timeout):
+    from app.services.codex_browser_tool import CodexBrowserToolError
+
+    try:
+        return _download_public_image(url, request, timeout)
+    except ImageGenerationCancelled:
+        raise
+    except CodexBrowserToolError as exc:
+        # Guard messages may contain a hostname or signed URL. Classify only
+        # known reasons, and never copy the original message into receipts.
+        reason = str(exc)
+        url = getattr(exc, "_image_download_url", url)
+        raw = str(url or "").strip()
+        if raw.lower().startswith("data:"):
+            code, detail = "embedded_image_data", "返回值是 data: 内嵌图片数据，当前链接下载入口不支持此格式"
+        elif not raw:
+            code, detail = "url_empty", "图片链接为空"
+        elif len(raw) > 4096:
+            code, detail = "url_too_long", "图片链接长度超过当前 4096 字符限制"
+        elif reason == "only public HTTP(S) URLs are allowed":
+            code, detail = "url_scheme_invalid", "图片链接未使用 HTTP 或 HTTPS 协议"
+        elif reason == "URLs containing credentials are blocked":
+            code, detail = "url_contains_credentials", "图片链接带有用户名或密码，已拒绝下载"
+        elif reason == "URL hostname is required":
+            code, detail = "url_hostname_missing", "图片链接缺少域名"
+        elif reason == "URL port is invalid":
+            code, detail = "url_port_invalid", "图片链接端口格式无效"
+        elif reason == "URL hostname did not resolve to a valid address":
+            code, detail = "dns_address_invalid", "图片域名解析结果不是有效 IP 地址"
+        elif "synthetic DNS" in reason or "HTTPS DNS" in reason:
+            code, detail = "dns_verification_failed", "图片域名的公网 DNS 校验失败"
+        elif reason.startswith("public hostname"):
+            code, detail = "dns_resolution_failed", "图片域名无法解析为可验证的公网地址"
+        elif "private, local, reserved" in reason or "local hostnames" in reason:
+            code, detail = "non_public_address", "图片链接指向非公网地址，已拒绝下载"
+        elif "standard public web ports" in reason:
+            code, detail = "port_not_allowed", "图片链接使用了不支持的端口"
+        else:
+            code, detail = "url_rejected", "图片链接未通过公网地址校验"
+        diagnostics = {**_download_url_diagnostics(url), "download_rejection_reason": detail}
+        raise ImageDownloadError(
+            "接口已返回图片链接，但" + detail + "；可尝试让渠道返回 Base64 图片（response_format=b64_json）",
+            code=code, diagnostics=diagnostics,
+        ) from exc
+    except (ImageGenerationDeadlineExceeded, httpx.TimeoutException, TimeoutError) as exc:
+        raise ImageDownloadError("接口已返回图片链接，但下载超时；未重新生成图片", code="download_timeout",
+                                 diagnostics=_download_url_diagnostics(url)) from exc
+    except ImageGenerationError as exc:
+        raise ImageDownloadError("接口已返回图片链接，但" + str(exc), code="download_failed",
+                                 diagnostics=_download_url_diagnostics(url)) from exc
+    except Exception as exc:
+        raise ImageDownloadError("接口已返回图片链接，但下载未完成；请检查图片存储服务或改用 Base64 返回",
+                                 code="download_connection_failed", diagnostics=_download_url_diagnostics(url)) from exc
+
+
+def _validate_download_url(guard, url):
+    from app.services.codex_browser_tool import CodexBrowserToolError
+
+    try:
+        guard.validate_public_url(url)
+    except CodexBrowserToolError as exc:
+        # A redirect's rejected target can differ from the original asset URL.
+        # Keep it only in the in-flight exception; receipts get the masked form.
+        exc._image_download_url = url
+        raise
+
+
+def _download_public_image(url, request, timeout):
     # Returned asset URLs are untrusted. Reuse the public, DNS-pinned downloader;
     # never forward the upstream API credentials to an asset host.
     from app.services.codex_browser_proxy import PinnedPublicProxy
     from app.services.codex_browser_tool import PublicUrlGuard
+    _cancelled(request)
     guard = PublicUrlGuard()
-    guard.validate_public_url(url)
+    _validate_download_url(guard, url)
     deadline = time.monotonic() + min(60, timeout)
     with PinnedPublicProxy(guard.resolve_public_endpoint) as proxy:
         with httpx.Client(proxy=proxy.playwright_settings["server"], trust_env=False,
                           timeout=min(60, timeout), follow_redirects=False) as client:
             for _ in range(5):
+                _cancelled(request)
                 with client.stream("GET", url) as response:
                     if response.is_redirect:
                         url = str(response.url.join(response.headers["location"]))
-                        guard.validate_public_url(url)
+                        _validate_download_url(guard, url)
                         continue
                     if response.status_code != 200:
                         raise ImageGenerationError("图片下载失败")
@@ -359,14 +477,32 @@ def _download_image(url, request, timeout):
     raise ImageGenerationError("图片下载重定向过多")
 
 
+def _decode_image_base64(encoded):
+    if not isinstance(encoded, str) or len(encoded) > MAX_IMAGE_BYTES * 4 // 3 + 4:
+        raise ImageGenerationError("图片数据超过大小限制")
+    data = base64.b64decode(encoded, validate=True)
+    if len(data) > MAX_IMAGE_BYTES:
+        raise ImageGenerationError("图片数据超过大小限制")
+    return data
+
+
 def _image_bytes(item, request, timeout):
     if item.get("b64_json"):
-        encoded = item["b64_json"]
-        if not isinstance(encoded, str) or len(encoded) > MAX_IMAGE_BYTES * 4 // 3 + 4:
-            raise ImageGenerationError("图片数据超过大小限制")
-        return base64.b64decode(encoded, validate=True)
+        return _decode_image_base64(item["b64_json"])
     if item.get("url"):
-        return _download_image(item["url"], request, timeout)
+        value = item["url"]
+        if isinstance(value, str) and value.strip().lower().startswith("data:"):
+            # Some compatible gateways place the image itself in data[].url,
+            # despite naming that field like a network location. Decode it
+            # locally, then keep the same image-content checks as b64_json.
+            value = value.strip()
+            header = re.match(r"data:image/(?:png|jpe?g|webp|gif|svg\+xml);base64,", value[:100], re.I)
+            if header is None:
+                raise ImageGenerationError("图片链接字段返回了不支持的内嵌图片格式")
+            if len(value) - header.end() > MAX_IMAGE_BYTES * 4 // 3 + 4:
+                raise ImageGenerationError("图片数据超过大小限制")
+            return _decode_image_base64(value[header.end():])
+        return _download_image(value, request, timeout)
     raise ImageGenerationError("接口未返回图片数据")
 
 
@@ -380,7 +516,8 @@ def _provider_http_error(response, request, deadline):
     codes = {"moderation_blocked", "content_policy_violation", "invalid_request_error", "image_generation_user_error",
              "invalid_value", "unsupported_value", "invalid_image", "invalid_image_format", "invalid_image_url",
              "model_not_found", "invalid_api_key", "insufficient_quota", "rate_limit_exceeded",
-             "billing_hard_limit_reached", "server_error", "permission_denied"}
+             "billing_hard_limit_reached", "server_error", "permission_denied",
+             "unsupported_parameter", "parameter_conflict"}
     types = {"invalid_request_error", "image_generation_user_error", "authentication_error",
              "permission_error", "rate_limit_error", "server_error"}
     try:
@@ -394,7 +531,8 @@ def _provider_http_error(response, request, deadline):
         error = payload.get("error") if isinstance(payload, dict) else None
         if isinstance(error, dict):
             for field, allowed in (("code", codes), ("type", types),
-                                   ("param", PARAMETERS | {"model", "prompt", "image", "images", "mask", "markup", "input"})):
+                                   ("param", PARAMETERS | {"model", "prompt", "image", "images", "mask", "markup", "input",
+                                                           "response_format", "aspect_ratio", "resolution", "style"})):
                 value = error.get(field)
                 if isinstance(value, str) and value in allowed:
                     details["provider_error_" + field] = value
@@ -537,6 +675,9 @@ def _generate_images(policy, request, output_dir, *, paths, attempts, on_image, 
         except ImageGenerationCancelled:
             attempt["status"] = "cancelled"
             raise
+        except ImageDownloadError as exc:
+            attempt.update(status="failed", error=str(exc), error_type=type(exc).__name__, **exc.provider_details)
+            raise
         except ImageDeliveryError:
             attempt.update(status="failed", error="图片已保存，但交付失败")
             raise
@@ -556,11 +697,14 @@ def _generate_images(policy, request, output_dir, *, paths, attempts, on_image, 
             attempt.update(status="failed", **_failure_details(exc))
         finally:
             attempt["elapsed"] = round(time.monotonic() - started, 3)
-            logger.info("Image API channel=%s model=%s status=%s images=%s elapsed=%s size=%s quality=%s error_type=%s error=%s provider_request_id=%s",
+            logger.info("Image API channel=%s model=%s status=%s images=%s elapsed=%s size=%s quality=%s error_type=%s error=%s provider_request_id=%s failure_stage=%s download_error_code=%s download_url=%s download_url_length=%s download_rejection_reason=%s",
                         channel["id"], channel["model"], attempt["status"], attempt["images"], attempt["elapsed"],
                         attempt.get("parameters", {}).get("size", "auto"),
                         attempt.get("parameters", {}).get("quality", "auto"),
-                        attempt.get("error_type", ""), attempt.get("error", ""), attempt.get("provider_request_id", ""))
+                        attempt.get("error_type", ""), attempt.get("error", ""), attempt.get("provider_request_id", ""),
+                        attempt.get("failure_stage", ""), attempt.get("download_error_code", ""),
+                        attempt.get("download_url", ""), attempt.get("download_url_length", ""),
+                        attempt.get("download_rejection_reason", ""))
             if progress:
                 progress(dict(attempt))
         if len(paths) >= target:

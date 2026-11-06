@@ -136,6 +136,7 @@ def main():
         # 启动FastAPI应用
         uvicorn.run(
             "app.main:app",
+            proxy_headers=False,
             host=args.host,
             port=args.port,
             reload=args.reload,

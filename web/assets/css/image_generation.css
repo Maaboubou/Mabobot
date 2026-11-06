@@ -39,6 +39,8 @@
 .image-policy-item .btn { padding:3px 6px; }
 .image-call-history { margin-top:24px; border-top:1px solid var(--border-color); padding-top:16px; }
 .image-call-history > summary { color:var(--text-secondary); font-size:13px; cursor:pointer; }
+#imageCallHistory { max-height:min(32rem,60vh); overflow-y:auto; overscroll-behavior:contain; scrollbar-gutter:stable; overflow-wrap:anywhere; }
+#imageCallHistory:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
 .image-call-row { font-size:12px; border-bottom:1px solid var(--border-soft); padding:10px 0; }
 .image-call-row summary { display:flex; flex-wrap:wrap; gap:12px; cursor:pointer; }
 .image-call-attempt { display:flex; flex-wrap:wrap; gap:10px; padding:8px 0 0 12px; color:var(--text-secondary); }

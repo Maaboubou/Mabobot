@@ -79,6 +79,11 @@ def validate_parameters(params, *, official=False, model="", protocol="images", 
              "output_format": {"png", "jpeg", "webp", "gif", "svg"},
              "complexity": {"low", "medium", "high"},
              "moderation": {"auto", "low"}, "input_fidelity": {"low", "high"}}
+    # Images-compatible providers can expose the original Images quality names.
+    # They are not Responses image-generation tool parameters or official GPT
+    # Image quality values, so keep those channels' validation unchanged.
+    if not official and protocol == "images":
+        enums["quality"] |= {"standard", "hd"}
     for name, choices in enums.items():
         if name in params and params[name] not in choices:
             raise ImageConfigError(f"{name} 参数无效")

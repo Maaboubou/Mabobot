@@ -4,6 +4,8 @@ import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -16,7 +18,21 @@ from app.services.image_generation_history import ImageReceipt, read_history
 from app.services.image_generation_media import image_mime
 from app.services.image_model_discovery import DiscoveryRequest, discover_models
 
-router = APIRouter()
+class ImageConfigRoute(APIRoute):
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def without_credential_echo(request):
+            try:
+                return await handler(request)
+            except RequestValidationError:
+                # Validation errors can include entire submitted connection values.
+                raise HTTPException(422, "图片配置格式不正确，请检查地址、密钥和参数") from None
+
+        return without_credential_echo
+
+
+router = APIRouter(route_class=ImageConfigRoute)
 
 
 @router.get("")

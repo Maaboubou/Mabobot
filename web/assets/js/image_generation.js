@@ -61,7 +61,7 @@ const ImageGeneration = {
                 </article>`).join('') : '<div class="image-channel-empty">暂无 API 配置</div>'}</div>
             <div class="image-generation-footnote">${this.data.mode === 'api' ? '按顺序尝试已勾选配置，全部失败后尝试内置生图' : '内置生图失败后结束任务'}</div>
             <div id="imageGenerationTestResult" aria-live="polite"></div>
-            <details class="image-call-history"><summary>最近调用</summary><div id="imageCallHistory"></div>
+            <details class="image-call-history"><summary>最近调用</summary><div id="imageCallHistory" role="region" aria-label="最近调用记录" tabindex="0"></div>
                 <button class="btn btn-sm btn-outline-secondary mt-2" onclick="ImageGeneration.loadHistory()">刷新</button></details>`;
         this.bindSort(root);
         this.loadHistory();
@@ -80,7 +80,11 @@ const ImageGeneration = {
                 ${(run.attempts || []).map(a => `<div class="image-call-attempt"><strong>${this.esc(a.channel)}</strong><span>${this.esc(a.model)}</span>
                     ${a.protocol ? `<span>${this.esc(a.protocol === 'responses' ? 'Responses' : 'Images')} · ${a.operation === 'edit' ? '编辑' : '生成'}</span>` : ''}
                     <span>${this.esc(status[a.status] || a.status)}${a.elapsed !== undefined ? ` · ${this.esc(a.elapsed)} 秒` : ''}</span>
-                    ${a.parameters ? `<span>请求尺寸 ${this.esc(a.parameters.size || 'auto')} · 质量 ${this.esc(a.parameters.quality || 'auto')} · ${this.esc(a.parameters.n)} 张</span>` : ''}
+                    ${a.parameters ? `<span>请求尺寸 ${this.esc(a.parameters.size || '服务商默认')} · 质量 ${this.esc(a.parameters.quality || '服务商默认')} · ${this.esc(a.parameters.n)} 张</span>` : ''}
+                    ${a.failure_stage === 'download' ? '<span>失败环节：图片下载</span>' : ''}
+                    ${a.download_url ? `<span>下载地址（脱敏）：${this.esc(a.download_url)}</span>` : ''}
+                    ${Number.isInteger(a.download_url_length) ? `<span>原始链接长度：${this.esc(a.download_url_length)} 字符</span>` : ''}
+                    ${a.download_rejection_reason ? `<span>拒绝原因：${this.esc(a.download_rejection_reason)}</span>` : ''}
                     ${a.parameters?.complexity ? `<span>复杂度 ${this.esc(a.parameters.complexity)}</span>` : ''}
                     ${a.parameters?.output_format ? `<span>格式 ${this.esc(a.parameters.output_format)}${a.parameters.output_format === 'gif' ? ` · ${this.esc(a.parameters.frame_count ?? 9)} 帧 · 每帧 ${this.esc(a.parameters.frame_duration_ms ?? 200)} ms` : ''}</span>` : ''}
                     ${a.output_sizes?.length ? `<span>实际尺寸 ${this.esc(a.output_sizes.join('、'))}</span>` : ''}
@@ -262,6 +266,8 @@ const ImageGeneration = {
         this.editing = c;
         this.editingVersion = this.data.version;
         const p = c.parameters || {};
+        const optional = (name, fallback) => p[name] ?? (c.provider === 'compatible' ? '' : fallback);
+        const omitted = ['', '服务商默认（不发送）'];
         const profileOptions = this.profiles.map(p => [p.name, `复用 Codex 配置：${p.name}`]);
         if (c.profile_id && !this.profiles.some(p => p.name === c.profile_id)) profileOptions.push([c.profile_id, `复用 Codex 配置：${c.profile_id} · 不可用`]);
         const root = document.getElementById('imageChannelModal');
@@ -276,24 +282,24 @@ const ImageGeneration = {
                 ${this.field('API Key', this.input('api_key', '', `type="password" autocomplete="new-password" placeholder="${c.key_configured ? '已配置；留空保持' : '输入密钥'}"`), true, 'data-manual-connection')}
                 ${this.modelField('model', '生图模型', c.model, this.data.models, true)}
                 ${this.modelField('response_model', '主模型', c.response_model, this.data.response_models || [])}
-                ${this.field('尺寸', this.input('size', p.size || 'auto', 'list="imageSizeOptions"'))}
+                ${this.field('尺寸', this.input('size', optional('size', 'auto'), 'list="imageSizeOptions" placeholder="服务商默认（不发送）"'))}
                 <datalist id="imageSizeOptions"><option value="auto"></option><option value="512x512"></option><option value="1024x1024"></option><option value="1536x1024"></option><option value="1024x1536"></option><option value="1536x864"></option></datalist>
-                ${this.field('质量', this.select('quality', ['auto', 'low', 'medium', 'high', 'xhigh', 'max'], p.quality || 'auto'))}
+                ${this.field('质量', this.select('quality', [omitted, 'auto', 'low', 'medium', 'high', 'xhigh', 'max', 'standard', 'hd'], optional('quality', 'auto')))}
                 ${this.field('构图复杂度', this.select('complexity', [['', '接口默认'], ['low', 'low'], ['medium', 'medium'], ['high', 'high']], p.complexity || ''), false, 'data-complexity-field')}
-                ${this.field('格式', this.select('output_format', ['png', 'jpeg', 'webp', ['gif', 'GIF 动图'], ['svg', 'SVG 矢量图']], p.output_format || 'png'))}
+                ${this.field('格式', this.select('output_format', [omitted, 'png', 'jpeg', 'webp', ['gif', 'GIF 动图'], ['svg', 'SVG 矢量图']], optional('output_format', 'png')))}
                 <div class="image-channel-field is-wide text-secondary small" data-generation-format-field>GIF / SVG 仅支持文生图，不能带参考图；不支持流式输出。</div>
                 ${this.field('动画帧数', this.input('frame_count', p.frame_count ?? 9, 'type="number" min="2" max="64" required'), false, 'data-gif-field')}
                 ${this.field('每帧时长（毫秒）', this.input('frame_duration_ms', p.frame_duration_ms ?? 200, 'type="number" min="20" max="2000" required title="接口按 10 毫秒取整"'), false, 'data-gif-field')}
-                ${this.field('背景', this.select('background', [['auto', '自动'], ['opaque', '不透明'], ['transparent', '透明']], p.background || 'auto'))}
+                ${this.field('背景', this.select('background', [omitted, ['auto', '自动'], ['opaque', '不透明'], ['transparent', '透明']], optional('background', 'auto')))}
                 ${this.field('默认数量', this.input('n', p.n || 1, 'type="number" min="1" max="10" required'))}
                 ${this.field('超时（秒）', this.input('timeout', c.timeout, 'type="number" min="10" max="3600" required'))}
             </div>
             <details class="image-channel-advanced"><summary>高级设置</summary><div class="image-channel-fields">
                 ${this.field('压缩质量', this.input('output_compression', p.output_compression ?? '', 'type="number" min="0" max="100" placeholder="默认"'), false, 'data-compression-field')}
                 ${this.field('输入保真度', this.select('input_fidelity', [['', '默认'], ['low', '低'], ['high', '高']], p.input_fidelity || ''), false, 'data-fidelity-field')}
-                ${this.field('内容过滤', this.select('moderation', ['auto', 'low'], p.moderation || 'auto'))}
+                ${this.field('内容过滤', this.select('moderation', [omitted, 'auto', 'low'], optional('moderation', 'auto')))}
                 ${this.field('编辑传输', this.select('edit_transport', [['json', 'JSON'], ['multipart', 'Multipart']], c.edit_transport), false, 'data-images-field')}
-                ${this.field('流式接收', this.select('stream', [['false', '关闭'], ['true', '开启']], String(p.stream || false)), false, 'data-stream-toggle-field')}
+                ${this.field('流式接收', this.select('stream', [omitted, ['false', '关闭'], ['true', '开启']], String(optional('stream', false))), false, 'data-stream-toggle-field')}
                 ${this.field('预览帧数', this.input('partial_images', p.partial_images || 0, 'type="number" min="0" max="3"'), false, 'data-stream-field')}
                 ${this.field('请求头', `<textarea class="form-control font-monospace" name="headers" rows="3" placeholder="${c.headers_configured ? '已配置；留空保持，{} 清空' : '{}'}" spellcheck="false"></textarea>`, true, 'data-compatible-field')}
                 ${this.field('额外参数', `<textarea class="form-control font-monospace" name="extra_body" rows="4" placeholder="${c.extra_body_configured ? '已配置；留空保持，{} 清空' : '{}'}" spellcheck="false"></textarea>`, true, 'data-compatible-field')}
@@ -302,6 +308,9 @@ const ImageGeneration = {
         const form = root.querySelector('form');
         form.addEventListener('change', event => {
             const el = form.elements;
+            if (['size', 'quality', 'output_format', 'background', 'moderation', 'stream'].includes(event.target.name)) {
+                event.target.dataset.touched = 'true';
+            }
             if (event.target.name === 'profile_id') {
                 const profile = this.profiles.find(p => p.name === el.profile_id.value);
                 if (profile && profile.base_url?.replace(/\/$/, '') !== 'https://api.openai.com/v1') {
@@ -330,6 +339,15 @@ const ImageGeneration = {
 
     syncEditor(form) {
         const el = form.elements, official = el.provider.value === 'openai', responses = el.protocol.value === 'responses';
+        if (form.dataset.parameterProvider !== el.provider.value) {
+            const defaults = {size: 'auto', quality: 'auto', output_format: 'png', background: 'auto', moderation: 'auto', stream: 'false'};
+            for (const [name, fallback] of Object.entries(defaults)) {
+                if (!Object.hasOwn(this.editing.parameters || {}, name) && !el[name].dataset.touched) {
+                    el[name].value = official ? fallback : '';
+                }
+            }
+            form.dataset.parameterProvider = el.provider.value;
+        }
         const model = this.modelValue(form, 'model');
         const image26 = model.startsWith('gpt-image-2.6-');
         const specialFormat = ['gif', 'svg'].includes(el.output_format.value);
@@ -365,8 +383,10 @@ const ImageGeneration = {
             el[name].required = active;
         }
         [...el.quality.options].forEach(option => {
-            option.disabled = official && ['xhigh', 'max'].includes(option.value) && !model.startsWith('gpt-image-2.5-') && !image26;
+            option.disabled = (['standard', 'hd'].includes(option.value) && (official || responses))
+                || (official && ['xhigh', 'max'].includes(option.value) && !model.startsWith('gpt-image-2.5-') && !image26);
         });
+        el.quality.setCustomValidity(el.quality.selectedOptions[0]?.disabled ? '此质量不适用于当前接口或模型' : '');
     },
 
     async saveEditor() {
@@ -388,7 +408,9 @@ const ImageGeneration = {
             for (const name of ['n', 'output_compression', 'partial_images', 'frame_count', 'frame_duration_ms']) {
                 if (!el[name].disabled && el[name].value !== '') c.parameters[name] = Number(el[name].value);
             }
-            c.parameters.stream = !el.stream.disabled && el.stream.value === 'true';
+            if (c.provider === 'openai' || !el.stream.disabled && el.stream.value !== '') {
+                c.parameters.stream = !el.stream.disabled && el.stream.value === 'true';
+            }
             for (const name of ['headers', 'extra_body']) {
                 if (c.provider === 'openai') c[name] = {};
                 else if (el[name].value.trim()) {

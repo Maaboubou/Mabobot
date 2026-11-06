@@ -1,6 +1,7 @@
 # Web application and persistence
 fastapi>=0.140,<1
 uvicorn[standard]
+websockets>=15,<16
 python-multipart>=0.0.32,<1
 Flask
 sqlalchemy

@@ -41,6 +41,7 @@ from .core.wechat_manager import WeChatManager
 from .models.base import create_tables, SessionLocal
 from .api.endpoints import assistant, assistant_judges, assistant_roles, automation, backups, capabilities, chat_policies, codex_profiles, operations, system, settings, plugins, wechat, permissions, dashboard
 from .api.endpoints import codex_skills, codex_permissions, email_notifications, image_generation
+from .api.endpoints import terminal
 from .api import internal as internal_api
 from .api import codex_proxy
 from .api import codex_jobs
@@ -668,6 +669,12 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning("Codex Profile runtimes shutdown failed: %s", e)
 
+        try:
+            from app.services.terminal_service import get_terminal_service
+            await asyncio.to_thread(get_terminal_service().stop_all)
+        except Exception as e:
+            logger.warning("Terminal shutdown failed: %s", type(e).__name__)
+
         if wechat_manager:
             wechat_manager.stop()
             logger.info("WeChat manager stopped")
@@ -728,6 +735,7 @@ app.include_router(scheduled_tasks.router, prefix="/api/scheduled-tasks", tags=[
 app.include_router(chat_policies.router, prefix="/api/chats", tags=["chat-policies"])
 app.include_router(codex_profiles.router, prefix="/api/codex/profiles", tags=["codex-profiles"])
 app.include_router(image_generation.router, prefix="/api/image-generation", tags=["image-generation"])
+app.include_router(terminal.router, prefix="/api/terminal", tags=["terminal"])
 app.include_router(codex_permissions.router, prefix="/api/codex/permissions", tags=["codex-permissions"])
 app.include_router(codex_skills.router, prefix="/api/codex/profiles", tags=["codex-skills"])
 app.include_router(wechat.router, prefix="/api/wechat", tags=["wechat"])
@@ -823,5 +831,6 @@ if __name__ == "__main__":
         host=os.getenv("WEB_HOST", "127.0.0.1"),
         port=int(os.getenv("WEB_PORT", "8888")),
         reload=True,
+        proxy_headers=False,
         log_level=logging.getLevelName(configured_level()).lower()
     )

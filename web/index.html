@@ -44,7 +44,8 @@
     <!-- App CSS -->
     <link href="/static/assets/css/style.css?v=20261106-codex-updates" rel="stylesheet">
     <link href="/static/assets/css/dashboard.css?v=20260921-bot-activity" rel="stylesheet">
-    <link href="/static/assets/css/image_generation.css?v=20261104-models" rel="stylesheet">
+    <link href="/static/assets/css/image_generation.css?v=20261106-image-diagnostics" rel="stylesheet">
+    <link href="/static/assets/css/terminal.css?v=20261106-terminal-compact" rel="stylesheet">
     <link rel="stylesheet" href="/notification-assets/email_notifications.css?v=2">
 </head>
 
@@ -120,6 +121,12 @@
                     <a href="/usage" class="nav-link" data-tab="usage">
                         <i class="bi bi-graph-up"></i>
                         <span>用量统计</span>
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="/terminal" class="nav-link" data-tab="terminal">
+                        <i class="bi bi-window-fullscreen"></i>
+                        <span>终端</span>
                     </a>
                 </li>
 
@@ -203,6 +210,7 @@
             </header>
 
             <div id="schedules" class="tab-content workspace-page"><div id="scheduledTasksRoot" class="p-3"></div></div>
+            <div id="terminal" class="tab-content workspace-page d-none"><div id="terminalRoot" class="terminal-workspace"></div></div>
             <!-- Tab: Dashboard -->
             <div id="dashboard" class="tab-content workspace-page">
                 <div class="dashboard-shell fade-in">
@@ -1563,20 +1571,21 @@
     </div>
     <script src="/static/assets/js/api.js?v=20260925-backup-flow"></script>
     <script src="/static/assets/js/codex_permissions.js?v=20261028-permission-grid"></script>
-    <script src="/static/assets/js/ui.js?v=20261106-codex-updates"></script>
+    <script src="/static/assets/js/ui.js?v=20261106-terminal"></script>
     <script src="/notification-assets/email_notifications.js?v=1"></script>
     <script src="/static/assets/js/system_storage.js?v=20260925-storage"></script>
     <script src="/static/assets/js/system_operations.js?v=20260925-backup-flow"></script>
     <script src="/static/assets/js/system_tools.js?v=20261106-codex-updates"></script>
     <script src="/static/assets/js/route_prompts.js?v=20261028-content-review"></script>
-    <script src="/static/assets/js/image_generation.js?v=20261105-image26"></script>
+    <script src="/static/assets/js/image_generation.js?v=20261106-image-diagnostics"></script>
     <script src="/static/assets/js/llm_manager.js?v=20261106-codex-updates"></script>
     <script src="/static/assets/js/codex_center.js?v=20261106-codex-updates"></script>
+    <script src="/static/assets/js/terminal.js?v=20261106-terminal-compact"></script>
     <script src="/static/assets/js/codex_skills.js?v=1.1.1-format-helpers"></script>
     <script src="/static/assets/js/dashboard.js?v=20260921-bot-activity"></script>
     <link href="/static/assets/css/scheduled_tasks.css?v=20261030-detail-layout" rel="stylesheet">
     <script src="/static/assets/js/scheduled_tasks.js?v=20261030-detail-layout"></script>
-    <script src="/static/assets/js/main.js?v=20261104-images"></script>
+    <script src="/static/assets/js/main.js?v=20261106-terminal"></script>
     <script src="/static/assets/js/assistant_prompts.js?v=20261028-content-review"></script>
     <script src="/static/assets/js/chat_archive.js?v=20260917-context-actions"></script>
 

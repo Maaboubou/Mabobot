@@ -64,6 +64,8 @@ AI 助手可在群聊回复时自主选择需要提醒的成员，调用 `wechat
 
 在“模型配置 → 图片生成”管理图片 API 渠道、模型与备用顺序，支持聊天及插件分别设置、参考图编辑、动图合成，以及已生成图片的继续编辑和恢复重发。升级后默认继续使用 Codex 内置生图；API 渠道需自行配置并启用。详见[图片生成](docs/IMAGE_GENERATION.md)。
 
+在“用量统计”下方的“终端”页面选择项目的 Codex Profile，可直接操作项目目录中的真实 Codex CLI，支持完整访问、多个会话、刷新后重连及 Tailscale Serve 远程访问。运行环境使用 Linux／WSL，需要 ttyd 1.7.0 或更新版本及 tmux。详见[终端接入](docs/TERMINAL.md)。
+
 真实密钥、Cookie、数据库、聊天记录和下载文件不要提交到 Git。运行数据主要位于 `data/`、`logs/` 和 `tmp/`。
 
 ## 开发与排障
@@ -108,6 +110,7 @@ scripts/           安装、运维与文件工具
 
 - [内置图片与引用视频出处检索（Google Lens）](docs/google_lens.md)
 - [图片生成、编辑与资产恢复](docs/IMAGE_GENERATION.md)
+- [本机 Codex 终端接入](docs/TERMINAL.md)
 - [插件开发规范（Manifest / Runtime API v2）](app/plugins/README.md)
 - [每聊天插件配置与模板开发指南](docs/PLUGIN_CHAT_CONFIGURATION.md)
 - [翻译助手配置说明](docs/TRANSLATION_CHAT_CONFIG_UPGRADE.md)

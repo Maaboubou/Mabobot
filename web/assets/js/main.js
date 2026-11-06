@@ -87,7 +87,7 @@ const App = {
         if (this.isLoading) return;
         await this.refreshBotServiceState({ quiet: true });
         // Don't auto-refresh settings or forms to avoid overwriting user input
-        if (['settings', 'users', 'roles', 'llm', 'usage'].includes(this.currentTab)) return;
+        if (['settings', 'users', 'roles', 'llm', 'usage', 'terminal'].includes(this.currentTab)) return;
 
         await this.loadTab(this.currentTab, true);
     },
@@ -122,6 +122,9 @@ const App = {
                     break;
                 case 'codex':
                     await CodexCenter.load({ quiet: isBackground });
+                    break;
+                case 'terminal':
+                    await TerminalPage.load({ quiet: isBackground });
                     break;
                 case 'wechat':
                     await this.loadWeChat();

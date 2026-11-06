@@ -9,6 +9,7 @@ const UI = {
     routes: {
         dashboard: '/',
         codex: '/codex',
+        terminal: '/terminal',
         users: '/chats',
         roles: '/assistant',
         schedules: '/scheduled-tasks',
@@ -456,6 +457,7 @@ const UI = {
         const titleMap = {
             'dashboard': '概览',
             'codex': 'Codex 运行中心',
+            'terminal': '终端',
             'plugins': '功能插件',
             'users': '聊天管理',
             'roles': '角色管理',

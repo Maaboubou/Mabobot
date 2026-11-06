@@ -61,6 +61,25 @@ Bot 可通过 `images.capabilities` 查询本次任务的渠道和直接 GIF 能
 
 第三方按 OpenAI 兼容协议接入，可填写自定义模型名、请求头和额外 JSON 参数。额外参数不能覆盖任务内容、模型或标准参数。此版本不处理完全不同的请求协议及异步任务轮询接口。
 
+### 第三方 Images 接口
+
+选择“兼容接口”和 Images，API 地址填写接口前缀，程序再追加 `/images/generations` 或 `/images/edits`。例如：
+
+| 服务 | API 地址 | 文生图路径 |
+| --- | --- | --- |
+| 快跑图像 v2 | `https://image.kuaipao.pro/v2` | `/v2/images/generations` |
+| 使用 `https://ai.centos.hk/v1` 的兼容服务 | `https://ai.centos.hk/v1` | `/v1/images/generations` |
+
+兼容渠道的可选参数可留为“服务商默认／不发送”。不要把官方模型的全部扩展参数直接套到第三方；模型名称、质量值、尺寸、动图、编辑及 Responses 能力需分别以该服务的实际支持范围为准。兼容 Images 额外允许 `standard`／`hd` 质量，但不代表每个模型都接受。已有配置的显式参数会保留，需要时手动改为不发送。
+
+快跑的 `size` 与 `aspect_ratio`／`resolution` 不能同时发送；使用额外参数指定比例和档位时，将尺寸留空。快跑 JSON 编辑使用 `image` 字段，与当前 JSON 编辑格式不同，应选择 Multipart 编辑传输，其文档也支持当前发送的 `image[]`。
+
+两类接口的标准结果 `data[].url` 和 `data[].b64_json` 都可接收。兼容服务也可以在 `data[].url` 中返回 `data:image/png;base64,...` 等内嵌图片数据，宿主会直接解码，并沿用 50 MiB 大小、图片解码、动图和 SVG 内容校验，不进行 DNS 或网络下载。普通 HTTP(S) URL 返回仍需另外下载文件；若图片存储地址无法通过公网校验或不能连接，可在“额外参数”设置 `{"response_format":"b64_json"}`，由支持该选项的渠道直接返回图片数据。图片下载不携带生图 API Key，也不会放开内网地址访问。
+
+接口已返回图片链接后，公网地址校验、DNS 或下载失败会单独显示为“图片下载”失败，记录安全错误分类、脱敏链接、链接长度及具体拒绝原因；链接路径、查询参数和片段全部隐藏，不保存完整签名链接或原始异常。此类失败不切换渠道重新生图，也不触发 Codex 内置生图回退；已经保存的部分图片仍保留。旧版泛化错误记录无法追溯具体下载失败原因。
+
+参考：[快跑文生图](https://kuaipao.apifox.cn/521245164e0)、[快跑图生图](https://kuaipao.apifox.cn/521245165e0)、[快跑参数规则](https://kuaipao.apifox.cn/521245157e0)。
+
 文档：[官方生图指南](https://developers.openai.com/api/docs/guides/image-generation)、[Images 生成](https://developers.openai.com/api/reference/resources/images/methods/generate)、[Images 编辑](https://developers.openai.com/api/reference/resources/images/methods/edit)。
 
 ## 运行与交付
