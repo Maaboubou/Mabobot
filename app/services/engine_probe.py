@@ -20,8 +20,8 @@ def probe_profile(profile_id, *, model, reasoning_effort, mode):
     candidate = RouteCandidate("probe", profile["engine"], profile_id, str(profile["generation"]), model,
         profile["account_key"], profile["auth_ref"], canonical({"reasoning_effort": reasoning_effort}), profile.get("channel", ""),
         profile_config_json=canonical(snapshot_options(profile) if profile["engine"] == "opencode" else profile.get("runtime_options", {})))
-    if candidate.engine != "opencode":
-        return {"status": "unsupported", "message": "Codex 保留原兼容调用；严格生成未验证，请使用原 Codex 连接测试。"}
+    if candidate.engine == "codex" and mode != "direct":
+        return {"status": "unsupported", "message": "Codex 工具模式请使用原 Codex 连接测试。"}
     marker = "MABOBOT_PROBE_" + uuid.uuid4().hex[:8]
     ctx = TaskContext.create(timeout=120, request_id=uuid.uuid4().hex, source_kind="system", source_chat_id="",
         actor_id="administrator", component="engine_probe", task_type=mode, delivery_chat_id="", delivery_owner="",
@@ -43,14 +43,23 @@ def probe_profile(profile_id, *, model, reasoning_effort, mode):
             with service._lock:
                 service._handles[ctx.run_id] = handle
             try:
-                evidence.update(adapter_version="1.0.0", adapter_sha256=adapter.runtime.plugin_sha256,
-                    engine_version="2.3.0+mabobot.p0.1", transport="http")
-                if mode == "direct":
-                    result = adapter.execute(request, handle)
+                if candidate.engine == "codex":
+                    result = service._validate_result(request, adapter.execute(request, handle))
+                    evidence.update(getattr(handle, "direct_evidence", {}))
+                    shape = evidence.get("outbound_shape", {})
+                    verified = (result.status == "completed" and result.text.strip() == marker
+                        and result.actual_model == model and shape.get("verified") is True
+                        and shape.get("forwarded_count") == 1)
+                elif mode == "direct":
+                    evidence.update(adapter_version="1.0.0", adapter_sha256=adapter.runtime.plugin_sha256,
+                        engine_version="2.3.0+mabobot.p0.1", transport="http")
+                    result = service._validate_result(request, adapter.execute(request, handle))
                     shape = adapter.runtime.bridge("status", attempt_id=attempt_id).get("outbound_shape", {})
                     evidence["outbound_shape"] = shape
                     verified = result.status == "completed" and result.text.strip() == marker and shape.get("verified") is True
                 else:
+                    evidence.update(adapter_version="1.0.0", adapter_sha256=adapter.runtime.plugin_sha256,
+                        engine_version="2.3.0+mabobot.p0.1", transport="http")
                     runtime = adapter.runtime
                     evidence["stage"] = "session_new"
                     session = runtime.rpc("session/new", {"cwd": str(runtime.root / "control"), "mcpServers": [adapter.mcp.config]})["sessionId"]
@@ -76,7 +85,7 @@ def probe_profile(profile_id, *, model, reasoning_effort, mode):
                         adapter.mcp.retire(session)
                         runtime.bridge("retire_chat", session_id=session)
                 service.store.finish_attempt(result)
-                if mode == "direct" and result.status != "interrupted_unknown":
+                if candidate.engine == "opencode" and mode == "direct" and result.status != "interrupted_unknown":
                     adapter.acknowledge(attempt_id)
                 return verified
             finally:

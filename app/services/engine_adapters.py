@@ -24,8 +24,15 @@ class CodexAdapter:
     def __init__(self, candidate, route, runtime=None):
         self.candidate, self.route, self.runtime = candidate, route, runtime
         self._owns_runtime = runtime is None
+        self._direct_runtime = None
+        self._start_lock = threading.Lock()
 
     def start(self):
+        # Registry entries are shared by Profile/generation across task modes.
+        # Initialize the required native path lazily for each actual request.
+        pass
+
+    def _start_agent(self):
         if self.runtime is None:
             from app.services.codex_profile_service import get_codex_profile_service, _managed_profile_permission_roots
             from app.services.agent_runtime import CodexAgentRuntime
@@ -42,15 +49,20 @@ class CodexAdapter:
     def stop(self):
         if self.runtime is not None and self._owns_runtime:
             self.runtime.stop()
+        if self._direct_runtime is not None:
+            self._direct_runtime.stop()
 
     def force_stop(self):
         if self.runtime is not None:
             self.runtime.stop()
+        if self._direct_runtime is not None:
+            self._direct_runtime.stop()
 
     def execute(self, request, handle):
-        subscription = json.loads(request.candidate.profile_config_json).get('subscription_model')
-        if request.route.mode == "direct" and not subscription:
-            raise ExecutionError("capability_unavailable", "Codex strict generation is not verified", retryable=True)
+        if request.route.mode == "direct":
+            return self._direct(request, handle)
+        with self._start_lock:
+            self._start_agent()
         from app.services.execution_authority import chat_name
         name = chat_name(request.context) if request.context.source_chat_id else ""
         data = json.loads(request.envelope.input_json)
@@ -60,8 +72,6 @@ class CodexAdapter:
             "timeout": max(1, int(request.context.deadline - time.time())),
             **json.loads(request.candidate.parameters_json), "codex_source_chat_name": name,
             "codex_runtime_profile": request.candidate.profile_id}
-        if subscription and request.route.mode == 'direct':
-            payload.update(codex_text_only=True, codex_isolated_workdir=True, codex_sandbox='read-only')
         context_window = json.loads(request.candidate.profile_config_json).get("context_window")
         if context_window:
             payload["codex_model_context_window"] = context_window
@@ -70,7 +80,7 @@ class CodexAdapter:
             payload["mabobot_input_files"] = assets
             payload["mabobot_allow_image_input"] = True
         with run_handle_scope(handle):
-            if subscription and request.route.mode == 'direct' or request.context.depth or request.context.component != "assistant":
+            if request.context.depth or request.context.component != "assistant":
                 response = self.runtime.run(payload, profile_name="child" if request.context.depth else "batch", allow_exec_fallback=False)
             else:
                 response = self.runtime.chat(payload, chat_id=name, allow_exec_fallback=False)
@@ -80,8 +90,41 @@ class CodexAdapter:
         return result_for(request, text=str(message.get("content") or ""),
             actual_model=str(response.get("model") or ""), usage=response.get("usage"), assets_json=canonical(assets))
 
+    def _direct(self, request, handle):
+        from app.services.codex_direct import direct_spec
+        direct_spec(request)  # Reject unsupported parameters before starting Codex.
+        with self._start_lock:
+            if self._direct_runtime is None:
+                from app.services.codex_direct_runtime import CodexDirectRuntime
+                from app.services.codex_profile_service import get_codex_profile_service
+                profile = get_codex_profile_service().get_profile(request.candidate.profile_id)
+                if not profile or not profile.get("available"):
+                    raise ExecutionError("profile_unavailable", "Pinned Codex account is unavailable")
+                self._direct_runtime = CodexDirectRuntime(profile["wrapper_path"])
+                try:
+                    self._direct_runtime.start()
+                except Exception:
+                    self._direct_runtime.stop()
+                    self._direct_runtime = None
+                    raise
+        handle.direct_runtime = self._direct_runtime
+        # Per-request evidence must not be shared by concurrent calls.
+        native = self._direct_runtime.execute(request, handle)
+        handle.direct_evidence = native.get("evidence", {})
+        shape = handle.direct_evidence.get("outbound_shape", {})
+        status = native.get("status", "failed")
+        if status == "completed" and not (shape.get("verified") is True and shape.get("forwarded_count") == 1):
+            raise ExecutionError("outbound_unverified", "Codex direct result has no verified outbound request")
+        return result_for(request, status=status, text=native.get("text", ""), actual_model=native.get("actual_model", ""),
+            usage=native.get("usage"), error_code=native.get("error_code", ""), error=native.get("error", ""),
+            retry_after_seconds=native.get("retry_after_seconds"))
+
     @staticmethod
     def cancel(handle):
+        direct = getattr(handle, "direct_runtime", None)
+        if direct is not None:
+            direct.cancel(handle)
+            return
         manager = getattr(handle, "native_manager", None)
         if manager and handle.session_id and handle.turn_id:
             manager._request("turn/interrupt", {"threadId": handle.session_id, "turnId": handle.turn_id}, timeout=10)
