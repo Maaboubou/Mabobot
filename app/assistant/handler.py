@@ -632,8 +632,8 @@ class AssistantHandler:
                         "sha256": event.data.get("quoted_file_sha256"),
                     }
                 )
-            response = self._request_codex_reply(
-                chat_name,
+            response = self._request_chat_reply(
+                event,
                 role_name,
                 messages,
                 _mabobot_attachment_capture=response_attachments,
@@ -711,7 +711,11 @@ class AssistantHandler:
 
             wx_manager = event.context.get("wx")
             if wx_manager:
-                wx_manager.send_message(chat_name, "⚠️ AI自动回复失败，请稍后再试～")
+                if getattr(e, "error_code", "") == "content_policy":
+                    message = "这部分内容我不能协助。可以换个安全、合法的方向继续聊。"
+                else:
+                    message = "⚠️ AI自动回复失败，请稍后再试～"
+                wx_manager.send_message(chat_name, message)
             return False
         finally:
             # 清除处理锁（仅本次事件曾拿到锁）
@@ -1815,8 +1819,8 @@ class AssistantHandler:
                     )
 
                 response_attachments: List[Dict[str, Any]] = []
-                response = self._request_codex_reply(
-                    chat_name,
+                response = self._request_chat_reply(
+                    event,
                     role_name,
                     messages,
                     _mabobot_attachment_capture=response_attachments,
@@ -2306,6 +2310,20 @@ class AssistantHandler:
     def _get_human_like_response_format(self, role_name):
         return {"type": "json_object"}
 
+    def _request_chat_reply(self, event: Event, role_name: str, messages: List[Dict], **kwargs) -> str:
+        chat_name = event.data["chat_name"]
+        sequence = event.data.get("_chat_seq")
+        bus = getattr(self, "event_bus", None)
+        # Approved automatic follow-ups already discard their result when
+        # newer messages arrive. Keep that freshness check at send time.
+        if (event.data.get("chat_type") != "group" or not sequence or bus is None
+                or event.data.get("_followup_approved") or not event.context.get("wx")):
+            return self._request_codex_reply(chat_name, role_name, messages, **kwargs)
+
+        from app.history.tools import pending_chat_messages
+        with bus.watch_chat_ingress(chat_name, sequence) as reader, pending_chat_messages(chat_name, reader):
+            return self._request_codex_reply(chat_name, role_name, messages, **kwargs)
+
     def _request_codex_reply(
         self,
         chat_name: str,
@@ -2352,11 +2370,12 @@ class AssistantHandler:
             nonlocal reply_at_users
             from app.services.codex_profile_service import CodexProfileService
 
+            from app.services.engine_reply_gateway import legacy_reply_profile
             result = get_assistant_reply_gateway().reply(
                 CodexReplyRequest(
                     chat_name=chat_name,
                     role_name=role_name,
-                    codex_profile_id=CodexProfileService.resolve_assistant_profile_id(
+                    codex_profile_id=legacy_reply_profile(
                         self._get_user_permission_config(chat_name).get("codex_profile_id")
                     ),
                     messages=call_messages,

@@ -2,7 +2,7 @@
 
 Mabobot 是运行在 Windows 上的本地微信自动化与 AI 助手。它使用内置 `mabowx` 连接微信，并提供 Web 控制台、AI 助手、插件、模型路由、聊天档案与文件处理能力。
 
-当前版本：`3.11.0`
+当前版本：`3.12.0`
 
 ## 启动
 
@@ -50,7 +50,7 @@ cd Mabobot
 
 1. 保持微信在线，在 Web 控制台的“聊天”页面同步会话；
 2. 开启需要监听的聊天，并配置 AI 助手或插件；
-3. 在“Codex”页面确认 CLI 框架可用，并创建或选择模型 Profile；
+3. 在“AI 运行中心”确认引擎可用，并创建或选择 Codex / OpenCode Profile；
 4. 按需配置回复策略、聊天档案与辅助模型；
 5. 回到“运行与日志”确认服务状态正常。
 
@@ -64,7 +64,9 @@ AI 助手可在群聊回复时自主选择需要提醒的成员，调用 `wechat
 
 在“模型配置 → 图片生成”管理图片 API 渠道、模型与备用顺序，支持聊天及插件分别设置、参考图编辑、动图合成，以及已生成图片的继续编辑和恢复重发。升级后默认继续使用 Codex 内置生图；API 渠道需自行配置并启用。详见[图片生成](docs/IMAGE_GENERATION.md)。
 
-在“用量统计”下方的“终端”页面选择项目的 Codex Profile，可直接操作项目目录中的真实 Codex CLI，支持完整访问、多个会话、刷新后重连及 Tailscale Serve 远程访问。运行环境使用 Linux／WSL，需要 ttyd 1.7.0 或更新版本及 tmux。详见[终端接入](docs/TERMINAL.md)。
+在“用量统计”下方的“终端”页面选择引擎及项目的 Codex / OpenCode Profile，可直接操作项目目录中的原生 CLI，支持 Codex 完整访问、多个会话、刷新后重连及 Tailscale Serve 远程访问。运行环境使用 Linux／WSL，需要 ttyd 1.7.0 或更新版本及 tmux。详见[终端接入](docs/TERMINAL.md)。
+
+Codex / OpenCode 的独立安装、模型验证、任务路由和备份迁移见 [AI 引擎配置与迁移](docs/AI_ENGINES.md)。新路由需显式启用，已有 Codex 配置可继续使用。
 
 真实密钥、Cookie、数据库、聊天记录和下载文件不要提交到 Git。运行数据主要位于 `data/`、`logs/` 和 `tmp/`。
 

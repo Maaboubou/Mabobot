@@ -63,3 +63,6 @@ Thumbs.db
 
 # Local conversation attachments
 /.codex-attachments/
+
+# Engine request outputs are local runtime artifacts
+/engine-requests/

@@ -1008,6 +1008,10 @@ def _generate_weekly_pdf_for_chat(chat_name: str, active_plugin: WeeklyPlugin | 
     active_plugin = active_plugin or plugin
     if active_plugin is None:
         raise WeeklyGenerationError("Weekly plugin 尚未初始化")
+    from app.services.engine_image_jobs import images_enabled
+    if images_enabled("Weekly"):
+        from app.plugins.Weekly.engine_pipeline import generate_weekly_pdf
+        return generate_weekly_pdf(chat_name, active_plugin, cancelled=cancelled)
 
     stage = "prepare"
     run_dir: Path | None = None
@@ -1202,6 +1206,8 @@ def _execute_one_chat_task(
             setattr(error, "weekly_run_dir", str(pdf_path))
             raise error
         if _send_file(wx, chat_name, pdf_path):
+            from app.plugins.Weekly.engine_pipeline import record_delivery
+            record_delivery(pdf_path, 'sent')
             _mark_issue_success(state_path, chat_name, issue, pdf_path)
             logger.info("🗞️ Weekly: 成功推送并更新期数 chat=%s issue=%s", chat_name, issue)
             if triggered_by == "admin_retry":
@@ -1209,6 +1215,8 @@ def _execute_one_chat_task(
             return True
 
         stage = "send"
+        from app.plugins.Weekly.engine_pipeline import record_delivery
+        record_delivery(pdf_path, 'uncertain')
         error = f"PDF 发送失败: {pdf_path}"
         failure = _record_weekly_failure(state_path, chat_name, issue, stage, error, str(pdf_path), triggered_by)
         logger.error("🗞️ Weekly: PDF 发送失败，不更新期数 chat=%s issue=%s pdf=%s", chat_name, issue, pdf_path)

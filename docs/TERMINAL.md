@@ -1,6 +1,6 @@
 # 终端
 
-入口：管理页面侧栏 **终端**（位于“用量统计”下方，路径 `/terminal`）。选择一个已就绪的 Codex Profile，点击新建会话，即在项目目录中启动该 Profile 的真实 Codex CLI。
+入口：管理页面侧栏 **终端**（位于“用量统计”下方，路径 `/terminal`）。选择引擎及一个已就绪的 Codex / OpenCode Profile，点击新建会话，即在项目目录中启动该 Profile 的原生 CLI。
 
 ## 会话与权限
 
@@ -8,11 +8,13 @@
 
 “完整访问”开启时，Codex 可直接执行命令、读写本机文件及操作 Git，实际系统权限与启动 Mabobot／WSL 的账户一致；关闭时沿用 Profile 自身的 Codex 权限设置。每个新终端独立创建会话，最多同时保留 4 个。
 
-页面切换、刷新或关闭浏览器只断开终端显示，会话继续运行。重新打开终端页可选择已有会话继续操作。“结束会话”会停止对应 Codex、tmux 会话和 ttyd 进程。Mabobot 正常退出时会清理其管理的终端会话。终端中的命令、批准提示、快捷键及 `/` 命令由 Codex CLI 自身处理。
+OpenCode 终端使用独立控制目录和宿主生成的包装脚本，清除宿主 API key 环境变量，关闭项目配置自动加载和自动更新。“完整访问”只适用于 Codex；OpenCode 请求使用 `full_access: false`。终端是管理员的交互入口，其能力不等同于普通聊天工具权限。
+
+页面切换、刷新或关闭浏览器只断开终端显示，会话继续运行。重新打开终端页可选择已有会话继续操作。“结束会话”会停止对应引擎、tmux 会话和 ttyd 进程。Mabobot 正常退出时会清理其管理的终端会话。终端中的命令、批准提示、快捷键及 `/` 命令由所选 CLI 自身处理。
 
 ## 运行环境
 
-主路径使用 Linux／WSL；Windows 部署复用项目现有的 WSL Codex 环境。当前不直接启动 Windows 原生 PowerShell／ConPTY 终端。
+主路径使用 Linux／WSL；Windows 部署使用对应引擎的 WSL 环境；OpenCode 可使用独立选择的发行版，不改变 Codex 的默认发行版。当前不直接启动 Windows 原生 PowerShell／ConPTY 终端。
 
 目标 Linux／WSL 环境需要 **ttyd 1.7.0 或更新版本**和 `tmux`。页面显示依赖状态，缺失或版本过旧时不会创建模拟终端。Debian／Ubuntu 可在相同环境中安装：
 
@@ -36,7 +38,7 @@ sudo apt install ttyd tmux
 
 - `GET /api/terminal`：运行环境、依赖状态和会话列表。
 - `GET /api/terminal/sessions`：当前会话列表。
-- `POST /api/terminal/sessions`：使用 `profile_id` 和 `full_access` 创建会话。
+- `POST /api/terminal/sessions`：使用 `engine`、`profile_id` 和 `full_access` 创建会话；省略 `engine` 时兼容原 Codex 行为。
 - `DELETE /api/terminal/sessions/{id}`：结束指定会话。
 - `GET /api/terminal/sessions/{id}/view/`：同源网页终端。
 - `WS /api/terminal/sessions/{id}/view/ws`：终端输入、输出和窗口尺寸传输。

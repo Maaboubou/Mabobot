@@ -110,6 +110,22 @@ class CodexProfileService:
             raise CodexProfileError("Profile 名称无效")
         return self._run("image-api-connection", {"name": profile_id})
 
+    @staticmethod
+    def _accepted_references(name):
+        from app.services import execution_service
+        service = execution_service._service
+        if service is not None:
+            with service.store.connect() as db:
+                if db.execute("SELECT 1 FROM engine_config_pins WHERE engine='codex' AND profile_id=? AND released=0 LIMIT 1", (name,)).fetchone():
+                    return True
+        registry = _runtime_registry
+        if registry is not None:
+            with registry._lock:
+                runtimes = [r[1] for key, r in registry._runtimes.items() if key == name] + [r for r in registry._retired if getattr(r, 'managed_profile_id', '') == name]
+                if any(getattr(runtime, '_active_leases', 0) for runtime in runtimes):
+                    return True
+        return False
+
     def __init__(self, *, use_wsl: Optional[bool] = None) -> None:
         self.use_wsl = _default_use_wsl() if use_wsl is None else bool(use_wsl)
         self._cache_lock = threading.RLock()
@@ -127,6 +143,11 @@ class CodexProfileService:
         return [*command, "--action", action]
 
     def _run(self, action: str, payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        from app.services.engine_deployment import enabled_engines
+        if "codex" not in enabled_engines():
+            if action == "list":
+                return {"profiles": [], "disabled": True}
+            raise CodexProfileError("此部署未启用 Codex")
         try:
             command = self._command(action)
             run_kwargs = {
@@ -161,6 +182,13 @@ class CodexProfileService:
         return data
 
     def list_profiles(self) -> dict[str, Any]:
+        from app.services.engine_deployment import enabled_engines
+        if "codex" not in enabled_engines():
+            # A deployment change must not erase the saved Codex default simply
+            # because this process deliberately does not inspect its accounts.
+            from app.services.config_service import get_setting
+            return {"profiles": [], "default_profile_id": str(get_setting(DEFAULT_ASSISTANT_PROFILE_KEY, "") or ""),
+                    "disabled": True, "local_auth": {"available": False, "reason": "此部署未启用 Codex"}}
         with self._cache_lock:
             stale = deepcopy(self._cached_listing) if self._cached_listing is not None else None
             cached = (
@@ -221,6 +249,9 @@ class CodexProfileService:
         }
 
     def create_profile(self, payload: dict[str, Any], *, codex_bin: str) -> dict[str, Any]:
+        from app.services.engine_deployment import enabled_engines
+        if "codex" not in enabled_engines():
+            raise CodexProfileError("此部署未启用 Codex")
         configured_bin = str(codex_bin or "").strip()
         runtime = get_file_tools_runtime(
             use_wsl=self.use_wsl,
@@ -272,6 +303,8 @@ class CodexProfileService:
                     "auth_sync_status": "synced",
                     "profile": profile,
                 }
+            if self._accepted_references(normalized):
+                raise CodexProfileError("Profile 仍被已接受任务引用，不能在执行期间替换登录绑定")
             result = self._run("import-local-auth", {"name": normalized})
             self.invalidate_cache()
             refreshed = self.get_profile(normalized)
@@ -282,12 +315,18 @@ class CodexProfileService:
         }
 
     def clear_profile_auth(self, name: str) -> dict[str, Any]:
+        from app.services import execution_service
+        if execution_service._service is not None:
+            execution_service._service.cancel_profile(name)
+            execution_service._service.registry.retire("codex", name, revoke=True)
         result = self._run("clear-auth", {"name": str(name or "").strip()})
         self.invalidate_cache()
-        get_codex_runtime_registry().invalidate(name)
+        get_codex_runtime_registry().invalidate(name, revoke=True)
         return result
 
     def update_profile(self, name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if {"api_key", "base_url", "auth_type", "auth_source"} & payload.keys() and self._accepted_references(name):
+            raise CodexProfileError("Profile 仍被已接受任务引用；普通模型参数可修改，账号或渠道变更须等待任务释放")
         profile = public_profile(self._run("update", {**dict(payload), "name": name}))
         if not profile:
             raise CodexProfileError("更新 Profile 返回内容不完整")
@@ -301,6 +340,17 @@ class CodexProfileService:
         profile = self.get_profile(normalized)
         if not profile:
             raise CodexProfileError("Codex Profile 不存在")
+
+        if self._accepted_references(normalized):
+            from app.services import execution_service
+            service = execution_service._service
+            if service is not None:
+                revision, config = service.config.read()
+                if normalized in config["profiles"]:
+                    config["profiles"][normalized]["retiring"] = True
+                    service.config.save(config, expected_revision=revision)
+            return {"name": normalized, "deleted": False, "retiring": True,
+                    "reason": "仍有已接受任务、运行租约或待核对操作引用此 Profile"}
 
         default_cleared = self.default_profile_id() == normalized
         replacement_default = ""
@@ -433,6 +483,7 @@ class CodexProfileRuntimeRegistry:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._runtimes: dict[str, tuple[str, Any]] = {}
+        self._retired: list[Any] = []
 
     def resolve(self, profile_id: str = "") -> tuple[Any, Optional[dict[str, Any]]]:
         from app.services.agent_runtime import CodexAgentRuntime
@@ -475,18 +526,26 @@ class CodexProfileRuntimeRegistry:
                 raise
             self._runtimes[normalized] = (signature, runtime)
         if previous is not None:
-            previous.stop()
+            self._retired.append(previous)
+            previous.retire()
         return runtime, profile
 
-    def invalidate(self, profile_id: str) -> None:
+    def invalidate(self, profile_id: str, *, revoke: bool = False) -> None:
         with self._lock:
             cached = self._runtimes.pop(str(profile_id or "").strip(), None)
         if cached:
-            cached[1].stop()
+            self._retired.append(cached[1])
+            if revoke:
+                cached[1].stop()
+            else:
+                cached[1].retire()
 
     def invalidate_chat(self, chat_id: str, *, reason: str = "manual_reset") -> None:
+        from app.services import execution_service
+        if execution_service._service is not None:
+            execution_service._service.cancel_chat(chat_id)
         with self._lock:
-            runtimes = [item[1] for item in self._runtimes.values()]
+            runtimes = [item[1] for item in self._runtimes.values()] + list(self._retired)
         for runtime in runtimes:
             runtime.invalidate_chat(chat_id, reason=reason)
 
@@ -494,8 +553,20 @@ class CodexProfileRuntimeRegistry:
         with self._lock:
             values = list(self._runtimes.values())
             self._runtimes.clear()
+            values.extend(("retired", runtime) for runtime in self._retired)
+            self._retired.clear()
         for _signature, runtime in values:
             runtime.stop()
+
+    def reap_idle(self, *, idle_seconds=300) -> None:
+        retired = []
+        with self._lock:
+            for key, (_, runtime) in list(self._runtimes.items()):
+                if getattr(runtime, '_active_leases', 0) == 0 and time.monotonic() - getattr(runtime, '_last_lease_used', time.monotonic()) >= idle_seconds:
+                    self._runtimes.pop(key)
+                    retired.append(runtime)
+        for runtime in retired:
+            runtime.retire()
 
 
 _profile_service: Optional[CodexProfileService] = None

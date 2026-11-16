@@ -42,7 +42,7 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
 
     <!-- App CSS -->
-    <link href="/static/assets/css/style.css?v=20261106-codex-updates" rel="stylesheet">
+    <link href="/static/assets/css/style.css?v=20261116-shared-profile" rel="stylesheet">
     <link href="/static/assets/css/dashboard.css?v=20260921-bot-activity" rel="stylesheet">
     <link href="/static/assets/css/image_generation.css?v=20261106-image-diagnostics" rel="stylesheet">
     <link href="/static/assets/css/terminal.css?v=20261106-terminal-compact" rel="stylesheet">
@@ -86,9 +86,9 @@
                     </a>
                 </li>
                 <li class="nav-item">
-                    <a href="/codex" class="nav-link" data-tab="codex">
+                    <a href="/ai-center" class="nav-link" data-tab="codex">
                         <i class="bi bi-terminal"></i>
-                        <span>Codex</span>
+                        <span>AI 运行中心</span>
                     </a>
                 </li>
                 <li class="nav-item">
@@ -146,7 +146,7 @@
             </div>
 
             <div class="sidebar-footer p-3 border-top border-secondary border-opacity-25">
-                <small class="text-muted d-block mb-1">版本：3.11.0</small>
+                <small class="text-muted d-block mb-1">版本：3.12.0</small>
                 <div class="d-flex align-items-center text-muted gap-2">
                     <button id="themeToggle" type="button" class="sidebar-theme-toggle"
                         aria-label="切换到暗色模式" aria-pressed="false" title="切换到暗色模式">
@@ -296,7 +296,7 @@
                                         onclick="Dashboard.refreshCodexUsage()" title="刷新 Codex 额度" aria-label="刷新 Codex 额度">
                                         <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
                                     </button>
-                                    <a class="dashboard-section-link" href="/codex" onclick="event.preventDefault(); Dashboard.navigate({ tab: 'codex', path: '/codex' })" aria-label="打开 Codex 运行中心" title="打开 Codex 运行中心"><i class="bi bi-arrow-up-right" aria-hidden="true"></i></a>
+                                    <a class="dashboard-section-link" href="/ai-center" onclick="event.preventDefault(); Dashboard.navigate({ tab: 'codex', path: '/ai-center' })" aria-label="打开 AI 运行中心" title="打开 AI 运行中心"><i class="bi bi-arrow-up-right" aria-hidden="true"></i></a>
                                 </div>
                             </section>
                         </section>
@@ -347,13 +347,14 @@
                 </div>
             </div>
 
-            <!-- Tab: Codex Control Center -->
+            <!-- Tab: AI Runtime Center -->
             <div id="codex" class="tab-content d-none workspace-page">
                 <div class="codex-home-shell">
                     <section class="codex-profile-section modern-card" aria-labelledby="codexProfilesTitle">
                         <div class="codex-home-section-head">
-                            <div><h2 id="codexProfilesTitle">Profiles</h2><p>Codex CLI 作为执行框架；每个 Profile 可使用 ChatGPT 账号，或配置第三方 Responses 兼容模型。</p></div>
+                            <div><h2 id="codexProfilesTitle">Profiles</h2><p>每个 Profile 保存引擎、账号和模型；选择 Profile 即可切换 Codex 或 OpenCode。</p></div>
                         </div>
+                        <div id="aiProfilesNotice" class="alert alert-warning small d-none" role="status"></div>
                         <div id="codexProfilesGrid" class="codex-profile-grid">
                             <div class="loading-wrapper small">正在读取 Profile…</div>
                         </div>
@@ -371,7 +372,7 @@
                     </section>
 
                     <div id="codexJobsList" class="codex-jobs-root" aria-live="polite">
-                        <div class="loading-wrapper small">正在读取 Codex 运行状态…</div>
+                        <div class="loading-wrapper small">正在读取 AI 运行状态…</div>
                     </div>
                 </div>
 
@@ -379,16 +380,21 @@
                     <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
                         <div class="modal-content">
                             <div class="modal-header">
-                                <div><h5 class="modal-title" id="codexProfileModalTitle">新建 Codex Profile</h5><p class="modal-subtitle mb-0" id="codexProfileModalSubtitle">选择 ChatGPT 账号认证，或配置第三方 Responses 兼容模型。</p></div>
+                                <div><h5 class="modal-title" id="codexProfileModalTitle">新建 Profile</h5><p class="modal-subtitle mb-0" id="codexProfileModalSubtitle">选择执行引擎，再配置对应账号和模型。</p></div>
                                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
                             </div>
                             <div class="modal-body">
                                 <form id="codexProfileForm" class="row g-2 codex-profile-form" autocomplete="off">
                                     <div class="col-12">
+                                        <label class="form-label" for="aiProfileEngine">执行引擎</label>
+                                        <select id="aiProfileEngine" class="form-select" onchange="EngineCenter.setProfileEngine(this.value)"><option value="codex">Codex</option><option value="opencode">OpenCode</option></select>
+                                    </div>
+                                    <fieldset id="codexProfileFields" class="row g-2 m-0 p-0 border-0">
+                                    <div class="col-12">
                                         <div class="codex-profile-source-choice" role="radiogroup" aria-label="配置方式">
-                                            <label><input type="radio" name="profile_source" value="oauth" checked><span><i class="bi bi-person-check"></i><strong>ChatGPT 官方登录</strong><small>导入本机登录或扫码连接</small></span></label>
+                                            <label><input type="radio" name="profile_source" value="oauth" checked><span><i class="bi bi-person-check"></i><strong>ChatGPT 官方登录</strong><small id="profileOAuthSourceHint">导入本机登录或扫码连接</small></span></label>
                                             <label><input type="radio" name="profile_source" value="catalog"><span><i class="bi bi-grid"></i><strong>LiteLLM 目录</strong><small>选择供应商和模型后快速回填</small></span></label>
-                                            <label><input type="radio" name="profile_source" value="manual"><span><i class="bi bi-pencil"></i><strong>手动填写</strong><small>直接配置 Responses 兼容接口</small></span></label>
+                                            <label><input type="radio" name="profile_source" value="manual"><span><i class="bi bi-pencil"></i><strong>手动填写</strong><small id="profileManualSourceHint">直接配置 Responses 兼容接口</small></span></label>
                                         </div>
                                     </div>
                                     <div class="col-12 codex-profile-oauth-field">
@@ -397,7 +403,7 @@
                                             <label id="codexLocalAuthChoice"><input type="radio" name="auth_source" value="local_cache" checked><span><i class="bi bi-box-arrow-in-down"></i><strong>导入本机登录</strong><small id="codexLocalAuthHint">正在检查本机 Codex 登录…</small></span></label>
                                             <label><input type="radio" name="auth_source" value="device_code"><span><i class="bi bi-qr-code"></i><strong>扫码登录</strong><small>通过 OpenAI 设备授权连接账号</small></span></label>
                                         </div>
-                                        <div class="form-text">导入只会复制文件型登录缓存到此 Profile，不会移动或退出本机 Codex 账号。</div>
+                                        <div class="form-text" id="profileAuthSourceHint">导入只会复制文件型登录缓存到此 Profile，不会移动或退出本机 Codex 账号。</div>
                                     </div>
                                     <div class="col-12 codex-profile-api-field codex-profile-catalog-field d-none">
                                         <section class="litellm-update-card codex-profile-litellm-update" id="codexProfileLiteLLMUpdateCard" data-litellm-update-surface aria-live="polite">
@@ -454,16 +460,19 @@
                                         </div>
                                     </div>
                                     <div class="col-md-5 codex-profile-api-field d-none"><label class="form-label" for="codexProfileProviderName">供应商名称</label><input class="form-control" id="codexProfileProviderName" name="provider_name" maxlength="100" placeholder="例如 DeepSeek"></div>
-                                    <div class="col-md-7 codex-profile-api-field d-none"><label class="form-label" for="codexProfileBaseUrl">Responses API Base URL</label><input class="form-control" id="codexProfileBaseUrl" name="base_url" type="url" placeholder="https://api.example.com/v1" required><div class="form-text">目录只负责快速选型；接口本身必须兼容 OpenAI Responses API。</div></div>
+                                    <div class="col-md-7 codex-profile-api-field d-none"><label class="form-label" for="codexProfileBaseUrl" id="profileBaseUrlLabel">Responses API Base URL</label><input class="form-control" id="codexProfileBaseUrl" name="base_url" type="url" placeholder="https://api.example.com/v1" required><div class="form-text" id="profileProtocolHint">目录只负责快速选型；接口本身必须兼容 OpenAI Responses API。</div></div>
+                                    <div class="col-12 codex-profile-api-field opencode-protocol-field d-none"><label class="form-label" for="opencodeProfileProtocol">接口协议</label><select id="opencodeProfileProtocol" name="opencode_protocol" class="form-select" onchange="EngineCenter.syncProtocol()"><option value="responses">OpenAI Responses</option><option value="chat_completions">OpenAI Chat Completions</option><option value="anthropic">Anthropic Messages</option></select></div>
                                     <div class="col-12 codex-profile-api-field d-none"><label class="form-label" for="codexProfileApiKey">API Key</label><div class="input-group"><input class="form-control" id="codexProfileApiKey" name="api_key" type="password" maxlength="4096" autocomplete="new-password" required><button class="btn btn-outline-secondary" type="button" onclick="UI.togglePassword('codexProfileApiKey')" aria-label="显示或隐藏 API Key"><i class="bi bi-eye"></i></button></div><div class="form-text" id="codexProfileApiKeyHint">密钥通过标准输入交给 WSL，并存入权限为 0600 的独立文件；不会写入 Profile 清单或返回网页。</div></div>
                                     <div class="col-md-4 codex-profile-final-config-field"><label class="form-label">推理强度</label><select class="form-select" name="reasoning_effort"><option>minimal</option><option>low</option><option>medium</option><option selected>high</option><option>xhigh</option><option>max</option></select></div>
                                     <div class="col-md-4 codex-profile-final-config-field"><label class="form-label">输出详细度</label><select class="form-select" name="model_verbosity"><option selected>inherit</option><option>low</option><option>medium</option><option>high</option></select></div>
-                                    <div class="col-md-4 codex-profile-final-config-field"><label class="form-label">上下文窗口（Token）</label><input class="form-control" name="context_window" type="number" min="4096" max="10000000" value="128000"><div class="form-text">官方登录和 API 均生效；自动压缩阈值为此值的 90%。运行时可用窗口可能扣除预留空间。</div></div>
+                                    <div class="col-md-4 codex-profile-final-config-field"><label class="form-label">上下文窗口（Token）</label><input class="form-control" name="context_window" type="number" min="4096" max="10000000" value="128000"><div class="form-text" id="profileContextWindowHint">官方登录和 API 均生效；自动压缩阈值为此值的 90%。运行时可用窗口可能扣除预留空间。</div></div>
                                     <div class="col-12 codex-profile-final-config-field">
                                         <label class="form-check form-switch" for="codexProfileFastMode"><input class="form-check-input" id="codexProfileFastMode" name="fast_mode" type="checkbox"><span class="form-check-label">Fast mode</span></label>
                                         <div class="form-text">默认关闭。开启后请求更快的模型响应，需要模型与服务商支持，并会增加用量或费用。</div>
                                     </div>
                                     <div class="col-12 codex-profile-final-config-field"><label class="form-check form-switch"><input class="form-check-input" type="checkbox" name="make_default" checked><span class="form-check-label">设为 Assistant 默认 Profile</span></label></div>
+                                </fieldset>
+
                                 </form>
                             </div>
                             <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button><button type="button" class="btn btn-primary" id="saveCodexProfileButton" onclick="CodexCenter.saveProfile()">创建 Profile</button></div>
@@ -724,7 +733,7 @@
                                 </div>
                                 <label class="form-check form-switch rounded border p-3 ps-5 mb-0">
                                     <input class="form-check-input" type="checkbox" name="assistant_enabled" checked>
-                                    <span class="form-check-label"><strong>同时启用 AI 助手</strong><br><small class="text-muted">使用 Codex 默认 Profile 回复；插件权限稍后可独立调整。</small></span>
+                                    <span class="form-check-label"><strong>同时启用 AI 助手</strong><br><small class="text-muted">使用默认 Profile 回复；插件权限稍后可独立调整。</small></span>
                                 </label>
                                 <div class="form-text mt-3">添加后将直接进入聊天工作台；聊天档案、黑名单与插件在该处统一维护。</div>
                             </form>
@@ -1268,7 +1277,7 @@
                                         </button>
                                         <button type="button" class="model-provider-option" data-model-provider="local_codex"
                                             onclick="LLMManager.applyProviderPreset('local_codex')">
-                                            <i class="bi bi-terminal"></i><span>本地 Codex</span><small>无需 API Key</small>
+                                            <i class="bi bi-terminal"></i><span>ChatGPT 订阅</span><small>无需 API Key</small>
                                         </button>
                                         <button type="button" class="model-provider-option" data-model-provider="other"
                                             onclick="LLMManager.applyProviderPreset('other')">
@@ -1400,8 +1409,9 @@
                                                 <input type="text" class="form-control font-monospace" id="modelProvider"
                                                     placeholder="例如 custom_openai">
                                             </div>
+                                            <div class="col-sm-6 col-lg-4 d-none" id="modelSubscriptionEngineGroup"><label class="form-label" for="modelSubscriptionEngine">执行引擎</label><select class="form-select" id="modelSubscriptionEngine"><option value="follow">跟随 Profile</option><option value="opencode">OpenCode</option><option value="codex">Codex</option></select></div>
                                             <div class="col-sm-6 col-lg-4 d-none" id="modelCodexReasoningGroup">
-                                                <label class="form-label" for="modelCodexReasoning">Codex 推理强度</label>
+                                                <label class="form-label" for="modelCodexReasoning">推理强度</label>
                                                 <select class="form-select" id="modelCodexReasoning">
                                                     <option value="medium">中</option>
                                                     <option value="low">低</option>
@@ -1420,7 +1430,7 @@
                                             <div class="col-sm-6"><label class="form-label" for="modelOutputPrice">输出单价 / 百万 Token</label><input class="form-control" id="modelOutputPrice" type="number" min="0" step="any" placeholder="自动匹配"></div>
                                             <div class="col-sm-6"><label class="form-label" for="modelCacheReadPrice">缓存读取 / 百万 Token</label><input class="form-control" id="modelCacheReadPrice" type="number" min="0" step="any" placeholder="自动匹配"></div>
                                             <div class="col-sm-6"><label class="form-label" for="modelCacheWritePrice">缓存写入 / 百万 Token</label><input class="form-control" id="modelCacheWritePrice" type="number" min="0" step="any" placeholder="自动匹配"></div>
-                                            <div class="col-12 small text-muted">留空使用可匹配的价格表。自定义价格需填写输入、输出；有缓存用量时需补充对应单价。Codex 固定按官方标准 API 价格折算。</div>
+                                            <div class="col-12 small text-muted">留空使用可匹配的价格表。自定义价格需填写输入、输出；有缓存用量时需补充对应单价。ChatGPT 订阅按官方标准 API 价格折算，不代表订阅实扣费用。</div>
                                         </div>
                                         <div class="model-capability-options">
                                             <label class="form-check">
@@ -1569,23 +1579,24 @@
             <div class="modal-body"></div><div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button><button type="button" class="btn btn-primary" onclick="ImageGeneration.saveEditor()">保存</button></div>
         </div></div>
     </div>
-    <script src="/static/assets/js/api.js?v=20260925-backup-flow"></script>
-    <script src="/static/assets/js/codex_permissions.js?v=20261028-permission-grid"></script>
-    <script src="/static/assets/js/ui.js?v=20261106-terminal"></script>
+    <script src="/static/assets/js/api.js?v=20261116-shared-profile"></script>
+    <script src="/static/assets/js/codex_permissions.js?v=20261116-shared-profile"></script>
+    <script src="/static/assets/js/ui.js?v=20261116-shared-profile"></script>
     <script src="/notification-assets/email_notifications.js?v=1"></script>
     <script src="/static/assets/js/system_storage.js?v=20260925-storage"></script>
     <script src="/static/assets/js/system_operations.js?v=20260925-backup-flow"></script>
-    <script src="/static/assets/js/system_tools.js?v=20261106-codex-updates"></script>
+    <script src="/static/assets/js/system_tools.js?v=20261116-opencode-wsl"></script>
     <script src="/static/assets/js/route_prompts.js?v=20261028-content-review"></script>
     <script src="/static/assets/js/image_generation.js?v=20261106-image-diagnostics"></script>
-    <script src="/static/assets/js/llm_manager.js?v=20261106-codex-updates"></script>
-    <script src="/static/assets/js/codex_center.js?v=20261106-codex-updates"></script>
-    <script src="/static/assets/js/terminal.js?v=20261106-terminal-compact"></script>
+    <script src="/static/assets/js/llm_manager.js?v=20261116-opencode-sessions"></script>
+    <script src="/static/assets/js/engine_center.js?v=20261116-context-pricing"></script>
+    <script src="/static/assets/js/codex_center.js?v=20261116-load-isolation"></script>
+    <script src="/static/assets/js/terminal.js?v=20261116-opencode-wsl"></script>
     <script src="/static/assets/js/codex_skills.js?v=1.1.1-format-helpers"></script>
     <script src="/static/assets/js/dashboard.js?v=20260921-bot-activity"></script>
     <link href="/static/assets/css/scheduled_tasks.css?v=20261030-detail-layout" rel="stylesheet">
     <script src="/static/assets/js/scheduled_tasks.js?v=20261030-detail-layout"></script>
-    <script src="/static/assets/js/main.js?v=20261106-terminal"></script>
+    <script src="/static/assets/js/main.js?v=20261116-shared-profile"></script>
     <script src="/static/assets/js/assistant_prompts.js?v=20261028-content-review"></script>
     <script src="/static/assets/js/chat_archive.js?v=20260917-context-actions"></script>
 

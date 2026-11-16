@@ -1059,7 +1059,7 @@ async def _attention_from_codex(items: List[Dict[str, Any]]) -> None:
         items.append(_attention_item(
             "codex.profile", "warning", "默认助手配置不可用",
             str(status.get("quota_message") or "Codex Profile 未就绪。"),
-            action={"label": "查看 Codex", "tab": "codex", "path": "/codex"},
+            action={"label": "查看 AI 运行中心", "tab": "codex", "path": "/ai-center"},
         ))
         return
     if not status.get("quota_available"):
@@ -1086,7 +1086,7 @@ async def _attention_from_codex(items: List[Dict[str, Any]]) -> None:
             detail += f"，{datetime.fromtimestamp(resets_at).strftime('%m-%d %H:%M')} 重置"
         items.append(_attention_item(
             f"codex.quota.{label}", severity, f"Codex {label}即将耗尽", detail,
-            action={"label": "查看 Codex", "tab": "codex", "path": "/codex"},
+            action={"label": "查看 AI 运行中心", "tab": "codex", "path": "/ai-center"},
         ))
 
 
@@ -1279,7 +1279,7 @@ def _timeline_from_codex(items: List[Dict[str, Any]]) -> None:
                 "detail": " · ".join(part for part in detail_parts if part)[:200],
                 "chat_name": chat_name,
                 "at": _event_time(job.get("ended_at") or job.get("updated_at") or job.get("started_at")),
-                "action": {"label": "查看 Codex", "tab": "codex", "path": "/codex"},
+                "action": {"label": "查看 AI 运行中心", "tab": "codex", "path": "/ai-center"},
             })
     except Exception as exc:
         logger.debug("读取 Codex 任务失败: %s", exc)

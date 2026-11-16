@@ -45,6 +45,9 @@ class CodexUpdateMonitor:
             thread.join(timeout=2)
 
     def tick(self) -> bool:
+        from app.services.engine_deployment import enabled_engines
+        if "codex" not in enabled_engines():
+            return False
         # SQLite's daily slot and lease make this idempotent across restarts,
         # multiple web workers, and manual checks. No other tool is queried.
         return self.service.check_latest(scheduled=True) is not None

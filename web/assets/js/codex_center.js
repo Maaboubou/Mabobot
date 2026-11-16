@@ -1,4 +1,4 @@
-/** First-class Codex setup and operations surface. */
+/** Shared AI Profile setup and runtime surface; native Codex controls stay scoped. */
 const CodexCenter = {
     loading: false,
     profileEditorBound: false,
@@ -38,36 +38,43 @@ const CodexCenter = {
         this.loading = true;
         if (!quiet) CodexPermissions.loadDefaults();
         try {
-            const [jobsResponse, profiles] = await Promise.all([
-                API.codexJobs.list(),
-                quiet ? Promise.resolve(null) : API.codexProfiles.list()
+            const showFailure = (id, label, error) => {
+                if (quiet) return;
+                const message = `${label}加载失败：${error.message}`;
+                UI.showError(message);
+                const element = document.getElementById(id);
+                if (element) element.innerHTML = `<div class="alert alert-danger mb-0">${this.escape(message)}</div>`;
+            };
+            await Promise.all([
+                (async () => {
+                    try {
+                        const response = await API.get('/api/ai/jobs');
+                        const jobs = response.data || {};
+                        LLMManager.renderCodexJobs(
+                            jobs.active || [], jobs.recent || [], jobs.stats || {},
+                            jobs.sessions || [], jobs.session_stats || {}, jobs.runtime || {},
+                            jobs.upgrade || {}, jobs.file_tools || {}
+                        );
+                        LLMManager.scheduleCodexJobsPoll(
+                            (jobs.active || []).length,
+                            Boolean(jobs.upgrade?.operation_running)
+                        );
+                    } catch (error) {
+                        LLMManager.scheduleCodexJobsPoll();
+                        showFailure('codexJobsList', '任务列表', error);
+                    }
+                })(),
+                (async () => {
+                    if (quiet) return;
+                    try {
+                        const profiles = await API.aiProfiles.list();
+                        this.renderProfiles(profiles);
+                        window.App?.updateManagedChatProfiles(profiles);
+                    } catch (error) {
+                        showFailure('codexProfilesGrid', 'Profile 列表', error);
+                    }
+                })()
             ]);
-            const jobs = jobsResponse.data || {};
-            if (profiles) {
-                this.renderProfiles(profiles);
-                window.App?.updateManagedChatProfiles(profiles);
-            }
-            LLMManager.renderCodexJobs(
-                jobs.active || [], jobs.recent || [], jobs.stats || {},
-                jobs.sessions || [], jobs.session_stats || {}, jobs.runtime || {},
-                jobs.upgrade || {}, jobs.file_tools || {}
-            );
-            LLMManager.scheduleCodexJobsPoll(
-                (jobs.active || []).length,
-                Boolean(jobs.upgrade?.operation_running)
-            );
-        } catch (error) {
-            // Resume quiet polling after transient failures so a daily update
-            // result can still reach an already-open runtime page.
-            LLMManager.scheduleCodexJobsPoll();
-            if (!quiet) UI.showError(`加载 Codex 运行中心失败：${error.message}`);
-            if (!quiet) {
-                const jobs = document.getElementById('codexJobsList');
-                const profiles = document.getElementById('codexProfilesGrid');
-                const message = `<div class="alert alert-danger mb-0">${this.escape(error.message)}</div>`;
-                if (jobs) jobs.innerHTML = message;
-                if (profiles) profiles.innerHTML = message;
-            }
         } finally {
             this.loading = false;
         }
@@ -75,6 +82,8 @@ const CodexCenter = {
 
     renderProfiles(data) {
         const profiles = data.profiles || [];
+        const notice = document.getElementById('aiProfilesNotice');
+        if (notice) { notice.textContent = data.warning || ''; notice.classList.toggle('d-none', !data.warning); }
         this.profiles = profiles;
         this.localAuth = data.local_auth || this.localAuth;
         this.updateLocalAuthChoice();
@@ -94,6 +103,7 @@ const CodexCenter = {
         const cards = profiles.map(profile => {
             const selected = profile.name === data.default_profile_id;
             const ready = Boolean(profile.available);
+            const opencode = profile.engine === 'opencode';
             const official = profile.auth_type === 'chatgpt';
             const contextWindow = Number(profile.context_window || 0);
             const contextLabel = contextWindow >= 1_000_000
@@ -115,43 +125,43 @@ const CodexCenter = {
                     <header class="codex-profile-card-head">
                         <div class="codex-profile-card-identity">
                             <strong title="${this.escape(profile.name)}">${this.escape(profile.name)}</strong>
-                            <span class="codex-profile-kind">${official ? '官方 Codex' : 'API'}</span>
+                            <span class="codex-profile-kind">${opencode ? 'OpenCode' : official ? 'Codex' : 'Codex · API'}</span>
                         </div>
                         <div class="codex-profile-card-statuses">
                             ${selected ? '<span class="codex-profile-status selected">默认</span>' : ''}
-                            <span class="codex-profile-status ${ready ? 'ready' : 'warning'}">${ready ? '可用' : '需登录'}</span>
+                            <span class="codex-profile-status ${ready ? 'ready' : 'warning'}">${ready ? '可用' : opencode && (profile.auth_type === 'api_key' || profile.authentication?.status === 'connected') ? '待验证' : '需登录'}</span>
                             ${syncWarning ? `<span class="codex-profile-status warning" title="${this.escape(profile.auth_sync_reason || syncStatusLabel)}">${syncStatusLabel}</span>` : ''}
                         </div>
                     </header>
                     <div class="codex-profile-card-model" title="${this.escape(profile.model)}">${this.escape(profile.model)}</div>
                     <div class="codex-profile-card-meta" aria-label="Profile 配置摘要">
-                        ${ready ? `<span><b>推理</b>${this.escape(profile.reasoning_effort || 'inherit')}</span><span><b>上下文</b>${contextLabel}</span>` : '<span class="warning">完成凭据配置后可使用</span>'}
-                        ${profile.supports_vision ? '<span>图片</span>' : ''}
+                        ${ready ? `<span><b>推理</b>${this.escape(profile.reasoning_effort || 'inherit')}</span>${opencode && !contextWindow ? '' : `<span><b>上下文</b>${contextLabel}</span>`}` : '<span class="warning">完成凭据配置后可使用</span>'}
+                        ${profile.supports_vision && !opencode ? '<span>图片</span>' : ''}
                         ${profile.supports_web_search ? '<span>搜索</span>' : ''}
                         ${profile.fast_mode ? '<span>Fast mode</span>' : ''}
                     </div>
                     <footer class="codex-profile-card-actions">
                         <span class="codex-profile-card-source" title="${this.escape(sourceLabel)}">${this.escape(sourceLabel)}</span>
                         <div>
-                        <button class="btn btn-sm btn-outline-secondary" type="button" data-profile-skills="${this.escape(profile.name)}" title="管理此 Profile 的 Skills"><i class="bi bi-tools me-1"></i>Skills</button>
+                        ${opencode ? `<button class="btn btn-sm btn-outline-secondary" type="button" data-opencode-verify="${this.escape(profile.name)}">验证连接</button>` : `<button class="btn btn-sm btn-outline-secondary" type="button" data-profile-skills="${this.escape(profile.name)}" title="管理此 Profile 的 Skills"><i class="bi bi-tools me-1"></i>Skills</button>`}
                         <button class="btn btn-sm btn-outline-secondary codex-profile-icon-action" type="button" data-edit-profile="${this.escape(profile.name)}" aria-label="编辑 ${this.escape(profile.name)}" title="编辑"><i class="bi bi-pencil"></i></button>
                         ${localCache ? `<button class="btn btn-sm ${syncWarning ? 'btn-outline-warning' : 'btn-outline-secondary'} codex-profile-icon-action" type="button" data-sync-local-auth="${this.escape(profile.name)}" aria-label="同步 ${this.escape(profile.name)} 的本机登录" title="同步本机登录"><i class="bi bi-arrow-repeat"></i></button>` : ''}
                         ${official && !ready
                             ? (localCache ? '' : `<button class="btn btn-sm btn-outline-primary" type="button" data-profile-login="${this.escape(profile.name)}">完成登录</button>`)
                             : (selected ? '' : `<button class="btn btn-sm btn-outline-primary" type="button" data-default-profile="${this.escape(profile.name)}" ${ready ? '' : 'disabled'}>设为默认</button>`)}
-                        <button class="btn btn-sm btn-outline-danger codex-profile-icon-action" type="button" data-delete-profile="${this.escape(profile.name)}" aria-label="删除 ${this.escape(profile.name)}" title="删除"><i class="bi bi-trash3"></i></button>
+                        <button class="btn btn-sm btn-outline-danger codex-profile-icon-action" type="button" data-delete-profile="${this.escape(profile.name)}" aria-label="${opencode ? '停用' : '删除'} ${this.escape(profile.name)}" title="${opencode ? '停用' : '删除'}"><i class="bi bi-trash3"></i></button>
                         </div>
                     </footer>
                 </article>`;
         }).join('');
         container.innerHTML = setupCard + cards + `
-            <button class="codex-profile-add" type="button" onclick="CodexCenter.openProfileModal()"><i class="bi bi-plus-lg"></i><span>新建 Profile</span><small>连接官方 Codex 或兼容 Responses API</small></button>`;
+            <button class="codex-profile-add" type="button" onclick="CodexCenter.openProfileModal()"><i class="bi bi-plus-lg"></i><span>新建 Profile</span><small>选择 Codex 或 OpenCode</small></button>`;
         container.querySelectorAll('[data-default-profile]').forEach(button => {
             button.addEventListener('click', () => this.setDefault(button.dataset.defaultProfile || ''));
         });
         container.querySelector('[data-open-profile]')?.addEventListener('click', () => this.openProfileModal());
         container.querySelectorAll('[data-profile-login]').forEach(button => {
-            button.addEventListener('click', () => this.startOAuth(button.dataset.profileLogin || '', false));
+            button.addEventListener('click', () => this.profiles.find(p => p.name === button.dataset.profileLogin)?.engine === 'opencode' ? EngineCenter.login(button.dataset.profileLogin) : this.startOAuth(button.dataset.profileLogin || '', false));
         });
         container.querySelectorAll('[data-sync-local-auth]').forEach(button => {
             button.addEventListener('click', () => this.syncLocalAuth(button.dataset.syncLocalAuth || '', button));
@@ -162,6 +172,7 @@ const CodexCenter = {
         container.querySelectorAll('[data-profile-skills]').forEach(button => {
             button.addEventListener('click', () => CodexSkills.open(button.dataset.profileSkills || ''));
         });
+        container.querySelectorAll('[data-opencode-verify]').forEach(button => button.addEventListener('click', () => EngineCenter.verify(button.dataset.opencodeVerify, false)));
         container.querySelectorAll('[data-delete-profile]').forEach(button => {
             button.addEventListener('click', () => this.deleteProfile(button.dataset.deleteProfile || '', button));
         });
@@ -229,6 +240,10 @@ const CodexCenter = {
         });
     },
 
+    getProfileEngine() {
+        return document.getElementById('aiProfileEngine')?.value || 'codex';
+    },
+
     getProfileSource() {
         return document.querySelector('#codexProfileForm input[name="profile_source"]:checked')?.value || 'oauth';
     },
@@ -237,7 +252,7 @@ const CodexCenter = {
         const input = document.querySelector('#codexProfileForm input[name="auth_source"][value="local_cache"]');
         const hint = document.getElementById('codexLocalAuthHint');
         const choice = document.getElementById('codexLocalAuthChoice');
-        const available = Boolean(this.localAuth?.available);
+        const available = Boolean(this.localAuth?.available) && this.getProfileEngine() !== 'opencode';
         if (hint) hint.textContent = this.localAuth?.reason || (available ? '可导入本机 Codex 登录' : '本机登录不可导入');
         if (choice) choice.classList.toggle('opacity-50', !available);
         if (!input) return;
@@ -253,6 +268,7 @@ const CodexCenter = {
         if (!form) return;
         const oauthMode = source === 'oauth';
         const catalogMode = source === 'catalog';
+        const sourceEngine = this.getProfileEngine();
         const officialWizard = oauthMode && !this.editingProfile;
         form.classList.toggle('codex-profile-mode-manual', !catalogMode && !oauthMode);
         form.classList.toggle('codex-profile-mode-oauth', oauthMode);
@@ -283,6 +299,7 @@ const CodexCenter = {
         if (saveButton && !this.editingProfile) {
             saveButton.textContent = officialWizard ? '下一步' : '创建 Profile';
         }
+        EngineCenter.updateProfileFields();
         if (oauthMode) {
             this.updateLocalAuthChoice();
             this.closeProfileCatalog();
@@ -302,6 +319,7 @@ const CodexCenter = {
             void LLMManager.loadLiteLLMUpdateStatus({ quiet: true });
         }
         if (!this.catalogProviders.length) await this.loadProfileCatalogProviders();
+        if (this.getProfileSource() !== 'catalog' || this.getProfileEngine() !== sourceEngine) return;
         const providerSelect = document.getElementById('codexProfileCatalogProvider');
         const providerKey = providerSelect?.value
             || (this.catalogProviders.some(provider => provider.id === 'openai') ? 'openai' : this.catalogProviders[0]?.id || '');
@@ -310,28 +328,32 @@ const CodexCenter = {
     },
 
     async loadProfileCatalogProviders() {
+        const engine = this.getProfileEngine();
         const select = document.getElementById('codexProfileCatalogProvider');
         if (select) {
             select.disabled = true;
             select.innerHTML = '<option value="">正在读取目录…</option>';
         }
         try {
-            const response = await fetch('/api/llm/models/catalog');
+            const response = await fetch(engine === 'opencode' ? '/api/ai/profiles/opencode/catalog' : '/api/llm/models/catalog');
             const result = await response.json();
-            if (!response.ok || result.status !== 'success') {
+            if (engine !== this.getProfileEngine()) return;
+            if (!response.ok || (engine !== 'opencode' && result.status !== 'success')) {
                 throw new Error(result.detail || result.message || '目录加载失败');
             }
-            this.catalogProviders = Array.isArray(result.data?.providers) ? result.data.providers : [];
+            const providers = engine === 'opencode' ? result.providers : result.data?.providers;
+            this.catalogProviders = Array.isArray(providers) ? providers : [];
             if (!this.catalogProviders.length) throw new Error('LiteLLM 目录没有可用供应商');
         } catch (error) {
-            console.warn('Codex Profile LiteLLM providers unavailable:', error);
+            if (engine !== this.getProfileEngine()) return;
+            console.warn('Profile providers unavailable:', error);
             this.catalogProviders = [
                 { id: 'openai', label: 'OpenAI', model_count: 0 },
                 { id: 'deepseek', label: 'DeepSeek', model_count: 0 },
                 { id: 'openrouter', label: 'OpenRouter', model_count: 0 }
             ];
         } finally {
-            if (select) {
+            if (select && engine === this.getProfileEngine()) {
                 const selected = select.value;
                 select.innerHTML = this.catalogProviders.map(provider => `
                     <option value="${this.escape(provider.id)}">${this.escape(provider.label)}${provider.model_count ? ` · ${UI.formatNumber(provider.model_count)} 个模型` : ''}</option>`).join('');
@@ -355,7 +377,12 @@ const CodexCenter = {
         const baseUrl = document.getElementById('codexProfileBaseUrl');
         const modelInput = document.getElementById('codexProfileModel');
         const label = this.getProfileProviderLabel(providerKey);
-        const suggestedBase = this.profileProviderBases[providerKey] || '';
+        const provider = this.catalogProviders.find(item => item.id === providerKey);
+        const suggestedBase = provider?.base_url || this.profileProviderBases[providerKey] || '';
+        if (this.getProfileEngine() === 'opencode') {
+            document.getElementById('opencodeProfileProtocol').value = provider?.protocol || (providerKey === 'openai' ? 'responses' : 'chat_completions');
+            EngineCenter.syncProtocol();
+        }
         if (providerName) {
             const previousAuto = providerName.dataset.autoValue || '';
             if (forceProvider || !providerName.value || providerName.value === previousAuto) providerName.value = label;
@@ -510,6 +537,10 @@ const CodexCenter = {
             UI.showError('Codex Profile 不存在，请刷新后重试');
             return;
         }
+        if (profile?.engine === 'opencode' && profile.auth_type === 'chatgpt') {
+            await EngineCenter.configureModels(profile.name, Boolean(profile.is_default));
+            return;
+        }
         if (profile?.auth_type === 'chatgpt') {
             await this.startOAuth(
                 profile.name,
@@ -525,6 +556,8 @@ const CodexCenter = {
         }
         this.editingProfile = profile;
         form.reset();
+        EngineCenter.setProfileEngine(profile?.engine || 'codex', { refresh: false });
+        document.getElementById('aiProfileEngine').disabled = Boolean(profile);
         this.profileCatalogModels = [];
         form.querySelectorAll('input[name="profile_source"]').forEach(input => {
             input.disabled = false;
@@ -553,6 +586,7 @@ const CodexCenter = {
         let source = 'oauth';
         if (profile) {
             source = profile.auth_type === 'chatgpt' ? 'oauth' : 'manual';
+            if (profile.engine === 'opencode') document.getElementById('opencodeProfileProtocol').value = profile.protocol || 'responses';
             if (nameInput) nameInput.value = profile.name || '';
             if (modelInput) modelInput.value = profile.model || '';
             if (providerName) providerName.value = profile.provider_name || '';
@@ -576,8 +610,8 @@ const CodexCenter = {
                 input.disabled = true;
             });
             if (apiKey) apiKey.placeholder = '留空则继续使用当前 API Key';
-            if (apiKeyHint) apiKeyHint.textContent = '留空不会修改现有密钥；输入新 Key 后保存即可完成轮换。密钥仍只存入权限为 0600 的独立文件。';
-            if (modalTitle) modalTitle.textContent = `编辑 Codex Profile · ${profile.name}`;
+            if (apiKeyHint) apiKeyHint.textContent = '留空不会修改现有密钥；输入新 Key 后保存即可完成轮换。密钥只保存在对应 Profile 的私有目录。';
+            if (modalTitle) modalTitle.textContent = `编辑 ${profile.engine === 'opencode' ? 'OpenCode' : 'Codex'} Profile · ${profile.name}`;
             if (modalSubtitle) modalSubtitle.textContent = profile.auth_type === 'chatgpt'
                 ? '调整模型参数；如需更换账号，请重新完成 ChatGPT 授权。'
                 : '可修改接口、模型参数或轮换 API Key。';
@@ -590,8 +624,8 @@ const CodexCenter = {
                 form.elements.make_default.disabled = false;
             }
             if (apiKeyHint) apiKeyHint.textContent = '密钥通过标准输入交给 WSL，并存入权限为 0600 的独立文件；不会写入 Profile 清单或返回网页。';
-            if (modalTitle) modalTitle.textContent = '新建 Codex Profile';
-            if (modalSubtitle) modalSubtitle.textContent = '使用 ChatGPT 官方登录或连接 Responses 兼容接口。';
+            if (modalTitle) modalTitle.textContent = '新建 Profile';
+            if (modalSubtitle) modalSubtitle.textContent = '选择执行引擎，再配置对应账号和模型。';
             if (saveButton) saveButton.textContent = '创建 Profile';
         }
         this.updateLocalAuthChoice();
@@ -600,6 +634,10 @@ const CodexCenter = {
     },
 
     async saveProfile() {
+        if (document.getElementById('aiProfileEngine')?.value === 'opencode') {
+            await EngineCenter.saveProfile();
+            return;
+        }
         if (this.editingProfile) {
             await this.updateProfile(this.editingProfile);
             return;
@@ -630,8 +668,9 @@ const CodexCenter = {
         if (button) button.disabled = true;
         try {
             await API.codexProfiles.update(profile.name, payload);
+            await API.aiProfiles.syncCodex(profile.name);
             if (form.elements.make_default?.checked && !profile.is_default) {
-                await API.codexProfiles.setDefault(profile.name);
+                await API.aiProfiles.setDefault(profile.name);
             }
             const modalElement = document.getElementById('codexProfileModal');
             const modal = bootstrap.Modal.getInstance(modalElement);
@@ -702,6 +741,7 @@ const CodexCenter = {
                     { setupDraft: true, authSource: payload.auth_source }
                 );
             } else {
+                if (payload.make_default) await API.aiProfiles.setDefault(result.profile?.name || payload.name);
                 await this.load();
                 UI.showSuccess('Codex Profile 已创建');
             }
@@ -717,7 +757,7 @@ const CodexCenter = {
     async setDefault(profileId) {
         if (!profileId) return;
         try {
-            await API.codexProfiles.setDefault(profileId);
+            await API.aiProfiles.setDefault(profileId);
             UI.showSuccess(`默认 Profile 已切换为 ${profileId}`);
             await this.load();
         } catch (error) {
@@ -739,6 +779,10 @@ const CodexCenter = {
     },
 
     async deleteProfile(profileName, button = null) {
+        if (this.profiles.find(p => p.name === profileName)?.engine === 'opencode') {
+            await EngineCenter.retire(profileName);
+            return;
+        }
         const profile = this.profiles.find(item => item.name === profileName);
         if (!profile) {
             UI.showError('Codex Profile 不存在，请刷新后重试');
@@ -758,7 +802,12 @@ const CodexCenter = {
         if (!confirmed) return;
         if (button) button.disabled = true;
         try {
-            const result = await API.codexProfiles.delete(profileName);
+            const result = await API.aiProfiles.deleteCodex(profileName);
+            if (result.retiring) {
+                await this.load();
+                UI.showSuccess('Profile 已停用；已有任务释放引用后可清理账号。');
+                return;
+            }
             await this.load();
             const resetCount = Number(result.chat_bindings_cleared || 0)
                 + Number(result.model_bindings_cleared || 0);
@@ -1056,8 +1105,9 @@ const CodexCenter = {
                 });
             } else {
                 await API.codexProfiles.update(profileName, payload);
-                if (payload.make_default) await API.codexProfiles.setDefault(profileName);
             }
+            await API.aiProfiles.syncCodex(profileName);
+            if (payload.make_default) await API.aiProfiles.setDefault(profileName);
             const madeDefault = payload.make_default
                 || result?.default_profile_id === profileName;
             this.oauthSetupDraft = false;

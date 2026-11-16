@@ -350,10 +350,25 @@ class BackupService:
     def _skip_common(self, path: Path) -> bool:
         if self._is_backup_internal(path):
             return True
+        # OpenCode's data DB mixes OAuth and native session state. The first
+        # portable format intentionally restores config + login, never a raw
+        # account DB (including WAL, caches and runtime bridge receipts).
+        if self._is_engine_private(path):
+            return True
         relative = Path(self._relative(path))
         if any(part in self.SKIP_PARTS for part in relative.parts):
             return True
         return path.suffix.lower() in self.SKIP_SUFFIXES or path.name.endswith(("-wal", "-shm"))
+
+    def _is_engine_private(self, path: Path) -> bool:
+        if path in {self.project_root / "data/opencode-installation.json", self.project_root / "data/opencode-wsl-target.json"}:
+            return True  # Machine-specific observation; destination must probe/install again.
+        configured = Path(os.getenv("OPENCODE_PROFILE_ROOT", "data/opencode"))
+        if not configured.is_absolute():
+            configured = self.project_root / configured
+        roots = (configured, self.project_root / "data/opencode", self.project_root / "data/engine-releases",
+                 self.project_root / "data/terminal")
+        return any(path.resolve().is_relative_to(root.resolve()) for root in roots)
 
     def _iter_tree(self, root: Path) -> Iterator[Path]:
         if not root.exists():
@@ -472,7 +487,8 @@ class BackupService:
         add(self._iter_state_data(options))
         add(self._iter_plugin_state_files())
         add(self._iter_portable_storage())
-        if options.include_codex_profiles:
+        from app.services.engine_deployment import enabled_engines
+        if options.include_codex_profiles and "codex" in enabled_engines():
             try:
                 add(backup_codex_profiles.sources(self._require_codex_home()))
             except (ValueError, OSError) as exc:
@@ -501,6 +517,22 @@ class BackupService:
                     )
                 add(self._iter_tree(skill_root))
 
+        from app.services.engine_recovery import execution_path
+        ledger = execution_path(self.project_root)
+        if ledger.exists():
+            if not ledger.resolve().is_relative_to(self.project_root / "data"):
+                raise BackupError("ENGINE_EXECUTION_DB 必须位于项目 data/ 内才能完整备份；请离线迁移账本后重试")
+            if self._is_engine_private(ledger):
+                raise BackupError("任务账本不能放在原生账号、终端或引擎安装目录内")
+            add([ledger])
+        from app.services.engine_recovery import host_state_paths
+        try:
+            for relative in host_state_paths(self.project_root).values():
+                if self._is_engine_private(self.project_root / relative):
+                    raise BackupError("宿主账本不能位于原生账号目录")
+                add([self.project_root / relative])
+        except ValueError as exc:
+            raise BackupError(str(exc)) from exc
         return [sources[key] for key in sorted(sources)]
 
     @staticmethod
@@ -562,6 +594,8 @@ class BackupService:
         sensitive = (
             backup_codex_profiles.allowed(relative)
             or relative_path.name == ".env"
+            or relative_path.suffix in {".db", ".sqlite", ".sqlite3"}
+            or relative_path.name in {"llm_models.json", "llm_config.json"}
             or "cookie" in relative.lower()
             or "secret" in relative.lower()
             or relative == wechat_files_root
@@ -609,6 +643,7 @@ class BackupService:
 
     def create_backup(self, options: BackupOptions, operation: Any = None) -> Dict[str, Any]:
         options = options.normalized()
+        from app.services.engine_recovery import execution_path, host_state_paths, engine_databases
         with self._lock:
             timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
             name = f"mabobot-mabowx-{options.profile}-{timestamp}{self.ARCHIVE_SUFFIX}"
@@ -623,6 +658,7 @@ class BackupService:
                 collision += 1
             temporary = destination.with_suffix(destination.suffix + ".tmp")
             sources = self.collect_sources(options)
+            engine_generation = any(True for _ in engine_databases(self.project_root))
             if not sources:
                 raise BackupError("没有找到可备份的数据")
             if operation:
@@ -656,6 +692,13 @@ class BackupService:
                                 operation.check_cancelled()
                             relative = archive_snapshot_names.get(source) or self._relative(source)
                             prepared, consistency = self._prepared_source(source, staging)
+                            if consistency.startswith("sqlite_online_backup"):
+                                snapshot_db = sqlite3.connect(prepared.resolve().as_uri() + "?mode=ro", uri=True)
+                                try:
+                                    engine_generation = engine_generation or bool(snapshot_db.execute(
+                                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='engine_runs'").fetchone())
+                                finally:
+                                    snapshot_db.close()
                             if source in archive_snapshot_names:
                                 consistency = "archive_committed_prefix"
                             size = prepared.stat().st_size
@@ -681,7 +724,9 @@ class BackupService:
                         manifest = {
                             "format": self.FORMAT_NAME,
                             "format_version": BACKUP_FORMAT_VERSION,
-                            "generation": "mabowx-v2",
+                            # Older software rejects this generation before it
+                            # can restore and replay an engine-aware ledger.
+                            "generation": "mabowx-v2-engines-v1" if engine_generation else "mabowx-v2",
                             "automation": {
                                 "backend": self.AUTOMATION_BACKEND,
                                 "bundled": True,
@@ -690,6 +735,16 @@ class BackupService:
                             "app_version": APP_VERSION,
                             "plugin_runtime_api_version": PLUGIN_RUNTIME_API_VERSION,
                             "profile": options.profile,
+                            "engine_deployment": {
+                                "version": 1,
+                                "host_state_paths": host_state_paths(self.project_root),
+                                "execution_db": (execution_path(self.project_root).resolve().relative_to(self.project_root).as_posix()
+                                                 if execution_path(self.project_root).exists() else None),
+                                "application_state": "sqlite_online_backup_and_host_archive",
+                                "opencode_accounts": "excluded_relogin_required",
+                                "codex_accounts": "legacy_managed_profile_format",
+                                "restore_dispatch": "held_for_review",
+                            },
                             "storage_layout": {
                                 storage_id: str(entry["relative"])
                                 for storage_id, entry in sorted(self.portable_storage.items())
@@ -829,6 +884,8 @@ class BackupService:
     ) -> bool:
         if relative == self.MANIFEST_NAME:
             return False
+        if self._is_engine_private(self.project_root / relative):
+            return False
         if backup_codex_profiles.allowed(relative):
             return bool(options.get("include_codex_profiles", True))
         if relative in self.STATE_ROOT_FILES or self._is_plugin_state_member(relative):
@@ -912,6 +969,21 @@ class BackupService:
             raise BackupError("mabowx v2 备份文件清单为空")
 
         seen: Set[str] = set()
+        engine_metadata = payload.get("engine_deployment") or {}
+        if not isinstance(engine_metadata, dict) or (engine_metadata and engine_metadata.get("version") != 1):
+            raise BackupError("引擎备份清单版本无效")
+        from app.services.engine_recovery import STATE_DEFAULTS
+        auxiliary = engine_metadata.get("host_state_paths", {})
+        if not isinstance(auxiliary, dict) or set(auxiliary) - set(STATE_DEFAULTS):
+            raise BackupError("宿主账本清单无效")
+        for relative in auxiliary.values():
+            if (not isinstance(relative, str) or self._safe_member(relative) != relative or not relative.startswith("data/")
+                    or self._is_engine_private(self.project_root / relative)):
+                raise BackupError("宿主账本路径无效")
+        execution_db = engine_metadata.get("execution_db")
+        if execution_db and (not isinstance(execution_db, str) or self._safe_member(execution_db) != execution_db
+                             or not execution_db.startswith("data/") or self._is_engine_private(self.project_root / execution_db)):
+            raise BackupError("任务账本备份路径无效")
         for record in files:
             if not isinstance(record, dict):
                 raise BackupError("mabowx v2 备份文件记录无效")
@@ -919,7 +991,7 @@ class BackupService:
             if relative in seen:
                 raise BackupError(f"mabowx v2 备份包含重复路径: {relative}")
             seen.add(relative)
-            if not self._is_allowed_manifest_member(
+            if relative != execution_db and relative not in auxiliary.values() and not self._is_allowed_manifest_member(
                 relative,
                 profile=profile,
                 options=options,
@@ -973,7 +1045,7 @@ class BackupService:
             raise IncompatibleBackupError("旧备份格式已停用；当前只接受 mabowx v2 备份")
         automation = payload.get("automation")
         if (
-            payload.get("generation") != "mabowx-v2"
+            payload.get("generation") not in {"mabowx-v2", "mabowx-v2-engines-v1"}
             or not isinstance(automation, dict)
             or automation.get("backend") != self.AUTOMATION_BACKEND
             or automation.get("bundled") is not True
@@ -1343,7 +1415,7 @@ class BackupService:
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
 
-    def restore_archive(self, archive_path: Path, *, create_safety_backup: bool = True) -> Dict[str, Any]:
+    def restore_archive(self, archive_path: Path, *, create_safety_backup: bool = True, code_only: bool = False) -> Dict[str, Any]:
         """Restore an archive while the application is stopped.
 
         Files are fully extracted and verified before any project path changes.
@@ -1359,6 +1431,27 @@ class BackupService:
             manifest, relatives = self._extract_verified(archive_path, stage)
             self._preflight_restore_targets(manifest)
             self._validate_staged_payload(manifest, stage)
+            from app.services.engine_recovery import (protect_existing_facts, quarantine_restored_state, write_hold, rebase_restored_environment,
+                                                       pause_restored_schedules, require_quiescent_rollback)
+            if code_only:
+                if manifest.get("profile") != "migration":
+                    raise BackupError("code-only 回退需要 migration 备份")
+                try:
+                    require_quiescent_rollback(self.project_root)
+                except ValueError as exc:
+                    raise BackupError(str(exc)) from exc
+                # Never replace operator configuration, history, assets, ledger
+                # or credentials during a software downgrade.
+                relatives = [r for r in relatives if self._code_rollback_member(r)]
+                manifest = {**manifest, "files": [r for r in manifest["files"] if r["path"] in relatives]}
+            else:
+                try:
+                    protect_existing_facts(self.project_root)
+                    quarantine_restored_state(stage, manifest.get("engine_deployment"))
+                    pause_restored_schedules(stage, manifest.get("engine_deployment"))
+                    rebase_restored_environment(stage, manifest)
+                except ValueError as exc:
+                    raise BackupError(str(exc)) from exc
             if any(backup_codex_profiles.allowed(relative) for relative in relatives):
                 self._require_codex_home()
                 try:
@@ -1367,7 +1460,7 @@ class BackupService:
                     raise BackupError(f"Profile 恢复预检失败: {exc}") from exc
 
             safety_backup = None
-            if create_safety_backup:
+            if create_safety_backup and any(self._restore_target(r).is_file() for r in relatives):
                 manifest_options = manifest.get("options") or {}
                 safety_backup = self.create_backup(
                     BackupOptions(
@@ -1388,6 +1481,13 @@ class BackupService:
             created: List[str] = []
             applied: List[str] = []
             removed: List[str] = []
+            # Put the barrier in place before the first replacement. If restore
+            # fails or old software is installed, dispatch remains stopped until
+            # the operator verifies what was applied.
+            write_hold(self.project_root, archive=archive_path.name, reason="code_rollback" if code_only else "restore")
+            if code_only:
+                from app.services.engine_recovery import host_state_paths
+                pause_restored_schedules(self.project_root, {"host_state_paths": host_state_paths(self.project_root)})
             try:
                 # A newer WAL must never be replayed against the restored DB.
                 # Retain sidecars in rollback until every replacement succeeds.
@@ -1421,7 +1521,7 @@ class BackupService:
                             shutil.copy2(stale_path, previous)
                             stale_path.unlink()
                             removed.append(relative)
-                if manifest.get("profile") == "migration":
+                if manifest.get("profile") == "migration" and not code_only:
                     for stale_path in self._migration_stale_files(set(relatives)):
                         relative = self._relative(stale_path)
                         previous = rollback / Path(*PurePosixPath(relative).parts)
@@ -1478,7 +1578,18 @@ class BackupService:
                 "safety_backup": safety_backup,
                 "security_warning": (manifest.get("security") or {}).get("warning"),
                 "restored_at": self._utc_now(),
+                "code_only": code_only,
+                "dispatch_held": True,
+                "opencode_account_restore": "relogin_required" if not code_only else "unchanged",
             }
+
+    def _code_rollback_member(self, relative):
+        path = PurePosixPath(relative)
+        if self._is_plugin_state_member(relative) or relative in self.STATE_ROOT_FILES:
+            return False
+        if path.parts[0] in {"config", "data", ".codex", ".local"} or path.name.startswith(".env"):
+            return False
+        return path.parts[0] in self.MIGRATION_CODE_ROOTS or relative in self.MIGRATION_ROOT_FILES - {"cookies.txt"}
 
     def apply_pending_restore(self) -> Optional[Dict[str, Any]]:
         pending_path = self.pending_path()
@@ -1543,12 +1654,14 @@ class BackupService:
         return {
             "format_version": BACKUP_FORMAT_VERSION,
             "generation": "mabowx-v2",
+            "accepted_generations": ["mabowx-v2", "mabowx-v2-engines-v1"],
+            "opencode_account_restore": "configuration_only_relogin_required",
             "automation_backend": self.AUTOMATION_BACKEND,
             "backup_directory": str(self.backup_root),
             "security": {
                 "encrypted": False,
                 "env_included": True,
-                "warning": "当前备份格式未加密；.env、聊天附件、Codex Profile 登录凭据及工作区应按敏感文件保管。",
+                "warning": "当前备份格式未加密；.env、聊天附件、Codex Profile 登录凭据及工作区应按敏感文件保管。OpenCode 账号和原生会话不导出，恢复后需重新登录并核对未决发送。",
                 "encryption_planned": True,
             },
             "pending_restore": pending,

@@ -158,11 +158,15 @@ class CodexPermissionService:
     def __init__(self, db: Session, *, support=None):
         self.db = db
         self.explicit_support = support
-        self.support = runtime_support(db=db) if support is None else support
+        from app.services.engine_permissions import selected_engine, host_tool_support
+        self.support = (host_tool_support() if selected_engine(None) == 'opencode' else runtime_support(db=db)) if support is None else support
 
     def support_for(self, user):
         if self.explicit_support is not None:
             return self.explicit_support
+        from app.services.engine_permissions import selected_engine, host_tool_support
+        if selected_engine(user) == 'opencode':
+            return host_tool_support()
         from app.services.codex_profile_service import CodexProfileService
         profile_id = (user.assistant_policy.codex_profile_id if user.assistant_policy else None) or CodexProfileService.default_profile_id()
         return runtime_support(profile_id or "", db=self.db)

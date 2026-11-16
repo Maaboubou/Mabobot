@@ -3,12 +3,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from collections import OrderedDict
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import lru_cache
 import json
 import threading
 import sqlite3
 import time
-from typing import Any, TYPE_CHECKING
+from typing import Any, Callable, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from app.history.image_reader import AttachmentImageResult
@@ -27,6 +29,23 @@ def get_archive() -> ArchiveStore:
 
 _sessions = OrderedDict()
 _sessions_lock = threading.Lock()
+
+_pending_chat = ContextVar("pending_chat_messages", default=None)
+
+
+@contextmanager
+def pending_chat_messages(chat: str, reader: Callable[[], list[dict]] | None):
+    """Bind this reply's live ingress, separately from the cached archive session."""
+    token = _pending_chat.set((chat, reader) if reader is not None else None)
+    try:
+        yield
+    finally:
+        _pending_chat.reset(token)
+
+
+def current_pending_reader(chat: str):
+    binding = _pending_chat.get()
+    return binding[1] if binding and binding[0] == chat else None
 
 
 def history_session_for(chat: str, logical_id: str, request_id: str, *, max_calls: int = 0, max_bytes: int = 0, files_provider=None):
@@ -110,6 +129,7 @@ class HistorySession:
     cursors: dict = field(default_factory=dict)
     returned: set = field(default_factory=set)
     member_refs: dict = field(default_factory=dict)
+    pending_checked: bool = False
     lock: Any = field(default_factory=threading.Lock)
 
     def _ref(self, identity: str) -> str:
@@ -117,14 +137,14 @@ class HistorySession:
             self.refs[identity] = f"m{len(self.refs) + 1}"
         return self.refs[identity]
 
-    def execute(self, name: str, arguments: Any) -> dict | AttachmentImageResult:
-        return self._execute(name, arguments)
+    def execute(self, name: str, arguments: Any, *, pending_reader=None) -> dict | AttachmentImageResult:
+        return self._execute(name, arguments, pending_reader=pending_reader)
 
     def read_image_input(self, attachment_id: str) -> dict | AttachmentImageResult:
         """Host-only edit input, sharing archive scope, budgets and audit."""
         return self._execute("read_attachment", {"attachment_id": attachment_id}, image_purpose="edit")
 
-    def _execute(self, name: str, arguments: Any, *, image_purpose="view") -> dict | AttachmentImageResult:
+    def _execute(self, name: str, arguments: Any, *, image_purpose="view", pending_reader=None) -> dict | AttachmentImageResult:
         started = time.monotonic()
         if isinstance(arguments, str):
             arguments = json.loads(arguments)
@@ -138,6 +158,20 @@ class HistorySession:
                    'merge_member':{'nickname','member_ref','new_name','reason'}}
         if name not in allowed or set(arguments) - allowed[name]:
             raise ValueError("unsupported history tool or parameters")
+        # The live cursor is issued in the current turn input. It is never an
+        # archive page and cannot select a chat, date range or message number.
+        if name == "range" and arguments.get("cursor") == "since_request":
+            if set(arguments) != {"cursor"}:
+                raise ValueError("the live group cursor does not accept other filters")
+            if pending_reader is None:
+                return {"status": "unavailable", "messages": []}
+            with self.lock:
+                if self.pending_checked:
+                    return {"status": "already_checked", "messages": []}
+                self.pending_checked = True
+            return {"status": "ok", "messages": [
+                {"sender": row["sender"], "content": row["content"]} for row in pending_reader()
+            ]}
         with self.lock:
             store = self.store or get_archive()
             if name == 'files':

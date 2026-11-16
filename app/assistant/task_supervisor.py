@@ -50,6 +50,9 @@ class TaskStore:
                     payload TEXT NOT NULL, status TEXT NOT NULL, created REAL NOT NULL, error TEXT
                 );
             """)
+            columns = {row[1] for row in db.execute('PRAGMA table_info(assistant_tasks)')}
+            if 'cancel_requested' not in columns:
+                db.execute('ALTER TABLE assistant_tasks ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0')
 
     def connect(self):
         # closing() matters: sqlite's transaction context does not close handles.
@@ -77,7 +80,7 @@ class TaskStore:
         return True
 
     def update(self, task_id, **values):
-        allowed = {'status', 'background', 'thread_id', 'turn_id', 'state_json', 'result_json', 'error'}
+        allowed = {'status', 'background', 'thread_id', 'turn_id', 'state_json', 'result_json', 'error', 'cancel_requested'}
         if not set(values) <= allowed:
             raise ValueError("Unknown task field")
         values['updated'] = time.time()
@@ -102,13 +105,9 @@ class TaskStore:
             db.execute("UPDATE assistant_tasks SET state_json=?,updated=? WHERE id=?", (payload, time.time(), task.id))
             head = db.execute("SELECT task_id FROM assistant_chat_heads WHERE chat=?", (task.chat,)).fetchone()
             if head and head[0] == task.id:
-                db.execute("""INSERT INTO codex_thread_state
-                    (chat_id,state_json,codex_version,schema_hash,config_signature,updated_at) VALUES(?,?,?,?,?,?)
-                    ON CONFLICT(chat_id) DO UPDATE SET state_json=excluded.state_json,
-                    codex_version=excluded.codex_version,schema_hash=excluded.schema_hash,
-                    config_signature=excluded.config_signature,updated_at=excluded.updated_at""",
-                    (task.chat, payload, state.get('codex_version'), state.get('schema_hash'),
-                     state.get('config_signature'), state.get('updated_at') or str(time.time())))
+                from app.services.engine_session_store import EngineSessionStore
+                EngineSessionStore.put(db, task.chat, state)
+
 
     def completions(self, chat, exclude):
         with self.connect() as db:
@@ -157,6 +156,10 @@ class TaskStore:
                 task.delivery_error = error or '结果已生成，发送失败'
             with self.connect() as db:
                 db.execute("UPDATE assistant_outbox SET status=?,error=? WHERE id=?", (status, error, delivery_id))
+            if task.engine_handle is not None:
+                from app.services.execution_service import get_execution_service
+                get_execution_service().store.delivery_status(task.engine_handle.context.run_id,
+                    'partial' if status == 'sent' else status)
 
 
 class _Connection:
@@ -187,6 +190,7 @@ class TaskScope:
         self.done = threading.Event()
         self.bound = threading.Event()
         self.manager = None
+        self.engine_handle = None
         self.thread_id = self.turn_id = ''
         self.started = time.monotonic()
         self.deadline = None
@@ -210,6 +214,10 @@ class TaskScope:
         """
         if self.cancel_requested.is_set():
             raise ActionBlocked('任务发送被拦截：任务已请求取消')
+        if self.engine_handle is not None:
+            from app.services.execution_authority import authorize_context
+            if self.engine_handle.cancel_requested.is_set() or not authorize_context(self.engine_handle.context):
+                raise ActionBlocked('任务发送被拦截：执行已取消或授权已撤回')
         if self.done.is_set():
             raise ActionBlocked('任务发送被拦截：任务已结束')
         now = time.monotonic()
@@ -262,6 +270,11 @@ class TaskScope:
             self.result_ready = False
             self.manager, self.thread_id, self.turn_id = manager, thread_id, turn_id
             self.store.update(self.id, thread_id=thread_id, turn_id=turn_id)
+            self.bound.set()
+
+    def bind_execution(self, handle):
+        with self.lock:
+            self.engine_handle = handle
             self.bound.set()
 
     def completed_result(self, response):
@@ -359,6 +372,20 @@ class AssistantTaskSupervisor:
             if not self.store.create(task, str(event.data.get('message_id') or event.id)):
                 self._slots.release()
                 return True
+            try:
+                from app.services.engine_reply_gateway import begin_assistant_task
+                role_signature = ''
+                profile_id = ''
+                if owner is not None and hasattr(owner, '_get_user_permission_config'):
+                    profile_id = owner._get_user_permission_config(chat).get('codex_profile_id') or ''
+                    from app.services.execution_contracts import digest
+                    role = owner._get_user_role(chat)
+                    role_signature = digest([role, owner.role_manager.get_role_prompt(role)])
+                task.admitted_run_id = begin_assistant_task(role_signature=role_signature, native_profile_id=profile_id)
+            except Exception:
+                self.store.update(task.id, status='failed', error='引擎路由接单失败')
+                self._slots.release()
+                raise
             self._active[task.id] = task
         # EventBus mutates/restores its context after each listener. Own a copy,
         # including this listener's wx consumption/logging proxy, for delayed sends.
@@ -413,6 +440,9 @@ class AssistantTaskSupervisor:
                       'delivery_failed' if task.result_ready else 'skipped')
             self.store.update(task.id, status=status, error=task.delivery_error or task.error or
                               ('结果已生成，发送未确认' if status == 'delivery_failed' else None))
+            if task.engine_handle is not None and status == 'completed':
+                from app.services.execution_service import get_execution_service
+                get_execution_service().store.delivery_status(task.engine_handle.context.run_id, 'sent')
             return result
         except Exception as exc:
             status = 'delivery_blocked' if isinstance(exc, ActionBlocked) else 'delivery_failed' if task.result_ready else 'failed'
@@ -420,6 +450,12 @@ class AssistantTaskSupervisor:
             logger.exception('Assistant task failed: task=%s chat=%s', task.id, task.chat)
             raise
         finally:
+            if getattr(task, 'admitted_run_id', None):
+                try:
+                    from app.services.execution_service import get_execution_service
+                    get_execution_service().store.finish_unused_admissions([task.admitted_run_id])
+                except Exception:
+                    logger.exception('Could not close unused assistant admission: task=%s', task.id)
             _task.reset(token)
             with self._lock, task.lock:
                 task.done.set()
@@ -488,8 +524,12 @@ class AssistantTaskSupervisor:
                 text = '该任务当前没有可操作的执行轮次。'
             elif action == '取消':
                 active.cancel_requested.set()
+                self.store.update(active.id, cancel_requested=1)
                 try:
-                    active.manager._request('turn/interrupt', {'threadId': active.thread_id, 'turnId': active.turn_id}, timeout=10)
+                    if active.engine_handle is not None:
+                        active.engine_handle.cancel()
+                    else:
+                        active.manager._request('turn/interrupt', {'threadId': active.thread_id, 'turnId': active.turn_id}, timeout=10)
                     text = f'已请求取消任务 {prefix}。'
                 except Exception:
                     text = f'任务 {prefix} 的取消尚未确认，请稍后查询状态。'
@@ -497,12 +537,17 @@ class AssistantTaskSupervisor:
                 try:
                     params = {'threadId': active.thread_id, 'expectedTurnId': active.turn_id,
                               'input': [{'type': 'text', 'text': action[2:].strip()}]}
-                    self.store.delivery(active, 'turn/steer', (params,), {},
-                        lambda body: active.manager._request('turn/steer', body, timeout=15))
+                    if active.engine_handle is not None:
+                        active.engine_handle.append(action[2:].strip())
+                    else:
+                        self.store.delivery(active, 'turn/steer', (params,), {},
+                            lambda body: active.manager._request('turn/steer', body, timeout=15))
                     text = f'已补充到任务 {prefix}。'
                 except Exception as exc:
                     logger.warning('Task steer was not confirmed: task=%s error=%s', active.id, exc)
-                    text = f'任务 {prefix} 暂未确认收到补充，请稍后查询状态。'
+                    text = (f'任务 {prefix} 所用引擎不支持在途补充，请在本轮结束后发送新消息。'
+                            if getattr(exc, 'code', '') == 'append_unsupported' else
+                            f'任务 {prefix} 暂未确认收到补充，请稍后查询状态。')
         wx = event.context.get('wx')
         if wx:
             wx.send_message(chat, text, **({'silent': True} if silent else {}))

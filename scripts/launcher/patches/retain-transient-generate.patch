@@ -1,0 +1,43 @@
+diff --git a/packages/cli/src/version.ts b/packages/cli/src/version.ts
+index 54caec4..417f4c8 100644
+--- a/packages/cli/src/version.ts
++++ b/packages/cli/src/version.ts
+@@ -5,7 +5,7 @@ declare const OPENCODE_CHANNEL: string
+ declare const OPENCODE_ARTIFACT: string
+ declare const OPENCODE_RELEASE_HIGHLIGHTS: string
+ 
+-const version = typeof OPENCODE_VERSION === "string" ? OPENCODE_VERSION : "local"
++const version = typeof OPENCODE_VERSION === "string" ? OPENCODE_VERSION : "2.3.0+mabobot.p0.1"
+ const channel = typeof OPENCODE_CHANNEL === "string" ? OPENCODE_CHANNEL : "local"
+ const artifact = typeof OPENCODE_ARTIFACT === "string" ? OPENCODE_ARTIFACT : "cli"
+ // Stable release builds embed the release notes' Highlights; every other build has none.
+diff --git a/packages/core/src/session/generate.ts b/packages/core/src/session/generate.ts
+index a9ab0fd..38bd9b3 100644
+--- a/packages/core/src/session/generate.ts
++++ b/packages/core/src/session/generate.ts
+@@ -7,6 +7,7 @@ import { Bus } from "../bus.js"
+ import { Database } from "../database/database.js"
+ import { Instance } from "../instance/service.js"
+ import { Plugin } from "../plugin/service.js"
++import { LocationLifecycle } from "../location-lifecycle.js"
+ import type { Instructions } from "../instructions/index.js"
+ import { SessionContext } from "./context.js"
+ import { SessionEvent } from "./event.js"
+@@ -41,6 +42,10 @@ export const generate = Effect.fn("SessionGenerate.generate")(function* (input:
+   const bus = yield* Bus.Service
+ 
+   return yield* Effect.gen(function* () {
++    // Transient generation has no durable runner owner. Retain its Location
++    // until the request settles so the idle sweep cannot unload its hooks.
++    const lifecycle = yield* LocationLifecycle.Service
++    yield* lifecycle.retain
+     yield* Plugin.awaitActivation
+     const context = yield* SessionContext.Service
+     const selection = yield* context.select(input.session.id)
+@@ -74,5 +79,5 @@ export const generate = Effect.fn("SessionGenerate.generate")(function* (input:
+     const usage = SessionUsage.record(response.usage, model.cost)
+     yield* bus.publish(SessionEvent.UsageRecorded, { sessionID: selection.session.id, source: "generate", ...usage })
+     return { text: response.text, ...usage }
+-  }).pipe(instances.provide(input.session))
++  }).pipe(Effect.scoped, instances.provide(input.session))
+ })

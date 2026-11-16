@@ -14,10 +14,11 @@ import time
 from .constants import PROJECT_ROOT
 
 STEPS = ("welcome", "codex", "components", "finish")
-ACTIONS = {"wsl", "wsl_terminal", "codex", "browser", "media", "file_tools"}
+ACTIONS = {"wsl", "wsl_terminal", "codex", "opencode", "browser", "media", "file_tools"}
 LABELS = {"wsl": "安装 WSL 与 Ubuntu", "wsl_terminal": "初始化 Linux 用户",
           "codex": "准备 Codex", "browser": "安装浏览器", "media": "安装媒体组件",
           "file_tools": "安装文件处理工具"}
+LABELS["opencode"] = "安装 OpenCode（可选）"
 
 
 def _run(argv, *, timeout=30):
@@ -54,14 +55,23 @@ def probe_wsl() -> dict:
 
 
 def probe_setup() -> dict:
+    from app.services.engine_deployment import enabled_engines, deployment_status
     from app.services.file_tools_runtime import _default_use_wsl, get_file_tools_runtime
     from app.utils.browser_executable import find_chrome_executable
-    use_wsl = _default_use_wsl()
+    codex_enabled = "codex" in enabled_engines()
+    use_wsl = _default_use_wsl() if codex_enabled else False
     wsl = probe_wsl() if use_wsl else {"state": "native", "detail": "使用已配置的本机 Codex"}
     result = {"wsl": wsl, "use_wsl": use_wsl, "codex": {"ready": False, "detail": "等待运行环境"},
               "profile": {"ready": False, "detail": "待配置模型"}, "file_tools": {"ready": False, "detail": "待安装"}}
+    result["deployment"] = deployment_status()
+    from app.services.opencode_installation import status as opencode_status
+    native = opencode_status()
+    result["opencode"] = {"ready": native.get("installed", False), "detail": native.get("message", "可选组件，尚未安装")}
+    if not codex_enabled:
+        result["codex"] = {"ready": False, "disabled": True, "detail": "此部署未启用 Codex；请在引擎中心配置 OpenCode"}
+        result["profile"] = {"ready": False, "detail": "OpenCode 在引擎中心独立登录及验证"}
     # Never start a distribution before its user has finished the interactive first launch.
-    if wsl["state"] in {"ready", "native"}:
+    if codex_enabled and wsl["state"] in {"ready", "native"}:
         runtime = get_file_tools_runtime(force=True)
         codex = runtime.get("codex") or {}
         ready = bool(codex.get("available")) and not runtime.get("stale")
@@ -127,6 +137,9 @@ def installation_command(action: str) -> tuple[list[str], bool]:
     """Only fixed, allowlisted commands; never interpolate browser-supplied command text."""
     if action not in ACTIONS:
         raise ValueError("未知安装项目")
+    if action == "opencode":
+        from app.services.opencode_installation import command
+        return command(), True
     if action == "browser":
         return [sys.executable, "-m", "playwright", "install", "chromium"], False
     if action == "media":
@@ -240,7 +253,7 @@ class SetupWizard:
             self._checked_at = time.monotonic()
             self._checking = False
             action = self._operation.get("action")
-            if self._operation.get("status") == "finished" and action in {"codex", "browser", "media", "file_tools"}:
+            if self._operation.get("status") == "finished" and action in {"codex", "opencode", "browser", "media", "file_tools"}:
                 check = checks.get(action)
                 if check is not None:
                     self._operation.update(
@@ -298,7 +311,13 @@ class SetupWizard:
                 # Interactive sudo/user creation must stay in the visible terminal, not the WebView.
                 code = process.wait()
             if code:
+                if action == "opencode" and code == 3010:
+                    raise RuntimeError("WSL 已安装，请重启 Windows 后再次点击安装 OpenCode 继续")
                 raise RuntimeError(f"安装未完成（退出码 {code}）。请检查网络和安装窗口／日志，再重试。")
+            if action == "opencode":
+                from app.services.opencode_installation import status as opencode_status
+                if not opencode_status(force=True).get("installed"):
+                    raise RuntimeError("OpenCode 安装命令结束，但 WSL 运行验证未通过，请重试")
             message = "安装步骤已结束，正在检查实际结果。"
             if action == "wsl":
                 message = "WSL 安装步骤已结束。如提示重启，请保存工作并重启电脑，再打开 START.bat 继续。"

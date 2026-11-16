@@ -21,7 +21,7 @@ import uuid
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MAX_SESSIONS = 4
-PROFILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$")
+PROFILE_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 SESSION_RE = re.compile(r"^[a-f0-9]{32}$")
 
 
@@ -42,6 +42,7 @@ class TerminalManager:
         self.project_root = project_root.resolve()
         self.state_dir = self.project_root / "data" / "terminal"
         self.socket_name = "mabobot-web-" + hashlib.sha256(str(self.project_root).encode()).hexdigest()[:16]
+        self.skip_legacy = False
 
     def _tool(self, name):
         bundled = self.project_root / "data" / "terminal-tools" / name
@@ -68,7 +69,7 @@ class TerminalManager:
             message = (f"检测到 ttyd {ttyd['version']}，需要 1.7.0 或更新版本；"
                        "可将官方 Linux 发行版二进制放到项目 data/terminal-tools/ttyd 并赋予执行权限")
         else:
-            message = ("请在 Codex 所在的 Linux / WSL 环境安装 ttyd（至少 1.7.0）和 tmux；"
+            message = ("请在引擎所在的 Linux / WSL 环境安装 ttyd（至少 1.7.0）和 tmux；"
                        "可运行 sudo apt install ttyd tmux。若系统仓库版本较旧，"
                        "请将官方 Linux 发行版二进制放到项目 data/terminal-tools/ttyd 并赋予执行权限")
         return {"available": available, "dependencies": dependencies,
@@ -102,6 +103,10 @@ class TerminalManager:
             if path.is_symlink() or path.stat().st_size > 16000:
                 raise ValueError()
             record = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(record, dict):
+                raise ValueError("Invalid terminal record")
+            if (record.get("distribution") and record["distribution"] != os.getenv("WSL_DISTRO_NAME", "")) or (self.skip_legacy and not record.get("distribution")):
+                raise ValueError("Terminal belongs to another distribution")
             if (not isinstance(record, dict) or record.get("id") != identifier
                     or record.get("project_dir") != str(self.project_root)
                     or not isinstance(record.get("profile_id"), str) or not PROFILE_RE.fullmatch(record["profile_id"])
@@ -192,7 +197,7 @@ class TerminalManager:
     @staticmethod
     def _public(record):
         return {key: record[key] for key in (
-            "id", "profile_id", "status", "created_at", "full_access", "url")}
+            "id", "profile_id", "status", "created_at", "full_access", "url")} | {"engine": record.get("engine", "codex")}
 
     def _records(self):
         records = []
@@ -212,13 +217,15 @@ class TerminalManager:
         with self._locked():
             return {"sessions": [self._public(record) for record in self._records()]}
 
-    def create(self, profile_id, wrapper_path, full_access=True):
+    def create(self, profile_id, wrapper_path, full_access=True, engine="codex"):
+        if engine not in {"codex", "opencode"} or (engine == "opencode" and full_access):
+            raise TerminalError("终端引擎或权限设置无效")
         if not isinstance(profile_id, str) or not PROFILE_RE.fullmatch(profile_id):
             raise TerminalError("Profile 名称无效")
         if type(full_access) is not bool:
             raise TerminalError("终端权限设置无效")
         wrapper = Path(wrapper_path)
-        if (not wrapper.is_absolute() or wrapper.name != "codex-profile-" + profile_id
+        if (not wrapper.is_absolute() or wrapper.name != engine + "-profile-" + profile_id
                 or not wrapper.is_file() or not os.access(wrapper, os.X_OK)):
             raise TerminalError("Profile 启动脚本不可用，请在 Codex 配置中重新检查 Profile")
         if not self.status()["available"]:
@@ -242,6 +249,8 @@ class TerminalManager:
                 reservation.bind(("127.0.0.1", 0))
                 port = reservation.getsockname()[1]
             record = {"id": identifier, "profile_id": profile_id, "status": "running",
+                      "engine": engine,
+                      "distribution": os.getenv("WSL_DISTRO_NAME", ""),
                       "created_at": time.time(), "full_access": full_access,
                       "project_dir": str(self.project_root), "url": prefix + "/",
                       "tmux_session": name, "port": port, "username": username, "password": password}
@@ -321,12 +330,13 @@ def main():
         if not isinstance(payload, dict):
             raise TerminalError("终端请求格式无效")
         manager = TerminalManager()
+        manager.skip_legacy = payload.get("skip_legacy") is True
         if action == "status":
             data = manager.status()
         elif action == "list":
             data = manager.list_sessions()
         elif action == "create":
-            data = manager.create(payload.get("profile_id"), payload.get("wrapper_path", ""), payload.get("full_access", True))
+            data = manager.create(payload.get("profile_id"), payload.get("wrapper_path", ""), payload.get("full_access", True), payload.get("engine", "codex"))
         elif action == "stop":
             data = manager.stop(payload.get("id"))
         elif action == "connection":

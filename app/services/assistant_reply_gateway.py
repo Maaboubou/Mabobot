@@ -24,6 +24,10 @@ logger = logging.getLogger(__name__)
 class AssistantReplyError(RuntimeError):
     """Raised when Codex cannot produce a usable assistant reply."""
 
+    def __init__(self, message: str, *, error_code: str = ""):
+        super().__init__(message)
+        self.error_code = error_code
+
 
 @dataclass(frozen=True)
 class CodexReplyRequest:
@@ -418,7 +422,8 @@ def get_assistant_reply_gateway() -> CodexReplyGateway:
 
             get_llm_manager().record_codex_reply(**kwargs)
 
-        _assistant_reply_gateway = CodexReplyGateway(
+        from app.services.engine_reply_gateway import AssistantReplyGateway
+        _assistant_reply_gateway = AssistantReplyGateway(
             telemetry_recorder=record_telemetry,
         )
     return _assistant_reply_gateway

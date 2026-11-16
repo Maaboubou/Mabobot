@@ -61,6 +61,8 @@ const SystemTools = {
         if (tool.check_state === 'checking' || this.busyActions.has(`check:${tool.id}`)
             || (this.busyActions.has('check-all') && tool.actions?.check)) return ['muted', '正在检查'];
         if (tool.restart_required) return ['warning', '等待重启'];
+        if (tool.id === 'opencode' && tool.health === 'ready') return ['success', '已安装并接入'];
+        if (tool.id === 'opencode' && ['missing', 'disabled'].includes(tool.health)) return ['muted', tool.health_label];
         if (tool.health && tool.health !== 'ready') return ['danger', tool.health_label || '环境需检查'];
         if (this.isEnvironment(tool)) return ['success', '环境正常'];
         if (tool.update_available) return ['primary', '有更新'];
@@ -82,7 +84,7 @@ const SystemTools = {
         } else if (actions.restart) {
             buttons.push(this.actionButton(tool, 'restart', '重启后生效', true));
         } else if (actions.repair && tool.health !== 'ready') {
-            buttons.push(this.actionButton(tool, 'repair', '安装 / 修复', true));
+            buttons.push(this.actionButton(tool, 'repair', tool.id === 'opencode' ? '安装 OpenCode' : '安装 / 修复', true));
         } else if (tool.update_available && actions.update) {
             buttons.push(this.actionButton(tool, 'update', `更新至 ${tool.available_version || '最新版'}`, true));
             if (this.checkError(tool) && actions.check) buttons.push(this.actionButton(tool, 'check', '重试检查'));
@@ -151,7 +153,7 @@ const SystemTools = {
             <article class="system-tool-card ${tool.id === 'codex' && window.location.hash === '#codex' ? 'system-tool-target' : ''}" data-tool-id="${this.esc(tool.id)}" ${tool.id === 'codex' ? 'id="codex-tool-row" tabindex="-1" aria-label="Codex 版本与更新"' : ''}>
                 <div class="system-tool-card-main">
                     <div class="system-tool-identity"><span class="system-tool-icon"><i class="bi ${this.esc(tool.icon || 'bi-tools')}" aria-hidden="true"></i></span><div class="system-tool-title"><h4>${this.esc(tool.title)}</h4>${tool.id === 'codex' ? '<small>每天 08:00 自动检查</small>' : ''}</div></div>
-                    <div class="system-tool-version"><div><span>${this.versionText(tool.installed_version)}</span>${environment ? '' : `<span class="system-tool-version-arrow" aria-label="最新稳定版">→</span><strong class="${tool.update_available ? 'text-primary' : ''}">${tool.available_version ? this.esc(tool.available_version) : '待检查'}</strong>`}</div>${tool.runtime_version && tool.runtime_version !== tool.installed_version ? `<small>运行中 ${this.esc(tool.runtime_version)}</small>` : environment ? '<small>配套运行环境</small>' : ''}</div>
+                    <div class="system-tool-version"><div><span>${tool.id === 'opencode' && tool.health === 'missing' ? '未安装' : this.versionText(tool.installed_version)}</span>${environment ? '' : `<span class="system-tool-version-arrow" aria-label="最新稳定版">→</span><strong class="${tool.update_available ? 'text-primary' : ''}">${tool.available_version ? this.esc(tool.available_version) : '待检查'}</strong>`}</div>${tool.runtime_version && tool.runtime_version !== tool.installed_version ? `<small>运行中 ${this.esc(tool.runtime_version)}</small>` : environment ? '<small>配套运行环境</small>' : ''}</div>
                     <div class="system-tool-status"><span class="system-state-pill ${statusClass}">${this.esc(status)}</span><small>${environment ? '仅检测环境可用性' : checked ? `${this.esc(checked)} · 北京时间` : tool.id === 'codex' ? '北京时间 · 自动检查' : '手动检查版本'}</small></div>
                     <div class="system-tool-actions">${this.renderActions(tool)}</div>
                 </div>
@@ -351,10 +353,10 @@ const SystemTools = {
             const detail = toolId === 'playwright'
                 ? '将安装与当前 Playwright Python 包配套的 Chromium，并执行一次无头启动验证。'
                 : '将恢复 requirements 中锁定的 static-ffmpeg，并验证 FFmpeg 与 FFprobe。外部路径不会被覆盖。';
-            if (!await UI.confirm(detail, { title: `安装 / 修复 ${title}`, confirmText: '开始修复', variant: 'primary' })) return;
+            if (toolId !== 'opencode' && !await UI.confirm(detail, { title: `安装 / 修复 ${title}`, confirmText: '开始修复', variant: 'primary' })) return;
             try {
                 await API.systemTools.repair(toolId);
-                UI.showSuccess(`${title} 修复任务已开始`);
+                UI.showSuccess(toolId === 'opencode' ? 'OpenCode 安装已开始，请留意系统安装窗口' : `${title} 修复任务已开始`);
             } catch (error) {
                 UI.showError(`无法开始修复：${error.message}`);
             }

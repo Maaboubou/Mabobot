@@ -52,6 +52,9 @@ class CodexSkillService:
         return [*command, "--action", action]
 
     def _profile_payload(self, profile_id: str) -> dict[str, str]:
+        from app.services.engine_deployment import enabled_engines
+        if "codex" not in enabled_engines():
+            raise CodexSkillError("此部署未启用 Codex", code="unavailable")
         normalized = str(profile_id or "").strip()
         profile = self.profile_service.get_profile(normalized)
         if not profile:

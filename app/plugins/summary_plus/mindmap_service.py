@@ -330,6 +330,23 @@ def _parse_mindmap_json_content(content: str, logger: Any):
             raise
 
 
+MINDMAP_OUTPUT_CONTRACT = {
+    "skip_field": "should_generate",
+    "schema": {
+        "$defs": {"node": {"type": "object", "properties": {
+            "title": {"type": "string", "minLength": 1},
+            "children": {"type": "array", "items": {"$ref": "#/$defs/node"}}},
+            "required": ["title"], "additionalProperties": False}},
+        "oneOf": [
+            {"type": "object", "properties": {"should_generate": {"const": True},
+                "mindmap": {"$ref": "#/$defs/node"}}, "required": ["should_generate", "mindmap"], "additionalProperties": False},
+            {"type": "object", "properties": {"should_generate": {"const": False},
+                "skip_reason": {"type": "string", "minLength": 1}}, "required": ["should_generate", "skip_reason"], "additionalProperties": False},
+        ],
+    },
+}
+
+
 def summarize_to_mindmap_json(
     llm_manager: Any,
     text: str,
@@ -337,7 +354,7 @@ def summarize_to_mindmap_json(
     call_type: str,
     plugin_name: str = "summary_plus",
 ):
-    prompt = (
+    rules = (
         "请将以下内容整理为具备深度的脑图 JSON。\n"
         "你必须只返回一个 JSON，并严格使用以下二选一结构之一：\n"
         "1) 允许生成脑图时：\n"
@@ -346,16 +363,21 @@ def summarize_to_mindmap_json(
         '{"should_generate": false, "skip_reason": "不超过30字的原因"}\n'
         "children 数组中的每一项都必须是含 title 的 JSON 对象，禁止直接使用字符串。\n"
         "禁止输出 Markdown 代码块、解释文字或多余字段。\n\n"
-        f"原文内容如下：\n{text}"
     )
+    prompt = rules + f"原文内容如下：\n{text}"
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": prompt},
     ]
+    from app.services.engine_calls import begin_model_task
+    run_id = begin_model_task(llm_manager, plugin_name, call_type, output_contract=MINDMAP_OUTPUT_CONTRACT)
+    strict = {"_mabobot_run_id": run_id, "_mabobot_instructions": system_prompt + "\n\n" + rules,
+              "_mabobot_input": text} if run_id else {}
     response_str = llm_manager.call(
         plugin_name=plugin_name,
         call_type=call_type,
         messages=messages,
+        **strict,
     )
     if not response_str:
         return None

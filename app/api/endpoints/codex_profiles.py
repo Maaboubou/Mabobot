@@ -146,6 +146,11 @@ async def create_profile(request: CodexProfileCreate) -> Dict[str, Any]:
     from app.services.codex_app_server import CodexAppServerError
     from app.services.codex_oauth_service import get_codex_oauth_service
 
+    from app.services.execution_service import get_execution_service
+    existing = get_execution_service().config.read()[1]["profiles"].get(request.name)
+    if existing and existing["engine"] != "codex":
+        raise HTTPException(status_code=409, detail="Profile 名称已被 OpenCode 使用")
+
     runtime = get_agent_runtime()
     codex_bin = str(runtime.probe.codex_bin or "").strip()
     if not codex_bin:
@@ -257,34 +262,14 @@ def get_profile_oauth_qr(
 
     try:
         target = get_codex_oauth_service().verification_url(profile_id, login_id)
-        import cv2
-
-        encoder = cv2.QRCodeEncoder_create()
-        matrix = encoder.encode(target)
-        matrix = cv2.copyMakeBorder(
-            matrix,
-            4,
-            4,
-            4,
-            4,
-            cv2.BORDER_CONSTANT,
-            value=255,
-        )
-        scale = max(4, 288 // max(1, int(matrix.shape[0])))
-        matrix = cv2.resize(
-            matrix,
-            (int(matrix.shape[1]) * scale, int(matrix.shape[0]) * scale),
-            interpolation=cv2.INTER_NEAREST,
-        )
-        success, encoded = cv2.imencode(".png", matrix)
-        if not success:
-            raise RuntimeError("二维码编码失败")
+        from app.services.auth_qr import qr_png
+        encoded = qr_png(target)
     except CodexProfileError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"生成授权二维码失败：{exc}") from exc
     return Response(
-        content=encoded.tobytes(),
+        content=encoded,
         media_type="image/png",
         headers={"Cache-Control": "no-store, max-age=0"},
     )

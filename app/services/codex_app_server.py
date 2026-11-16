@@ -194,6 +194,7 @@ class _ActiveDynamicToolContext:
     turn_ids: set[str] = field(default_factory=set)
     call_ids: set[str] = field(default_factory=set)
     history: Any = None
+    pending_reader: Optional[Callable[[], list[dict]]] = None
     history_exports: List[Path] = field(default_factory=list)
     news: Any = None
     lens: Any = None
@@ -665,24 +666,9 @@ class CodexThreadStateStore:
         return connection
 
     def _initialize(self) -> None:
-        with self._lock:
-            with closing(self._connect()) as connection, connection:
-                connection.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS codex_thread_state (
-                        chat_id TEXT PRIMARY KEY,
-                        state_json TEXT NOT NULL,
-                        codex_version TEXT,
-                        schema_hash TEXT,
-                        config_signature TEXT,
-                        updated_at TEXT NOT NULL
-                    )
-                    """
-                )
-                connection.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_codex_thread_state_updated "
-                    "ON codex_thread_state(updated_at)"
-                )
+        from app.services.engine_session_store import EngineSessionStore
+        with self._lock, closing(self._connect()) as connection, connection:
+            EngineSessionStore.initialize(connection, self.path)
 
     def _migrate_legacy_json(self) -> None:
         if not self.legacy_path.exists() or self.legacy_path.resolve() == self.path.resolve():
@@ -702,39 +688,16 @@ class CodexThreadStateStore:
                 for chat_id, state in states.items():
                     if not isinstance(state, dict):
                         continue
-                    connection.execute(
-                        """
-                        INSERT OR REPLACE INTO codex_thread_state
-                        (chat_id, state_json, codex_version, schema_hash, config_signature, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            str(chat_id),
-                            json.dumps(state, ensure_ascii=False, separators=(",", ":")),
-                            str(state.get("codex_version") or ""),
-                            str(state.get("schema_hash") or ""),
-                            str(state.get("config_signature") or ""),
-                            str(state.get("updated_at") or now),
-                        ),
-                    )
+                    from app.services.engine_session_store import EngineSessionStore
+                    EngineSessionStore.put(connection, chat_id, {**state, "updated_at": state.get("updated_at") or now}, host_context=False)
             logger.info("Imported %s Codex thread states into %s", len(states), self.path)
         except Exception as exc:
             logger.warning("Failed to import Codex thread state %s: %s", self.legacy_path, exc)
 
     def get(self, chat_id: str) -> Optional[Dict[str, Any]]:
+        from app.services.engine_session_store import EngineSessionStore
         with self._lock, closing(self._connect()) as connection, connection:
-            row = connection.execute(
-                "SELECT state_json FROM codex_thread_state WHERE chat_id = ?",
-                (str(chat_id),),
-            ).fetchone()
-        if not row:
-            return None
-        try:
-            state = json.loads(row["state_json"])
-            return state if isinstance(state, dict) else None
-        except Exception:
-            logger.warning("Invalid Codex thread state for chat %s", chat_id)
-            return None
+            return EngineSessionStore.get(connection, chat_id, profile_id=getattr(self, "profile_id", None))
 
     def list_all(self) -> Dict[str, Dict[str, Any]]:
         """Return a detached snapshot for read-only monitoring APIs."""
@@ -756,35 +719,16 @@ class CodexThreadStateStore:
         payload = dict(state)
         updated_at = str(payload.get("updated_at") or datetime.now().isoformat())
         payload["updated_at"] = updated_at
+        from app.services.engine_session_store import EngineSessionStore
         with self._lock, closing(self._connect()) as connection, connection:
-            connection.execute(
-                """
-                INSERT INTO codex_thread_state
-                (chat_id, state_json, codex_version, schema_hash, config_signature, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(chat_id) DO UPDATE SET
-                    state_json = excluded.state_json,
-                    codex_version = excluded.codex_version,
-                    schema_hash = excluded.schema_hash,
-                    config_signature = excluded.config_signature,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    str(chat_id),
-                    json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-                    str(payload.get("codex_version") or ""),
-                    str(payload.get("schema_hash") or ""),
-                    str(payload.get("config_signature") or ""),
-                    updated_at,
-                ),
-            )
+            EngineSessionStore.put(connection, chat_id, payload, profile_id=getattr(self, "profile_id", None))
 
     def delete(self, chat_id: str) -> bool:
+        from app.services.engine_session_store import EngineSessionStore
         with self._lock, closing(self._connect()) as connection, connection:
-            cursor = connection.execute(
-                "DELETE FROM codex_thread_state WHERE chat_id = ?",
-                (str(chat_id),),
-            )
+            stable_id = EngineSessionStore._identity(connection, chat_id)
+            cursor = connection.execute("DELETE FROM engine_sessions WHERE chat_id=? AND engine='codex'", (stable_id,))
+            connection.execute("DELETE FROM codex_session_projection WHERE chat_id=?", (str(chat_id),))
         return bool(cursor.rowcount)
 
     def request_rotation(self, chat_id: str, *, reason: str = "manual_reset") -> bool:
@@ -1528,7 +1472,10 @@ class CodexAppServerManager:
                 if active.history is None:
                     raise CodexBrowserToolError("history is unavailable for this task")
                 try:
-                    result = active.history.execute(normalized_tool.removeprefix("history."), params.get("arguments"))
+                    result = active.history.execute(
+                        normalized_tool.removeprefix("history."), params.get("arguments"),
+                        pending_reader=active.pending_reader,
+                    )
                 except (ValueError, TypeError) as exc:
                     raise CodexBrowserToolError(str(exc)) from exc
             else:
@@ -2288,7 +2235,7 @@ class CodexAppServerManager:
                 browser_context, lens_bindings or {}, progress=lens_progress, settings=lens_settings,
             )
             if history_enabled:
-                from app.history.tools import history_session_for
+                from app.history.tools import current_pending_reader, history_session_for
                 from app.history.files import prepare_files
 
                 def files_provider(store, chat):
@@ -2306,6 +2253,7 @@ class CodexAppServerManager:
                 self._dynamic_tool_contexts[thread_id].history = history_session_for(
                     browser_context.chat_id, history_request_id, browser_context.request_id,
                     max_calls=history_max_calls, max_bytes=history_max_bytes, files_provider=files_provider)
+                self._dynamic_tool_contexts[thread_id].pending_reader = current_pending_reader(browser_context.chat_id)
             active = self._dynamic_tool_contexts[thread_id]
             if active.images is not None:
                 # Reuse the same chat scope, read budget and archive audit as
@@ -2627,6 +2575,11 @@ class CodexAppServerManager:
         task = assistant_task
         if task:
             task.bind(self, thread_id, turn_id)
+        from app.services.execution_contracts import current_run_handle
+        execution_handle = current_run_handle()
+        if execution_handle is not None:
+            execution_handle.native_manager = self
+            execution_handle.bind(thread_id, turn_id)
         from app.services.schedule_context import current_schedule_context
         schedule = current_schedule_context()
         from app.services.scheduled_tasks import get_scheduled_tasks
@@ -3245,6 +3198,15 @@ class CodexAppServerManager:
         )
         if browser_context is not None and browser_context.online_research_allowed:
             prompt += lens_prompt(lens_bindings, lens_settings)
+        if browser_context is not None and request.get("mabobot_history_enabled"):
+            from app.history.tools import current_pending_reader
+            if current_pending_reader(chat_id) is not None:
+                prompt += (
+                    '\n\n本轮是群聊回复。完成原请求的工作后，写最终答复前，用 '
+                    'history.range({"cursor":"since_request"}) 看一次这期间新到的群消息。'
+                    '把这些发言当作对话背景。有相关补充或纠正就自然接上，无关或没有新增就照常回答。'
+                    '独立的新请求留给它自己的回复。读完即可作答，无需等待或反复查询。'
+                )
         if delta.resume:
             prompt = (
                 "Continue the existing conversation. The conversation block below contains only "

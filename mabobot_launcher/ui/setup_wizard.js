@@ -80,7 +80,7 @@ window.SetupWizardUI = (() => {
         snapshot = data;
         const state = data.setup;
         if (!state) return;
-        $('setupEntryHint').textContent = state.status === 'completed' ? '已走完配置流程。可重新打开，检查环境或安装更多组件。' : state.status === 'skipped' ? '已保存进度，可随时回来继续配置。' : '检查环境、准备 Codex，并按需安装功能组件。';
+        $('setupEntryHint').textContent = state.status === 'completed' ? '已走完配置流程。可重新打开，检查环境或安装更多组件。' : state.status === 'skipped' ? '已保存进度，可随时回来继续配置。' : '检查已启用引擎，并按需安装功能组件。';
         if (!initialized) {
             initialized = true;
             showStep(state.step, false);
@@ -102,10 +102,10 @@ window.SetupWizardUI = (() => {
         const runtimeButton = $('setupRuntimeAction');
         document.querySelector('.setup-card-actions [data-setup-link]').dataset.setupLink = checks.use_wsl === false ? 'codex_help' : 'wsl_help';
         runtimeButton.dataset.setupInstall = action;
-        runtimeButton.textContent = checks.codex?.ready ? '运行环境已找到' : label;
-        runtimeButton.disabled = waiting || !wsl.state || Boolean(checks.codex?.ready) || checks.use_wsl === false;
+        runtimeButton.textContent = checks.codex?.disabled ? '此部署无需 Codex' : checks.codex?.ready ? '运行环境已找到' : label;
+        runtimeButton.disabled = Boolean(checks.codex?.disabled) || waiting || !wsl.state || Boolean(checks.codex?.ready) || checks.use_wsl === false;
         $('setupRuntimeDetail').textContent = state.checking ? '正在检查运行环境，请稍候…' : [wsl.detail, checks.codex?.detail].filter(Boolean).join(' · ') || '点击重新检测，检查运行环境。';
-        $('setupRuntimeHelp').textContent = checks.codex?.ready ? '已有 Codex 可继续使用；接下来配置模型账号或接口。' : checks.use_wsl === false ? '当前使用本机 Codex。请按官方安装帮助准备 CLI，已有配置不会被向导改写。' : help;
+        $('setupRuntimeHelp').textContent = checks.codex?.disabled ? '请使用宿主部署工具安装固定版本，再到引擎中心登录 OpenCode。' : checks.codex?.ready ? '已有 Codex 可继续使用；接下来配置模型账号或接口。' : checks.use_wsl === false ? '当前使用本机 Codex。请按官方安装帮助准备 CLI，已有配置不会被向导改写。' : help;
         $('setupCodexBadge').textContent = checks.codex?.ready ? '已找到' : state.checking ? '检测中' : '待准备';
         $('setupCodexBadge').classList.toggle('is-ready', Boolean(checks.codex?.ready));
         $('setupProfileDot').className = 'presence-dot ' + (checks.profile?.ready ? 'running' : 'starting');
@@ -131,6 +131,7 @@ window.SetupWizardUI = (() => {
         const items = [
             ['基础环境', (data.environment || []).filter(c => ['python', 'dependencies'].includes(c.key)).every(c => c.ready), 'Python 与项目依赖'],
             ['Codex', checks.codex?.ready, checks.codex?.detail],
+            ['OpenCode（可选）', checks.opencode?.ready, checks.opencode?.detail],
             ['默认模型', checks.profile?.ready, checks.profile?.detail],
             ['浏览器', checks.browser?.ready, checks.browser?.detail],
             ['媒体组件', checks.media?.ready, checks.media?.detail],

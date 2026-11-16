@@ -6,6 +6,7 @@ import base64
 import ipaddress
 import json
 import re
+from typing import Literal
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -80,7 +81,8 @@ def _service_call(action, *args):
 
 class CreateSession(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    profile_id: str = Field(min_length=1, max_length=48, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+    profile_id: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
+    engine: Literal["codex", "opencode"] = "codex"
     full_access: bool = Field(default=True, strict=True)
 
 
@@ -99,9 +101,17 @@ def list_sessions(request: Request):
     return _service_call(get_terminal_service().list_sessions)
 
 
+@router.get("/profiles")
+def profiles(request: Request):
+    require_terminal_access(request)
+    return _service_call(get_terminal_service().list_profiles)
+
+
 @router.post("/sessions")
 def create_session(request: Request, payload: CreateSession):
     require_terminal_access(request, mutation=True)
+    if payload.engine != "codex":
+        return _service_call(get_terminal_service().create_engine, payload.engine, payload.profile_id, payload.full_access)
     return _service_call(get_terminal_service().create, payload.profile_id, payload.full_access)
 
 

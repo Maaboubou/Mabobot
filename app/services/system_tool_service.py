@@ -125,6 +125,10 @@ class SystemToolService:
             category="upgradable",
             icon="bi-terminal",
         )
+        from app.services.engine_deployment import enabled_engines
+        if "codex" not in enabled_engines():
+            card.update(health="disabled", health_label="未启用", message="此部署未启用 Codex")
+            return card
         try:
             from app.services.codex_upgrade_service import get_codex_upgrade_service
 
@@ -540,6 +544,20 @@ with sync_playwright() as p:
 
     def tool_card(self, tool_id: str, *, force: bool = False) -> Dict[str, Any]:
         normalized = str(tool_id or "").strip().lower()
+        if normalized == "opencode":
+            from app.services.engine_deployment import inspect_engine
+            state = inspect_engine("opencode", check_version=force)
+            card = self._base_card("opencode", "OpenCode", "可选引擎，安装固定验证版本后自动接入", category="maintenance", icon="bi-terminal")
+            labels = {"ready": "已就绪", "installed": "已安装", "missing": "未安装（可选）", "unavailable": "待安装 / 修复",
+                      "disabled": "未启用", "version_mismatch": "版本待修复", "platform_unsupported": "平台不支持"}
+            card.update(health=state["status"], health_label=labels.get(state["status"], "待检查"), installed_version=state.get("version"),
+                        message=state.get("message") or "OpenCode 为可选组件，安装后在引擎中心独立登录", details=state,
+                        managed=True, source_label="Mabobot 固定验证版本", path=state.get("binary"))
+            card["actions"]["check"] = state["enabled"]
+            card["actions"]["repair"] = state["enabled"] and state["status"] not in {"ready", "installed"}
+            operation = self._latest_maintenance_operation("opencode")
+            card.update(operation=operation, operation_running=bool(operation and operation.get("status") in _ACTIVE_OPERATION_STATUSES))
+            return card
         if normalized == "codex":
             return self._codex_card()
         if normalized == "litellm":
@@ -553,6 +571,7 @@ with sync_playwright() as p:
     def overview(self, *, force_environment: bool = False) -> Dict[str, Any]:
         tools = [
             self.tool_card("codex"),
+            self.tool_card("opencode", force=force_environment),
             self.tool_card("litellm"),
             self.tool_card("yt-dlp"),
             self.tool_card("ffmpeg", force=force_environment),
@@ -572,6 +591,9 @@ with sync_playwright() as p:
 
     def check_tool(self, tool_id: str) -> Dict[str, Any]:
         normalized = str(tool_id or "").strip().lower()
+        from app.services.engine_deployment import enabled_engines
+        if normalized == "opencode" or (normalized == "codex" and "codex" not in enabled_engines()):
+            return self.tool_card(normalized, force=True)
         if normalized == "codex":
             from app.services.codex_upgrade_service import get_codex_upgrade_service
 
@@ -722,6 +744,8 @@ print(json.dumps({"ffmpeg": ffmpeg, "ffprobe": ffprobe}, ensure_ascii=False))
             "ffmpeg": self._repair_ffmpeg,
             "playwright": self._repair_playwright,
         }
+        from app.services.opencode_installation import install as install_opencode
+        targets["opencode"] = install_opencode
         target = targets.get(normalized)
         if not target:
             raise SystemToolError(f"{tool_id} 不支持环境修复")
@@ -744,7 +768,7 @@ print(json.dumps({"ffmpeg": ffmpeg, "ffprobe": ffprobe}, ensure_ascii=False))
         return get_runtime_operation_service().submit(
             owner=owner,
             kind=f"{normalized}_repair",
-            title=f"修复 {card.get('title')}",
+            title=f"安装 {card.get('title')}" if normalized == "opencode" else f"修复 {card.get('title')}",
             target=lambda context: self._run_repair_with_audit(normalized, target, context),
             details={"tool_id": normalized},
         )

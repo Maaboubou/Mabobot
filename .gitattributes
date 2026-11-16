@@ -20,3 +20,6 @@
 *.jpeg binary
 *.png binary
 *.zip binary
+
+# Unified patches contain required space-prefixed blank context lines.
+*.patch text eol=lf whitespace=-blank-at-eol

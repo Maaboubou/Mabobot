@@ -12,7 +12,8 @@ import subprocess
 import tempfile
 import threading
 import time
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, contextmanager
+from functools import wraps
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -36,6 +37,20 @@ from app.utils.subprocess_utils import apply_hidden_process_defaults
 
 
 logger = logging.getLogger(__name__)
+
+
+def _runtime_call(method):
+    @wraps(method)
+    def leased(self, *args, **kwargs):
+        from app.services.engine_deployment import require_dispatch, require_engine
+        try:
+            require_dispatch()
+            require_engine("codex")
+        except RuntimeError as exc:
+            raise CodexProxyError(str(exc)) from exc
+        with self.execution_lease():
+            return method(self, *args, **kwargs)
+    return leased
 
 
 def _positive_int(value: Any, default: int) -> int:
@@ -62,6 +77,7 @@ DEFAULT_PROFILES: Dict[str, AgentProfile] = {
     "proxy": AgentProfile("proxy", "batch", False, 70),
     "weekly": AgentProfile("weekly", "batch", False, 40),
     "batch": AgentProfile("batch", "batch", False, 50),
+    "child": AgentProfile("child", "child", False, 100, allow_exec_fallback=False),
 }
 
 
@@ -435,13 +451,13 @@ class CodexProcessPool:
                 for index, manager in enumerate(self.managers)
             )
 
-    def drain_and_stop(self, timeout: int = 60) -> None:
-        deadline = time.monotonic() + max(0, int(timeout))
+    def drain_and_stop(self, timeout: Optional[int] = 60) -> None:
+        deadline = None if timeout is None else time.monotonic() + max(0, int(timeout))
         with self._condition:
             self._accepting = False
             self._condition.notify_all()
-            while any(self._active) and time.monotonic() < deadline:
-                self._condition.wait(timeout=min(1.0, max(0.0, deadline - time.monotonic())))
+            while any(self._active) and (deadline is None or time.monotonic() < deadline):
+                self._condition.wait(timeout=1.0 if deadline is None else min(1.0, max(0.0, deadline - time.monotonic())))
         for manager in self.managers:
             manager.stop()
 
@@ -499,6 +515,7 @@ class CodexAgentRuntime:
             )
         )
         self.state_store = CodexThreadStateStore()
+        self.state_store.profile_id = managed_profile_id or None
         self.profiles = dict(DEFAULT_PROFILES)
         self._lock = threading.RLock()
         self._refresh_lock = threading.Lock()
@@ -514,6 +531,9 @@ class CodexAgentRuntime:
         self._circuit_open_until = 0.0
         self._started_at = ""
         self._quick_signature: Optional[Tuple[str, str, int]] = None
+        self._active_leases = 0
+        self._retiring = False
+        self._last_lease_used = time.monotonic()
 
     def _manager(self, identity: CodexBinaryIdentity, pool_name: str, index: int) -> CodexAppServerManager:
         return CodexAppServerManager(
@@ -550,6 +570,11 @@ class CodexAgentRuntime:
                 concurrency_per_process=batch_concurrency,
             ),
         }
+        # A parent in either normal pool can wait on a host model tool. Reserve
+        # an actual process as well as a host worker for those registered children.
+        pools["child"] = CodexProcessPool(
+            "child", [self._manager(identity, "child", 0)], concurrency_per_process=1,
+        )
         started: List[CodexProcessPool] = []
         try:
             for pool in pools.values():
@@ -562,6 +587,9 @@ class CodexAgentRuntime:
         return pools
 
     def start(self) -> bool:
+        from app.services.engine_deployment import require_dispatch, require_engine
+        require_dispatch()
+        require_engine("codex")
         activated = self.refresh(force=True)
         if self._monitor_thread is None or not self._monitor_thread.is_alive():
             self._monitor_stop.clear()
@@ -598,6 +626,9 @@ class CodexAgentRuntime:
         return bool(pools) and all(pool.is_healthy() for pool in pools)
 
     def refresh(self, *, force: bool = False) -> bool:
+        from app.services.engine_deployment import require_engine, require_dispatch
+        require_engine("codex")
+        require_dispatch()
         if not self._refresh_lock.acquire(blocking=False):
             return False
         try:
@@ -633,6 +664,7 @@ class CodexAgentRuntime:
                 threading.Thread(
                     target=self._stop_pools,
                     args=(previous,),
+                    kwargs={"graceful": True},
                     name="codex-runtime-drain",
                     daemon=True,
                 ).start()
@@ -681,8 +713,8 @@ class CodexAgentRuntime:
                 self._discovered_identity = self._identity
         return selected
 
-    def _stop_pools(self, pools: Dict[str, CodexProcessPool]) -> None:
-        drain_timeout = _positive_int(os.getenv("CODEX_POOL_DRAIN_TIMEOUT_SECONDS"), 60)
+    def _stop_pools(self, pools: Dict[str, CodexProcessPool], *, graceful: bool = False) -> None:
+        drain_timeout = None if graceful else _positive_int(os.getenv("CODEX_POOL_DRAIN_TIMEOUT_SECONDS"), 60)
         for pool in pools.values():
             pool.drain_and_stop(timeout=drain_timeout)
 
@@ -695,6 +727,30 @@ class CodexAgentRuntime:
             pools = self._pools
             self._pools = {}
         self._stop_pools(pools)
+
+    @contextmanager
+    def execution_lease(self):
+        with self._lock:
+            if self._retiring:
+                raise CodexProxyError("Codex Profile generation is retiring; resolve a new generation")
+            self._active_leases += 1
+        try:
+            yield self
+        finally:
+            with self._lock:
+                self._active_leases -= 1
+                self._last_lease_used = time.monotonic()
+                stop = self._retiring and self._active_leases == 0
+            if stop:
+                self.stop()
+
+    def retire(self):
+        """Ordinary edits stop accepting work without terminating an old call."""
+        with self._lock:
+            self._retiring = True
+            stop = self._active_leases == 0
+        if stop:
+            self.stop()
 
     def set_maintenance(self, active: bool) -> None:
         if active:
@@ -951,6 +1007,7 @@ class CodexAgentRuntime:
             logger.exception("Failed to persist Codex exec fallback state for %s", chat_id)
         return response
 
+    @_runtime_call
     def chat(
         self,
         payload: Dict[str, Any],
@@ -1048,6 +1105,7 @@ class CodexAgentRuntime:
                 )
             raise
 
+    @_runtime_call
     def run(
         self,
         payload: Dict[str, Any],

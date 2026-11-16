@@ -1916,6 +1916,10 @@ class EmotionMessage(HumanMessage):
 class MergeMessage(HumanMessage):
     type = "merge"
 
+    def get_url_hint(self) -> dict[str, str]:
+        # 预览里的网址属于被转发的消息。
+        return {}
+
 
 class PersonalCardMessage(HumanMessage):
     type = "personal_card"

@@ -13,7 +13,7 @@ on_exit() {
 }
 trap on_exit EXIT
 mode="${1:-codex}"
-case "$mode" in codex|file-tools) ;; *) echo 'Unknown setup component'; exit 2 ;; esac
+case "$mode" in codex|opencode|file-tools) ;; *) echo 'Unknown setup component'; exit 2 ;; esac
 if [ "$(id -u)" = 0 ]; then
     echo 'Please initialize Ubuntu with a normal Linux user, then reopen the wizard.'
     exit 1
@@ -30,7 +30,11 @@ export PATH="$HOME/.local/bin:$HOME/.hermes/node/bin:/usr/local/bin:/usr/bin:/bi
 for node_bin in "$HOME"/.nvm/versions/node/*/bin; do
     if [ -x "$node_bin/codex" ]; then export PATH="$node_bin:$PATH"; fi
 done
-if [ "$mode" = codex ]; then
+if [ "$mode" = opencode ]; then
+    project_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+    sudo apt-get install -y nodejs npm unzip build-essential bubblewrap
+    python3 "$project_root/scripts/launcher/install_opencode.py"
+elif [ "$mode" = codex ]; then
     # Do not replace a working installation or touch account/API configuration.
     if ! command -v codex >/dev/null; then
         installer="$(mktemp)"

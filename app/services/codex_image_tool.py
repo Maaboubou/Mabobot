@@ -156,7 +156,7 @@ def dynamic_tool_specs():
 
 
 class ImageToolSession:
-    def __init__(self, context, policy, *, inputs=(), timeout=300, progress=None, history_session=None, request_text=""):
+    def __init__(self, context, policy, *, inputs=(), timeout=300, progress=None, history_session=None, request_text="", generator=None):
         self.context, self.policy = context, copy.deepcopy(policy)
         self.default_mode = policy["mode"]
         self.request_text = " ".join(request_text.split())
@@ -175,6 +175,7 @@ class ImageToolSession:
         self.reference_attachment_ids = []
         self._staged_assets = {}
         self.native_fallback = False
+        self.generator = generator
 
     def close(self):
         self.closed.set()
@@ -549,7 +550,7 @@ class ImageToolSession:
                 return self.results[signature]
             if self.native_fallback:
                 raise CodexBrowserToolError("API 渠道已耗尽，本任务已回退到内置生图；内置失败即结束，不能再次调用 API")
-            if self.policy["mode"] != "api":
+            if self.policy["mode"] != "api" and self.generator is None:
                 raise CodexBrowserToolError("本任务当前使用 Codex 内置模式；只有用户明确要求时才可先调用 images.select_mode 切换 API")
             # Resolve all inputs before any API call or generation-start fence.
             try:
@@ -599,7 +600,7 @@ class ImageToolSession:
                     timeout=max(0.01, self.deadline - time.monotonic()), cancelled=self._interrupted,
                     actor=self.context.chat_id,
                 )
-                result = generate_images(self.policy, request, self.context.output_dir, progress=progress, on_image=remember)
+                result = (self.generator or generate_images)(self.policy, request, self.context.output_dir, progress=progress, on_image=remember)
                 completed_paths = result.paths
                 status = "cancelled" if self._interrupted() else "completed"
                 receipt.finish(status)
@@ -613,12 +614,14 @@ class ImageToolSession:
                          "files": [_runtime_path(p, self.context) for p in exc.paths], "attempts": exc.attempts}
                 if any(attempt.get("outcome_unknown") for attempt in exc.attempts):
                     value["outcome_unknown"] = True
+                if getattr(exc, "outcome_unknown", False):
+                    value["outcome_unknown"] = True
                 if exc.attempts and not exc.paths and all(
                         a.get("error_type") == ImageAnimationRequiresFrames.__name__ for a in exc.attempts):
                     value.update(status="requires_frame_composition", api_request_sent=False,
                         next_step="保留参考图，用当前配置生成连贯的 PNG 静态帧或帧网格，再用本地工具处理并调用 images.compose_gif；不要直接拒绝动图任务。")
                 missing = native_fallback_count(self.policy, request, exc)
-                if missing and not self.cancelled():
+                if missing and not self.cancelled() and self.generator is None:
                     fallback = self._native_fallback_request(request, missing)
                     if not self.cancelled():
                         self.native_fallback = True

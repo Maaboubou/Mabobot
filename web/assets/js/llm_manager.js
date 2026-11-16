@@ -49,7 +49,7 @@ const LLMManager = {
             apiBase: 'https://openrouter.ai/api/v1', apiBaseRequired: false,
         },
         local_codex: {
-            label: '本地 Codex', catalogProvider: 'local_codex', providerValue: 'local_codex',
+            label: 'ChatGPT 订阅', catalogProvider: 'local_codex', providerValue: 'chatgpt_subscription',
             envVar: '', requiresCredential: false,
             modelPlaceholder: '例如 gpt-5.6-sol', apiBase: '', apiBaseRequired: false,
         },
@@ -708,6 +708,7 @@ const LLMManager = {
     },
 
     inferProviderKey(config = {}) {
+        if (config.kind === 'subscription' || config.custom_llm_provider === 'chatgpt_subscription') return 'local_codex';
         const explicit = String(config.custom_llm_provider || config.provider || '').toLowerCase();
         const model = String(config.model || '').toLowerCase();
         const apiBase = String(config.api_base || '').toLowerCase();
@@ -768,7 +769,7 @@ const LLMManager = {
         notice?.classList.toggle('d-none', !disabled);
         const noticeText = notice?.querySelector('.alert');
         if (noticeText) noticeText.textContent = isCodex
-            ? '本地 Codex 按本模型配置独立调用，复用本地登录，不继承聊天 Profile 或历史。当前不传递温度、最大输出 Token 和 SDK 重试次数；请使用推理强度和任务指令控制输出。任务可覆盖模型超时。'
+            ? 'ChatGPT 订阅模型通过所选引擎 Profile 调用，保留本卡的模型和推理强度。默认跟随 AI 运行中心或聊天配置；OpenCode 直接生成，不再经过 Codex。任务之间不共享聊天历史。'
             : 'Gemini 3+ 使用模型默认采样设置；temperature、top_p 和 top_k 不会保存或发送。需要约束输出时请写入系统指令。';
         if (input) {
             input.disabled = disabled;
@@ -798,7 +799,7 @@ const LLMManager = {
                 ? 'Gemini 3+ 使用模型默认采样设置；路由中的 temperature、top_p 和 top_k 不会保存或发送。'
                 : 'Gemini 3+ 备用模型使用默认采样设置；此处参数只会应用到支持它们的模型。';
             if (hasCodex) {
-                const codexNotice = '本地 Codex 不传递温度和最大输出 Token；这些覆盖仅对支持它们的其他模型生效。';
+                const codexNotice = '订阅模型的参数支持由执行引擎决定；请优先使用推理强度和任务指令控制输出。';
                 notice.textContent = primaryIsGemini3 || fallbackIsGemini3
                     ? `${notice.textContent} ${codexNotice}` : codexNotice;
             }
@@ -844,13 +845,20 @@ const LLMManager = {
         document.getElementById('modelOtherProviderGroup')?.classList.toggle('d-none', presetKey !== 'other');
         document.getElementById('modelProviderOverrideGroup')?.classList.toggle('d-none', !['compatible', 'other'].includes(presetKey));
         const isCodex = presetKey === 'local_codex';
+        document.getElementById('modelSubscriptionEngineGroup')?.classList.toggle('d-none', !isCodex);
+        document.getElementById('modelApiBaseGroup')?.classList.toggle('d-none', isCodex);
+        if (isCodex) document.getElementById('modelAdvancedOptions').open = true;
+        document.getElementById('addModelModalSubtitle').textContent = isCodex
+            ? '选择 ChatGPT 订阅模型及推理强度，账号和执行方式由 Profile 提供。'
+            : '选择供应商和模型，保存后可立即测试。';
         document.getElementById('modelCodexReasoningGroup')?.classList.toggle('d-none', !isCodex);
         for (const id of ['modelMaxTokens', 'modelMaxRetries']) {
             const input = document.getElementById(id);
             if (input) input.disabled = isCodex;
             input?.closest('.col-sm-6')?.classList.toggle('d-none', isCodex);
         }
-        document.getElementById('modelCodexIsolatedGroup')?.classList.toggle('d-none', !isCodex);
+        document.getElementById('modelCodexIsolatedGroup')?.classList.add('d-none');
+        document.getElementById('modelWebSearch')?.closest('label')?.classList.toggle('d-none', isCodex);
         document.getElementById('modelCredentialSection')?.classList.toggle('d-none', isCodex);
         document.getElementById('modelApiBaseRequired')?.classList.toggle('d-none', !preset.apiBaseRequired);
         const apiBaseHelp = document.getElementById('modelApiBaseHelp');
@@ -860,7 +868,7 @@ const LLMManager = {
                 : '官方供应商通常无需填写；代理、私有部署或网关场景可覆盖。';
         }
         const webSearchLabel = document.getElementById('modelWebSearchLabel');
-        if (webSearchLabel) webSearchLabel.textContent = isCodex ? '允许 Codex 使用 Web 搜索' : '启用供应商 Web 搜索';
+        if (webSearchLabel) webSearchLabel.textContent = isCodex ? '供应商 Web 搜索' : '启用供应商 Web 搜索';
         const modelName = document.getElementById('modelName');
         if (modelName) modelName.placeholder = preset.modelPlaceholder;
 
@@ -1412,7 +1420,7 @@ const LLMManager = {
                     : credential.mode === 'direct'
                         ? { className: 'configured', icon: 'bi-key', label: '密钥已配置' }
                         : credential.mode === 'none'
-                            ? { className: 'local', icon: 'bi-pc-display', label: '本地调用' }
+                            ? { className: 'local', icon: 'bi-pc-display', label: 'Profile 调用' }
                             : { className: 'missing', icon: 'bi-key', label: '未配置密钥' };
                 const tokenPills = [];
                 if (config.context_window_tokens || config.max_input_tokens) {
@@ -1422,7 +1430,8 @@ const LLMManager = {
                 if (config.max_tokens && meta.provider !== 'local_codex') tokenPills.push(`<span>最大输出 ${this.formatTokenCount(config.max_tokens)}</span>`);
                 if (config.supports_vision) tokenPills.push('<span>支持图片</span>');
                 if (config.enable_web_search || config.codex_web_search) tokenPills.push('<span>启用搜索</span>');
-                if (meta.provider === 'local_codex') tokenPills.push(`<span>推理强度 ${this.escapeHtml(config.codex_reasoning_effort || config.extra_body?.reasoning_effort || 'medium')}</span>`);
+                if (config.kind === 'subscription') tokenPills.push(`<span>${this.escapeHtml(({follow: '跟随 Profile', codex: 'Codex', opencode: 'OpenCode'})[config.engine_policy || 'follow'] || '跟随 Profile')}</span>`);
+                if (meta.provider === 'local_codex') tokenPills.push(`<span>推理强度 ${this.escapeHtml(config.reasoning_effort || config.codex_reasoning_effort || config.extra_body?.reasoning_effort || 'medium')}</span>`);
                 let endpointLabel = '';
                 if (config.api_base) {
                     // Keep connection identity visible; raw environment references belong in the editor.
@@ -1887,7 +1896,7 @@ const LLMManager = {
 
     renderUsageFootnote() {
         const meta = this.currentStats.metadata || {};
-        const notes = [`统计自 ${this.usageDate(meta.chat_tracking_started_at)} 起记录。任务按聊天对象、调用类型和业务调用去重；所选周期内有成功记录即计为成功，否则计为尚未成功（可能仍在重试）。一个任务可有多次模型尝试或用量分段，失败记录不等于失败任务。Token 和费用包含失败尝试已上报的消耗。Codex 按官方标准 API 单价折算，包含在预估费用中；无逐次用量时按整轮统计。`];
+        const notes = [`统计自 ${this.usageDate(meta.chat_tracking_started_at)} 起记录。任务按聊天对象、调用类型和业务调用去重；所选周期内有成功记录即计为成功，否则计为尚未成功（可能仍在重试）。一个任务可有多次模型尝试或用量分段，失败记录不等于失败任务。Token 和费用包含失败尝试已上报的消耗。Codex / OpenCode 的订阅调用按官方标准 API 单价折算，包含在预估费用中；无逐次用量时按整轮统计。`];
         if (this.activeStatsType === 'session' && meta.run_started_at) notes.push(`运行开始：${this.usageDate(meta.run_started_at)}。`);
         if (meta.daily_available_from && ['7d', '30d'].includes(this.activeStatsType) && meta.daily_available_from > meta.range_start) notes.push(`现有每日记录从 ${this.escapeHtml(meta.daily_available_from)} 开始，之前的数据不可拆分。`);
         notes.push(`日期按服务端时区 ${this.escapeHtml(meta.timezone || '')} 统计。未上报显示 —。`);
@@ -2156,7 +2165,8 @@ const LLMManager = {
         }
         document.getElementById('modelVision').checked = Boolean(config.supports_vision || config.vision || config.image_input);
         document.getElementById('modelWebSearch').checked = Boolean(config.enable_web_search || config.codex_web_search);
-        document.getElementById('modelCodexReasoning').value = config.codex_reasoning_effort || 'medium';
+        document.getElementById('modelCodexReasoning').value = config.reasoning_effort || config.codex_reasoning_effort || 'medium';
+        document.getElementById('modelSubscriptionEngine').value = config.engine_policy || 'follow';
         document.getElementById('modelCodexIsolated').checked = config.codex_isolated_workdir !== false;
         document.getElementById('modelExtraBody').value = config.extra_body ? JSON.stringify(config.extra_body, null, 2) : '';
         document.getElementById('modelApiKeyEnv').value = meta.credential?.environment_variable || this.getActiveProviderPreset().envVar || '';
@@ -2300,6 +2310,7 @@ const LLMManager = {
         const oldModelId = modelIdInput.dataset.oldId || newModelId;
         const targetModelId = isEdit ? oldModelId : newModelId;
         const payload = {
+            kind: values.provider.key === 'local_codex' ? 'subscription' : 'api',
             model: values.modelName,
             api_base: values.apiBase,
             custom_llm_provider: values.providerValue,
@@ -2338,6 +2349,9 @@ const LLMManager = {
         }
         const webSearch = document.getElementById('modelWebSearch').checked;
         if (values.provider.key === 'local_codex') {
+            payload.kind = 'subscription';
+            payload.engine_policy = document.getElementById('modelSubscriptionEngine').value;
+            payload.reasoning_effort = document.getElementById('modelCodexReasoning').value;
             payload.enable_web_search = false;
             payload.codex_web_search = webSearch;
             payload.codex_reasoning_effort = document.getElementById('modelCodexReasoning').value;
@@ -2955,6 +2969,15 @@ const LLMManager = {
     renderCallHistoryRow(entry, index, time) {
         const escape = value => this.escapeHtml(String(value ?? ''));
         const usage = entry.token_usage || {};
+        const pricing = entry.pricing || {};
+        const amount = pricing.amount == null ? null : Number(pricing.amount);
+        const cost = amount !== null && Number.isFinite(amount) && amount >= 0 && pricing.currency
+            ? `${pricing.currency} ${amount.toFixed(8).replace(/\.?0+$/, '') || '0'}` : '未知';
+        const priceNote = pricing.status === 'api_equivalent' ? 'API 等价估算，非订阅实际扣费'
+            : pricing.status === 'estimated' ? '按已保存单价估算'
+            : pricing.status === 'reported' ? '供应商上报'
+            : '用量、适用单价或逐请求计价信息不足';
+        const totalTokens = usage.total_tokens ?? (Number(entry.tokens) > 0 ? entry.tokens : null);
         const timing = this.generationTimingView(usage.generation_timing);
         const fullModel = String(entry.actual_model || entry.model_id || '未知模型');
         const model = fullModel.split('/').pop() || fullModel;
@@ -2999,7 +3022,7 @@ const LLMManager = {
                     ${panels.map(([kind, label], i) => `<button type="button" aria-pressed="${i === 0}" aria-controls="history-${index}-${kind}" data-history-tab="${kind}" onclick="LLMManager.toggleCallHistoryBody(${index}, '${kind}')">${label}</button>`).join('')}
                 </div>
                 <div id="history-${index}-tokens" data-history-panel="tokens">
-                    <dl class="call-history-fields">${field('输入 Token', prompt)}${field('输出 Token', completion)}${field('总 Token', this.callHistoryNumber(usage.total_tokens ?? entry.tokens))}${field('推理 Token', this.callHistoryNumber(usage.reasoning_tokens))}${field('缓存命中 Token', this.callHistoryNumber(usage.cached_tokens))}${field('缓存命中率', cacheRate)}${field('未命中 Token', this.callHistoryNumber(usage.cache_miss_tokens))}</dl>
+                    <dl class="call-history-fields">${field('输入 Token', prompt)}${field('输出 Token', completion)}${field('总 Token', this.callHistoryNumber(totalTokens))}${field('推理 Token', this.callHistoryNumber(usage.reasoning_tokens))}${field('缓存命中 Token', this.callHistoryNumber(usage.cached_tokens))}${field('缓存命中率', cacheRate)}${field('未命中 Token', this.callHistoryNumber(usage.cache_miss_tokens))}${field('预估费用', cost)}${field('计价说明', priceNote)}</dl>
                     ${estimated ? '<p class="call-history-secondary">Token 用量为估算值</p>' : ''}
                     <div class="call-history-provider">服务 / 模型：${escape(fullModel)}</div>
                 </div>
@@ -3255,9 +3278,9 @@ const LLMManager = {
         this.codexJobsLoading = true;
         try {
             if (!quiet) {
-                container.innerHTML = `<div class="text-center text-muted py-4"><div class="spinner-border spinner-border-sm me-2"></div>正在加载 Codex 运行状态…</div>`;
+                container.innerHTML = `<div class="text-center text-muted py-4"><div class="spinner-border spinner-border-sm me-2"></div>正在加载 AI 运行状态…</div>`;
             }
-            const result = await API.codexJobs.list();
+            const result = await API.get('/api/ai/jobs');
             const data = result.data || {};
             this.renderCodexJobs(
                 data.active || [],
@@ -3276,7 +3299,7 @@ const LLMManager = {
         } catch (e) {
             console.error('Failed to load Codex jobs:', e);
             if (!quiet) {
-                container.innerHTML = `<div class="alert alert-danger">加载 Codex 运行状态失败：${this.escapeHtml(e.message)}</div>`;
+                container.innerHTML = `<div class="alert alert-danger">加载 AI 运行状态失败：${this.escapeHtml(e.message)}</div>`;
             }
         } finally {
             this.codexJobsLoading = false;
@@ -3309,7 +3332,7 @@ const LLMManager = {
         const statusMeta = status => {
             const key = String(status || 'idle');
             const labels = {
-                queued: '等待中', starting: '准备中', running: '运行中', completed: '已完成', failed: '失败',
+                queued: '等待中', preparing: '准备输入', skipped: '正常跳过', interrupted_unknown: '结果待核对', starting: '准备中', running: '运行中', completed: '已完成', failed: '失败',
                 timeout: '已超时', cancelling: '正在中断', cancelled: '已取消', idle: '空闲',
                 pending_replay: '待回放', rotation_pending: '待新线程',
             };
@@ -3363,7 +3386,7 @@ const LLMManager = {
         const runtimeWorkers = poolValues.flatMap(pool => Array.isArray(pool.workers) ? pool.workers : []);
         const lifecyclePolicy = runtimeWorkers[0] || {};
         const workerCount = poolValues.reduce((sum, pool) => sum + Number(pool.size || 0), 0);
-        const queueCount = poolValues.reduce((sum, pool) => sum + Number(pool.waiting || 0), 0);
+        const queueCount = Number(runtime.scheduler?.queued ?? poolValues.reduce((sum, pool) => sum + Number(pool.waiting || 0), 0));
         const activeCount = Number(stats.active_count ?? active.length ?? 0);
         const sessionCount = Number(sessionStats.session_count ?? sessions.length ?? 0);
         const operation = upgrade.operation || null;
@@ -3371,7 +3394,7 @@ const LLMManager = {
         const serverRunning = Boolean(runtime.running);
         const runtimeError = String(runtime.last_error || '');
         const maintenance = Boolean(runtime.maintenance || operationRunning);
-        const dotClass = maintenance ? 'busy' : serverRunning ? 'ready' : 'failed';
+        const dotClass = runtime.ai_center ? (active.length ? 'busy' : '') : maintenance ? 'busy' : serverRunning ? 'ready' : 'failed';
         const installedVersion = String(runtime.active_version || upgrade.installed_version || '-');
         const schemaShort = String(runtime.schema_hash || '').slice(0, 10) || '-';
         const fileToolNames = Array.isArray(fileTools.command_names) ? fileTools.command_names : [];
@@ -3432,6 +3455,37 @@ const LLMManager = {
             if (!sessions.length) return '<div class="codex-empty">暂无持久会话</div>';
             const rows = sessions.map(session => {
                 const chatId = String(session.chat_id || '');
+                if (session.engine === 'opencode') {
+                    const running = active.find(job => job.engine === 'opencode' && job.chat_id === chatId && job.config_profile === session.runtime_profile);
+                    const requestId = running?.request_id || (session.recent_run_id ? `engine:${session.recent_run_id}` : '');
+                    const usage = session.usage || {};
+                    const hasUsage = usage.total_tokens != null;
+                    const used = session.context_tokens;
+                    const windowSize = session.model_context_window;
+                    const contextKnown = used != null && Number(windowSize) > 0;
+                    const percent = contextKnown ? Math.max(0, Math.min(100, Number(used) / Number(windowSize) * 100)) : null;
+                    const contextHtml = contextKnown ? `<div class="codex-context" title="OpenCode 上报的最近一次模型请求占用 / 模型窗口；每轮按聊天历史重建">
+                        <div class="codex-context-label"><span>${formatK(used)} / ${formatK(windowSize)}</span><span>剩余 ${(100 - percent).toFixed(0)}%</span></div>
+                        <div class="codex-context-track ${percent >= 90 ? 'danger' : percent >= 75 ? 'warning' : ''}"><i style="width:${percent}%"></i></div></div>`
+                        : '<span class="codex-cell-sub">上下文未上报</span>';
+                    const cache = usage.cache_hit_rate == null ? '未知' : `${(usage.cache_hit_rate * 100).toFixed(1)}%`;
+                    const usageDetail = hasUsage ? `输入 ${formatK(usage.prompt_tokens)} · 输出 ${formatK(usage.completion_tokens)} · 推理 ${formatK(usage.reasoning_tokens)} · 缓存 ${formatK(usage.cached_tokens)}` : '最近一轮未上报 Token';
+                    const lifetime = session.lifetime_usage?.total_tokens;
+                    return `<tr>
+                        <td><div class="codex-cell-main">${this.escapeHtml(session.chat_name || chatId)}</div><div class="codex-cell-sub">OpenCode</div></td>
+                        <td><span class="codex-inline-badge ${running ? 'busy' : ''}">${running ? '运行中' : session.reset_pending ? '待新会话' : '空闲'}</span><div class="codex-cell-sub">${running ? '处理中' : session.reset_pending ? '下一条消息重建上下文' : '等待消息'}</div></td>
+                        <td><div class="codex-cell-main">${this.escapeHtml(session.model || '-')}</div><div class="codex-cell-sub">${this.escapeHtml(session.runtime_profile)}</div></td>
+                        <td>${contextHtml}<div class="codex-cell-sub">最近请求 · 按聊天历史重建</div></td>
+                        <td title="${this.escapeHtml(usageDetail)}"><div class="codex-cell-main codex-mono">${hasUsage ? `${formatK(usage.total_tokens)} Token` : 'Token 未上报'}</div>
+                            <div class="codex-cell-sub">缓存 ${cache}</div>
+                            <div class="codex-cell-sub">已统计 ${Number(session.recorded_turn_count || 0)} 轮 · ${lifetime == null ? '累计未知' : `${formatK(lifetime)} Token`}${session.unknown_usage_turns ? ' · 部分统计' : ''}</div></td>
+                        <td><span class="codex-mono">${this.formatJobTime(session.updated_at)}</span></td>
+                        <td><div class="codex-row-actions">${requestId ? `<button class="btn codex-job-details" data-request-id="${this.escapeHtml(requestId)}" title="查看最近任务"><i class="bi bi-list-ul"></i></button>` : ''}${running ? `<button class="btn text-danger codex-job-cancel" data-request-id="${this.escapeHtml(requestId)}" title="取消任务"><i class="bi bi-stop-circle"></i></button>` : ''}
+                            <button class="btn opencode-session-reset" data-chat-id="${this.escapeHtml(chatId)}" data-profile-id="${this.escapeHtml(session.runtime_profile)}" data-chat-name="${this.escapeHtml(session.chat_name || chatId)}" title="${running ? '请先中断当前任务' : '重置会话'}" ${running ? 'disabled' : ''}><i class="bi bi-arrow-repeat"></i></button>
+                            <button class="btn text-danger opencode-session-delete" data-chat-id="${this.escapeHtml(chatId)}" data-profile-id="${this.escapeHtml(session.runtime_profile)}" data-chat-name="${this.escapeHtml(session.chat_name || chatId)}" title="${running ? '请先中断当前任务' : '删除会话'}" ${running ? 'disabled' : ''}><i class="bi bi-trash3"></i></button>
+                        </div></td>
+                    </tr>`;
+                }
                 const activeJob = activeByChat.get(chatId);
                 const continuityStatus = String(session.continuity_status || 'synchronized');
                 const status = statusMeta(activeJob?.status || (['pending_replay', 'rotation_pending'].includes(continuityStatus) ? continuityStatus : session.status));
@@ -3495,7 +3549,7 @@ const LLMManager = {
                         </td>
                         <td>
                             <div class="codex-cell-main">${this.escapeHtml(session.model || '-')}</div>
-                            <div class="codex-cell-sub">${this.escapeHtml(session.runtime_profile || '未标记 Profile')} · ${UI.formatNumber(session.lifetime_turn_count || session.turn_count || 0)} 轮</div>
+                            <div class="codex-cell-sub">Codex · ${this.escapeHtml(session.runtime_profile || '未标记 Profile')} · ${UI.formatNumber(session.lifetime_turn_count || session.turn_count || 0)} 轮</div>
                         </td>
                         <td>${contextHtml}</td>
                         <td>
@@ -3534,16 +3588,16 @@ const LLMManager = {
                     <tr>
                         <td><div class="codex-cell-main">${this.escapeHtml(identity)}</div><div class="codex-cell-sub">${this.escapeHtml(sourceType || '来源未记录')} · <span class="codex-mono" title="${this.escapeHtml(requestId)}">${this.escapeHtml(requestId.slice(0, 12))}</span></div></td>
                         <td><span class="codex-inline-badge ${status.className}">${this.escapeHtml(status.label)}</span><div class="codex-cell-sub">${this.escapeHtml(activityLabel(job))}</div></td>
-                        <td><div class="codex-cell-main">${this.escapeHtml(job.model || '-')}</div><div class="codex-cell-sub">${this.escapeHtml(job.pool_worker || job.backend || '')}${job.fallback_reason ? ` · ${this.escapeHtml(fallbackLabel(job.fallback_reason))}` : ''}</div></td>
-                        <td><span class="codex-mono">${formatK(job.total_tokens || 0)}</span></td>
+                        <td><div class="codex-cell-main">${this.escapeHtml(job.model || '-')}</div><div class="codex-cell-sub">${this.escapeHtml(({codex: 'Codex', opencode: 'OpenCode', api: 'API'})[job.engine] || job.backend || 'Codex')}${job.config_profile ? ` · ${this.escapeHtml(job.config_profile)}` : ''}${job.fallback_reason ? ` · ${this.escapeHtml(fallbackLabel(job.fallback_reason))}` : ''}</div></td>
+                        <td><span class="codex-mono">${job.engine === 'opencode' && job.total_tokens == null ? '未上报' : formatK(job.total_tokens || 0)}</span></td>
                         <td><span class="codex-mono">${this.formatJobDuration(job)}</span>${error}</td>
                         <td><span class="codex-mono">${this.formatJobTime(job.started_at)}</span></td>
-                        <td><div class="codex-row-actions"><button class="btn codex-job-details" data-request-id="${this.escapeHtml(requestId)}" title="查看过程"><i class="bi bi-list-ul"></i></button>${running ? `<button class="btn text-danger codex-job-cancel" data-request-id="${this.escapeHtml(requestId)}" title="取消任务"><i class="bi bi-stop-circle"></i></button>` : ''}</div></td>
+                        <td><div class="codex-row-actions"><button class="btn codex-job-details" data-request-id="${this.escapeHtml(requestId)}" data-native-request-id="${this.escapeHtml(job.native_request_id || '')}" title="查看过程"><i class="bi bi-list-ul"></i></button>${running ? `<button class="btn text-danger codex-job-cancel" data-request-id="${this.escapeHtml(requestId)}" title="取消任务"><i class="bi bi-stop-circle"></i></button>` : ''}</div></td>
                     </tr>`;
             }).join('');
             return `
                 <div class="table-responsive"><table class="codex-compact-table codex-jobs-table">
-                    <thead><tr><th>来源</th><th>进度</th><th>模型 / Worker</th><th>Token</th><th>耗时</th><th>开始时间</th><th></th></tr></thead>
+                    <thead><tr><th>来源</th><th>进度</th><th>模型 / 引擎 / Profile</th><th>Token</th><th>耗时</th><th>开始时间</th><th></th></tr></thead>
                     <tbody>${rows}</tbody>
                 </table></div>`;
         };
@@ -3553,15 +3607,15 @@ const LLMManager = {
                 <div class="codex-runtime-strip">
                     <div class="codex-runtime-identity">
                         <span class="codex-runtime-dot ${dotClass}"></span>
-                        <div><strong title="${this.escapeHtml(runtimeError)}">${maintenance ? '运行环境维护中' : serverRunning ? 'Codex 正常运行' : 'Codex 未就绪'}</strong>${runtimeError ? `<small>${this.escapeHtml(runtimeError)}</small>` : ''}</div>
+                        <div><strong title="${this.escapeHtml(runtimeError)}">${runtime.ai_center ? (active.length ? 'AI 任务运行中' : 'AI 运行中心') : maintenance ? '运行环境维护中' : serverRunning ? 'Codex 正常运行' : 'Codex 未就绪'}</strong>${runtimeError && !(runtime.ai_center && runtime.default_engine === 'opencode') ? `<small>Codex：${this.escapeHtml(runtimeError)}</small>` : ''}</div>
                     </div>
                     <div class="codex-runtime-facts">
-                        ${runtimeActivityHtml}
+                        ${runtime.ai_center ? `<span>默认引擎 <strong>${runtime.default_engine === 'opencode' ? 'OpenCode' : 'Codex'}</strong></span>` : ''}${runtimeActivityHtml}
                     </div>
                 </div>
                 ${operationHtml}
                 <details class="codex-tool-details" ${this.codexToolDetailsOpen ? 'open' : ''}>
-                    <summary><span><i class="bi bi-sliders2"></i>环境与版本</span><small>${environmentSummary}</small></summary>
+                    <summary><span><i class="bi bi-sliders2"></i>Codex 环境与版本</span><small>${environmentSummary}</small></summary>
                     <div class="codex-tool-detail-body">
                         <div class="codex-tool-detail-grid">
                             <div class="codex-runtime-selector">
@@ -3591,7 +3645,7 @@ const LLMManager = {
                 </details>
                 ${active.length ? `<section class="codex-section"><div class="codex-section-head"><h6>正在执行</h6><small>${active.length} 个任务</small></div>${renderJobs(active, true)}</section>` : ''}
                 <section class="codex-section">
-                    <div class="codex-section-head"><h6>会话</h6><small>${sessionCount} 个持久上下文 · 累计 ${UI.formatNumber(sessionStats.lifetime_turn_count || sessionStats.total_turn_count || 0)} 轮 · 已记录 ${formatK(sessionStats.logical_lifetime_total_tokens || 0)} Token${Number(sessionStats.unknown_usage_session_count || 0) ? ` · ${Number(sessionStats.unknown_usage_session_count)} 个会话统计不完整` : Number(sessionStats.estimated_usage_session_count || 0) ? ` · ${Number(sessionStats.estimated_usage_session_count)} 个会话含估算` : ''}</small></div>
+                    <div class="codex-section-head"><h6>会话</h6><small>${sessionCount} 个会话 · Codex 累计 ${UI.formatNumber(sessionStats.lifetime_turn_count || sessionStats.total_turn_count || 0)} 轮 · OpenCode 已统计 ${UI.formatNumber(sessionStats.opencode_turn_count || 0)} 轮 · 已记录 ${formatK(Number(sessionStats.logical_lifetime_total_tokens || 0) + Number(sessionStats.opencode_total_tokens || 0))} Token${Number(sessionStats.unknown_usage_session_count || 0) ? ` · ${Number(sessionStats.unknown_usage_session_count)} 个会话统计不完整` : Number(sessionStats.estimated_usage_session_count || 0) ? ` · ${Number(sessionStats.estimated_usage_session_count)} 个会话含估算` : ''}</small></div>
                     ${renderSessions()}
                 </section>
                 <details class="codex-section codex-history" ${this.codexHistoryOpen ? 'open' : ''}>
@@ -3621,7 +3675,10 @@ const LLMManager = {
             button.addEventListener('click', () => this.cancelCodexJob(button.dataset.requestId));
         });
         container.querySelectorAll('.codex-job-details').forEach(button => {
-            button.addEventListener('click', () => this.showCodexJobDetails(button.dataset.requestId));
+            button.addEventListener('click', () => this.showCodexJobDetails(button.dataset.requestId, button.dataset.nativeRequestId));
+        });
+        for (const action of ['reset', 'delete']) container.querySelectorAll(`.opencode-session-${action}`).forEach(button => {
+            button.addEventListener('click', () => this.manageOpenCodeSession(action, button.dataset));
         });
         container.querySelectorAll('.codex-session-reset').forEach(button => {
             button.addEventListener('click', () => this.resetCodexSession(button.dataset.chatId));
@@ -3674,13 +3731,14 @@ const LLMManager = {
 
     async cancelCodexJob(requestId) {
         if (!requestId) return;
-        if (!await UI.confirm(`确定要取消 Codex 任务 ${requestId.slice(0, 8)}… 吗？`, {
-            title: '取消 Codex 任务',
+        if (!await UI.confirm(`确定要取消任务 ${requestId.slice(0, 8)}… 吗？`, {
+            title: '取消任务',
             confirmText: '取消任务',
             variant: 'danger'
         })) return;
         try {
-            await API.codexJobs.cancel(requestId);
+            if (requestId.startsWith('engine:')) await API.post(`/api/engines/runs/${encodeURIComponent(requestId.slice(7))}/cancel`, {});
+            else await API.codexJobs.cancel(requestId);
             UI.showSuccess('已发送取消请求');
             await this.loadCodexJobs();
         } catch (e) {
@@ -3689,8 +3747,9 @@ const LLMManager = {
         }
     },
 
-    async showCodexJobDetails(requestId) {
+    async showCodexJobDetails(requestId, nativeRequestId = '') {
         if (!requestId) return;
+        if (requestId.startsWith('engine:')) return EngineCenter.showRunDetails(requestId.slice(7), nativeRequestId);
         try {
             const fallbackLabel = reason => ({
                 runtime_unavailable: 'App Server 未就绪', circuit_open: 'App Server 熔断保护',
@@ -3891,6 +3950,27 @@ const LLMManager = {
             await this.loadCodexJobs({ quiet: true });
         } catch (error) {
             UI.showError(`启动恢复失败：${error.message}`);
+        }
+    },
+
+    async manageOpenCodeSession(action, {chatId, profileId, chatName}) {
+        const deleting = action === 'delete';
+        const title = deleting ? '删除 OpenCode 会话' : '重置 OpenCode 会话';
+        const detail = deleting
+            ? '移除此会话记录；后续有新消息时可重新建立。'
+            : '清空当前会话状态和会话统计；下一条消息按聊天历史重建上下文。';
+        if (!await UI.confirm(`确定${deleting ? '删除' : '重置'}“${chatName}”的 OpenCode 会话（${profileId}）吗？\n\n${detail}微信聊天记录和任务历史会保留。`, {
+            title, confirmText: deleting ? '删除会话' : '重置会话', variant: deleting ? 'danger' : 'warning',
+        })) return;
+        try {
+            await API.request(`/api/ai/jobs/sessions/opencode/${action}`, {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({chat_id: chatId, profile_id: profileId}),
+            });
+            UI.showSuccess(deleting ? 'OpenCode 会话已删除' : 'OpenCode 会话已重置，下一条消息将重建上下文');
+            await this.loadCodexJobs({quiet: true});
+        } catch (error) {
+            UI.showError(`操作失败：${error.message}`);
         }
     },
 

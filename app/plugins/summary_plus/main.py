@@ -506,13 +506,28 @@ class SummaryService(BrowserRuntimeMixin, MediaPipelineMixin, XiaohongshuMixin):
     ) -> DispatchDecision:
         if self.dispatcher is None:
             raise RuntimeError("Summary Plus 托管调度器未初始化")
-        return self.dispatcher.submit(
-            kind,
-            chat_name,
-            url,
-            target,
-            title=title,
-        )
+        from app.services.engine_calls import business_model_scope, begin_model_task, finish_unused_admissions
+        from contextvars import copy_context
+        with business_model_scope([kind, url]):
+            if kind in {"bilibili", "youtube"}:
+                from app.plugins.summary_plus.mindmap_service import MINDMAP_OUTPUT_CONTRACT
+                begin_model_task(self.llm_manager, "summary_plus", kind + "_mindmap", output_contract=MINDMAP_OUTPUT_CONTRACT)
+            captured = copy_context()
+            def run(operation):
+                def invoke():
+                    try:
+                        return target(operation)
+                    finally:
+                        finish_unused_admissions()
+                return captured.run(invoke)
+            try:
+                decision = self.dispatcher.submit(kind, chat_name, url, run, title=title)
+            except Exception:
+                finish_unused_admissions()
+                raise
+            if not decision.accepted:
+                finish_unused_admissions()
+            return decision
 
     def health_snapshot(self) -> Dict[str, Any]:
         dispatcher = self.dispatcher.snapshot() if self.dispatcher else {"mode": "compatibility"}
@@ -823,6 +838,9 @@ class SummaryService(BrowserRuntimeMixin, MediaPipelineMixin, XiaohongshuMixin):
         output_prefix: str = "bili_map",
     ):
         try:
+            from app.services.engine_calls import begin_model_task
+            from app.plugins.summary_plus.mindmap_service import MINDMAP_OUTPUT_CONTRACT
+            begin_model_task(self.llm_manager, "summary_plus", "bilibili_mindmap", output_contract=MINDMAP_OUTPUT_CONTRACT)
             # 1. get subtitles ( if not provided )
             if not article_text:
                 article_text = self._bili_get_subtitles(b_url)
@@ -911,6 +929,9 @@ class SummaryService(BrowserRuntimeMixin, MediaPipelineMixin, XiaohongshuMixin):
     async def _generate_youtube_mindmap_async(self, yt_url: str, wx: Any, chat_name: str):
         """异步处理 YouTube 脑图逻辑：获取字幕 -> LLM 总结 -> 生成脑图 -> 发送"""
         try:
+            from app.services.engine_calls import begin_model_task
+            from app.plugins.summary_plus.mindmap_service import MINDMAP_OUTPUT_CONTRACT
+            begin_model_task(self.llm_manager, "summary_plus", "youtube_mindmap", output_contract=MINDMAP_OUTPUT_CONTRACT)
             self.logger.info(f"🎬 开始处理 YouTube 脑图: {yt_url}")
 
             # 1. 获取字幕

@@ -36,11 +36,9 @@ async def check_all_tools() -> Dict[str, Any]:
         except Exception as exc:
             return tool_id, str(exc) or type(exc).__name__
 
-    checked = await asyncio.gather(
-        check_one("codex"),
-        check_one("litellm"),
-        check_one("yt-dlp"),
-    )
+    from app.services.engine_deployment import enabled_engines
+    checked = await asyncio.gather(*(check_one(name) for name in
+        (["codex"] if "codex" in enabled_engines() else []) + ["litellm", "yt-dlp"]))
     overview = await asyncio.to_thread(service.overview)
     overview["check_errors"] = {
         tool_id: error for tool_id, error in checked if error

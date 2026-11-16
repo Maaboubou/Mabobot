@@ -147,6 +147,10 @@ class CodexJobManager:
     def register(self, request_id: str, info: Dict[str, Any]) -> None:
         with self._lock:
             job = dict(info)
+            from app.services.execution_contracts import current_execution_context
+            context = current_execution_context()
+            if context is not None:
+                job.setdefault("execution_run_id", context.run_id)
             job.setdefault("request_id", request_id)
             job.setdefault("status", "starting")
             job.setdefault("started_at", time.time())

@@ -44,6 +44,7 @@ class EditSession:
     image_downloads: Dict[str, ImageDownload] = None  # 图片下载任务
     status: str = "collecting"  # collecting, processing, completed
     processed_immediately: bool = False  # 是否已被立即处理
+    execution_run_id: Optional[str] = None
 
     def __post_init__(self):
         if self.images is None:
@@ -206,6 +207,11 @@ class ImageEditorPlugin:
                 required_images=required_images,
                 target_images=target_images,
             )
+            from app.services.engine_image_jobs import begin_image_task, images_enabled
+            if images_enabled("image_editor"):
+                from app.services.image_generation_config import resolve_policy
+                session.execution_run_id = begin_image_task("image_editor", resolve_policy(plugin_name="image_editor"),
+                    timeout=self.collect_timeout + self.processing_timeout)
             self._sessions[self._session_key(chat_name, user_sender)] = session
 
             logger.info(f"🖼️ 新会话创建成功 - 用户: {user_sender}, 配置超时: {self.collect_timeout}秒")
@@ -390,6 +396,39 @@ class ImageEditorPlugin:
                 sent_hashes.add(digest)
                 update_delivery(asset_ids, "sent")
 
+            if session.execution_run_id:
+                from app.services.execution_service import get_execution_service
+                from app.services.execution_contracts import InputEnvelope, canonical
+                from app.services.image_generation_facade import ImageGenerationFacade, image_input_reference
+                from app.services.image_generation_service import ImageInput, ImageRequest
+                import json
+                service = get_execution_service()
+                context, route = service.store.contracts(session.execution_run_id)
+                source_mode = json.loads(route.image_policy_json)["mode"]
+                request = ImageRequest(session.text_description or "", count=target,
+                    images=[ImageInput.from_bytes(base64.b64decode(value, validate=True), f"reference-{i}.png") for i, value in enumerate(session.images)],
+                    timeout=self.processing_timeout, cancelled=stopping, actor=session.chat_name)
+                service.store.bind_input(context.run_id, InputEnvelope("Generate or edit images", canonical({
+                    "prompt": request.prompt, "inputs": [image_input_reference(image) for image in request.images]})))
+                result = ImageGenerationFacade(service.store, authorize=service.authorize).generate(
+                    context, "image-editor-result", json.loads(route.image_policy_json), request, task_dir)
+                service.store.finish_business_run(context.run_id,
+                    "completed" if result["status"] == "completed" else "interrupted_unknown" if result["status"] in {"unknown", "running"} else "failed")
+                for path in result.get("paths", []):
+                    if not service.authorize(context) or service.store.get(context.run_id)["cancel_requested"]:
+                        service.store.delivery_status(context.run_id, "blocked")
+                        raise RuntimeError("图片任务授权已撤回或取消，产物已保留")
+                    service.store.delivery_status(context.run_id, "sending")
+                    try:
+                        send_image(path)
+                    except Exception:
+                        service.store.delivery_status(context.run_id, "uncertain")
+                        raise
+                service.store.delivery_status(context.run_id, "sent" if result.get("paths") else "not_required")
+                if result["status"] != "completed":
+                    raise RuntimeError(result.get("error") or "图片任务未完成，请先核对结果")
+                return
+
             if policy["mode"] == "api":
                 from app.services.image_generation_service import (
                     ImageInput, ImageRequest, ImageGenerationError, generate_images, native_fallback_count,
@@ -504,7 +543,7 @@ class ImageEditorPlugin:
         """保留生成文件，避免微信发送 API 尚未读完文件。"""
         if not session.wx_manager:
             return False
-        for attempt in range(1, 4):
+        for attempt in range(1, 2 if session.execution_run_id else 4):
             if session.wx_manager.send_files(session.chat_name, [str(path)]):
                 return True
             if attempt < 3:

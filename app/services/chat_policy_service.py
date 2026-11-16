@@ -97,6 +97,7 @@ class ChatPolicyService:
             if permission.plugin_name not in RESERVED_PLUGIN_GRANTS
         ]
         from app.services.image_generation_config import chat_policy, channel_summary, read_settings
+        from app.services.ai_profile_service import chat_profile_selection
         return {
             "user_id": user.id,
             "version": int(user.policy_version or 1),
@@ -121,7 +122,7 @@ class ChatPolicyService:
                 "followup_merge_seconds": int(policy.followup_merge_seconds or 3) if policy else 3,
                 "followup_max_turns": int(policy.followup_max_turns or 3) if policy else 3,
                 "ignored_senders": _json_list(policy.ignored_senders if policy else None),
-                "codex_profile_id": policy.codex_profile_id if policy else None,
+                "codex_profile_id": chat_profile_selection(user.id, policy.codex_profile_id if policy else None),
                 "role_id": role.role_id if role else None,
                 "judge_id": judge.judge_id if judge else None,
             },
@@ -285,7 +286,10 @@ class ChatPolicyService:
             except Exception:
                 side_effect_errors.append("Codex 会话将在下次请求时刷新")
         if assistant_effect:
-            AssistantConsoleService.apply_runtime_side_effects(assistant_effect)
+            try:
+                AssistantConsoleService.apply_runtime_side_effects(assistant_effect)
+            except Exception as exc:
+                side_effect_errors.append(f"Profile 同步未完成，请重新保存：{exc}")
 
         result = self.get(user_id)
         result["side_effect_warnings"] = side_effect_errors

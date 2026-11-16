@@ -21,15 +21,15 @@ const TerminalPage = {
         root.dataset.mounted = 'true';
         root.innerHTML = `<div class="terminal-toolbar">
             <form id="terminalCreateForm" class="terminal-create-form">
-                <label for="terminalProfile" class="visually-hidden">Codex Profile</label>
-                <select id="terminalProfile" name="profile_id" class="form-select form-select-sm" required aria-label="Codex Profile"><option value="">正在加载…</option></select>
+                <label for="terminalProfile" class="visually-hidden">引擎 Profile</label>
+                <select id="terminalProfile" name="profile_id" class="form-select form-select-sm" required aria-label="引擎 Profile"><option value="">正在加载…</option></select>
                 <button class="btn btn-primary btn-sm" type="submit" id="terminalCreateButton" aria-label="新建会话" title="新建会话" disabled><i class="bi bi-plus-lg" aria-hidden="true"></i><span class="terminal-button-label">新建会话</span></button>
                 <label class="terminal-access-option" title="允许 Codex 执行命令并修改本机文件；取消勾选时沿用 Profile 的权限设置。"><input id="terminalFullAccess" name="full_access" class="form-check-input" type="checkbox" checked aria-describedby="terminalAccessDescription"><span>完整访问</span></label>
             </form>
             <button type="button" class="btn btn-outline-secondary btn-sm terminal-icon-button" id="terminalRefreshButton" aria-label="刷新状态" title="刷新状态"><i class="bi bi-arrow-clockwise" aria-hidden="true"></i></button>
             <details class="terminal-info"><summary aria-label="终端说明" title="终端说明"><i class="bi bi-info-circle" aria-hidden="true"></i></summary><div class="terminal-info-content">
                 <p id="terminalAccessDescription">完整访问允许 Codex 执行命令并修改本机文件。取消勾选时沿用 Profile 的权限设置。</p>
-                <p>离开页面会保留会话；“结束会话”会停止对应的 Codex 进程。</p>
+                <p>离开页面会保留会话；“结束会话”会停止对应的引擎进程。</p>
                 <div class="terminal-location" id="terminalLocation"></div>
             </div></details>
         </div>
@@ -39,8 +39,9 @@ const TerminalPage = {
             <div class="terminal-session-tabs" id="terminalSessionTabs" role="tablist" aria-label="终端会话"></div>
             <div class="terminal-session-actions"><button type="button" class="btn btn-outline-secondary btn-sm" id="terminalReconnectButton" aria-label="重新连接" title="重新连接" disabled><i class="bi bi-plug" aria-hidden="true"></i><span class="terminal-button-label">重新连接</span></button><button type="button" class="btn btn-outline-danger btn-sm" id="terminalStopButton" aria-label="结束会话" title="结束会话" disabled><i class="bi bi-stop-circle" aria-hidden="true"></i><span class="terminal-button-label">结束会话</span></button></div>
         </div>
-        <div class="terminal-display" id="terminalDisplay" role="tabpanel" aria-label="终端内容"><div class="terminal-empty" id="terminalEmpty"><i class="bi bi-terminal" aria-hidden="true"></i><p>选择 Profile，新建本机 Codex 会话。</p><span>切换页面或刷新浏览器后，可以继续连接正在运行的会话。</span></div></div>`;
+        <div class="terminal-display" id="terminalDisplay" role="tabpanel" aria-label="终端内容"><div class="terminal-empty" id="terminalEmpty"><i class="bi bi-terminal" aria-hidden="true"></i><p>选择 Profile，新建本机引擎会话。</p><span>切换页面或刷新浏览器后，可以继续连接正在运行的会话。</span></div></div>`;
         root.querySelector('form').addEventListener('submit', event => { event.preventDefault(); this.create(); });
+        root.querySelector('#terminalProfile').addEventListener('change', () => this.updateControls());
         root.querySelector('#terminalRefreshButton').addEventListener('click', () => this.load());
         root.querySelector('#terminalStopButton').addEventListener('click', () => this.stop());
         root.querySelector('#terminalReconnectButton').addEventListener('click', () => this.reconnect());
@@ -66,18 +67,18 @@ const TerminalPage = {
         refresh.disabled = true;
         try {
             const [data, listing] = await Promise.all([
-                API.get('/api/terminal'), API.codexProfiles.list()
+                API.get('/api/terminal'), API.get('/api/terminal/profiles')
             ]);
             this.data = data;
-            this.profiles = (listing.profiles || []).filter(profile => profile.available);
+            this.profiles = (listing.profiles || []).map(p => ({...p, key: p.engine + ':' + p.name}));
             const select = document.getElementById('terminalProfile');
-            const selected = this.profiles.some(profile => profile.name === select.value) ? select.value
+            const selected = this.profiles.some(profile => profile.key === select.value) ? select.value
                 : this.profiles.some(profile => profile.name === listing.default_profile_id) ? listing.default_profile_id
-                    : this.profiles[0]?.name || '';
-            select.innerHTML = this.profiles.length ? this.profiles.map(profile => `<option value="${this.esc(profile.name)}">${this.esc(profile.name)}</option>`).join('') : '<option value="">暂无可用 Profile</option>';
+                    : this.profiles[0]?.key || '';
+            select.innerHTML = this.profiles.length ? this.profiles.map(profile => `<option value="${this.esc(profile.key)}">${this.esc(profile.engine)} / ${this.esc(profile.name)}</option>`).join('') : '<option value="">暂无可用 Profile</option>';
             select.value = selected;
             this.renderState();
-            this.message(!this.profiles.length ? '请先在 Codex 页面完成 Profile 登录或密钥配置。'
+            this.message(!this.profiles.length ? '请先在引擎中心登记 Profile 并完成登录。'
                 : data.available === false ? data.message || '' : '');
         } catch (error) {
             if (!quiet || !this.data) this.message(`无法读取终端状态：${error.message}`, true);
@@ -102,7 +103,7 @@ const TerminalPage = {
         const dependencies = document.getElementById('terminalDependencies');
         const missing = (data.dependencies || []).filter(item => !item.available);
         dependencies.hidden = data.available !== false;
-        dependencies.innerHTML = data.available === false ? `<strong>终端环境尚未就绪</strong><p>${missing.length ? `缺少 ${missing.map(item => this.esc(item.name)).join('、')}。` : ''}请在 Codex 所在的 Linux / WSL 环境准备终端工具，然后刷新状态。</p><code>sudo apt install ttyd tmux</code>` : '';
+        dependencies.innerHTML = data.available === false ? `<strong>终端环境尚未就绪</strong><p>${missing.length ? `缺少 ${missing.map(item => this.esc(item.name)).join('、')}。` : ''}请在 引擎所在的 Linux / WSL 环境准备终端工具，然后刷新状态。</p><code>sudo apt install ttyd tmux</code>` : '';
         this.renderSessions();
     },
 
@@ -147,7 +148,7 @@ const TerminalPage = {
         const validPath = typeof path === 'string' && path === `/api/terminal/sessions/${session.id}/view/`;
         if (!session || session.status !== 'running' || !validPath) {
             empty.hidden = false;
-            empty.querySelector('p').textContent = session ? '此会话已结束，请新建会话。' : '选择 Profile，新建本机 Codex 会话。';
+            empty.querySelector('p').textContent = session ? '此会话已结束，请新建会话。' : '选择 Profile，新建本机引擎会话。';
             return;
         }
         empty.hidden = true;
@@ -171,7 +172,9 @@ const TerminalPage = {
         const session = this.sessions().find(item => item.id === this.selectedId);
         create.disabled = this.pending || !this.data?.available || !this.profiles.length;
         document.getElementById('terminalProfile').disabled = this.pending;
-        document.getElementById('terminalFullAccess').disabled = this.pending;
+        const selected = this.profiles.find(p => p.key === document.getElementById('terminalProfile').value);
+        document.getElementById('terminalFullAccess').disabled = this.pending || selected?.engine === 'opencode';
+        if (selected?.engine === 'opencode') document.getElementById('terminalFullAccess').checked = false;
         document.getElementById('terminalStopButton').disabled = this.pending || !session;
         document.getElementById('terminalReconnectButton').disabled = this.pending || session?.status !== 'running';
     },
@@ -181,11 +184,12 @@ const TerminalPage = {
         const form = document.getElementById('terminalCreateForm');
         if (!form.reportValidity()) return;
         this.pending = true;
-        this.message('正在启动本机 Codex…');
+        this.message('正在启动本机引擎…');
         this.updateControls();
         try {
+            const profile = this.profiles.find(p => p.key === form.elements.profile_id.value);
             const session = await API.post('/api/terminal/sessions', {
-                profile_id: form.elements.profile_id.value,
+                engine: profile.engine, profile_id: profile.name,
                 full_access: form.elements.full_access.checked
             });
             if (!this.validSession(session)) throw Error('终端服务未返回有效会话');

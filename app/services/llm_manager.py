@@ -623,7 +623,7 @@ class LLMManager:
             return False
         model_id = str(mapping.get("primary") or "").strip()
         model_config = self.config.get("models", {}).get(model_id)
-        return bool(model_config and self._is_local_codex_model(model_config))
+        return bool(model_config and model_config.get("kind") != "subscription" and self._is_local_codex_model(model_config))
 
     def get_call_capabilities(self, plugin_name: str, call_type: str) -> Dict[str, Any]:
         """Return normalized capabilities for the configured primary route.
@@ -637,7 +637,7 @@ class LLMManager:
         model_id = str(mapping.get("primary") or "").strip()
         model_config = self.config.get("models", {}).get(model_id) or {}
         model_name = str(model_config.get("model") or model_id)
-        local_codex = bool(model_config and self._is_local_codex_model(model_config))
+        local_codex = bool(model_config and model_config.get("kind") != "subscription" and self._is_local_codex_model(model_config))
 
         vision = bool(
             model_config.get("supports_vision")
@@ -691,7 +691,7 @@ class LLMManager:
 
         primary_model_id = mapping.get("primary")
         model_config = self.config.get("models", {}).get(primary_model_id)
-        if not model_config or not self._is_local_codex_model(model_config):
+        if not model_config or model_config.get("kind") == "subscription" or not self._is_local_codex_model(model_config):
             return None
 
         primary_params = self._build_single_model_params(
@@ -972,6 +972,14 @@ class LLMManager:
     def call(self, plugin_name: str, call_type: str, messages: List[Dict], **kwargs) -> str:
         if plugin_name in {"assistant", "builtin_chatbot"} and str(call_type).startswith("memory_"):
             raise RuntimeError("Generated chat memory is retired; no model call was made")
+        if not (plugin_name in {"assistant", "builtin_chatbot"} and call_type == "chat"):
+            from app.services.engine_calls import call_model_result
+            result = call_model_result(self, plugin_name, call_type, messages, **kwargs)
+            if result is not None:
+                if result.status not in {"completed", "skipped"}:
+                    from app.services.execution_contracts import ExecutionError
+                    raise ExecutionError(result.error_code or result.status, result.error or "Model task did not complete")
+                return result.text
         started = time.monotonic()
         context = {"id": uuid.uuid4().hex, "plugin": plugin_name, "task": call_type, "attempts": 0,
                    "metadata": {"chat_name": kwargs.get("_mabobot_chat_name") or kwargs.get("_mabobot_chat_id"),
@@ -988,6 +996,14 @@ class LLMManager:
             raise
         finally:
             _usage_call.reset(token)
+
+    def call_result(self, plugin_name: str, call_type: str, messages: List[Dict], **kwargs):
+        """Structured result for explicitly converted routes; legacy call stays str."""
+        from app.services.engine_calls import call_model_result
+        result = call_model_result(self, plugin_name, call_type, messages, **kwargs)
+        if result is None:
+            raise ValueError("This task still uses the legacy route; convert it before requesting an execution result")
+        return result
 
     def _call_impl(
         self,
@@ -1330,6 +1346,8 @@ class LLMManager:
             result: str,
         ) -> str:
             candidate_config = entry["model_config"]
+            if isinstance(response, dict) and response.get("engine"):
+                history_metadata.update(engine=response["engine"], profile_id=response.get("profile_id", ""), trace_id=response.get("run_id", ""))
             if self._is_local_codex_model(candidate_config):
                 self.last_used_model = self._resolve_local_codex_model(response, candidate_config)
             else:
@@ -1466,6 +1484,8 @@ class LLMManager:
                 if not result:
                     raise ValueError("Local Codex CLI returned empty response")
 
+                if isinstance(response, dict) and response.get("engine"):
+                    history_metadata.update(engine=response["engine"], profile_id=response.get("profile_id", ""), trace_id=response.get("run_id", ""))
                 self.last_used_model = self._resolve_local_codex_model(response, model_config)
                 response_attachments = self._extract_attachments_from_response(response)
                 if isinstance(attachment_capture, list):
@@ -1867,6 +1887,8 @@ class LLMManager:
         """Use the runtime result, including for fallback and connectivity tests."""
         backend = str(response.get("backend") or "runtime") if isinstance(response, dict) else "runtime"
         model = response.get("model") if isinstance(response, dict) else None
+        if model_config.get("kind") == "subscription":
+            return f"{backend}/{model or model_config.get('model') or 'unknown'}"
         return f"local_codex_{backend}/{model or model_config.get('model') or 'unknown'}"
 
     @staticmethod
@@ -1981,7 +2003,7 @@ class LLMManager:
     def _is_local_codex_model(model_config: dict) -> bool:
         provider = str(model_config.get("provider") or model_config.get("custom_llm_provider") or "").lower()
         api_base = str(model_config.get("api_base") or "").lower()
-        return provider in {"local_codex", "local_codex_cli"} or "/api/codex/" in api_base or api_base.endswith("/api/codex/v1")
+        return model_config.get("kind") == "subscription" or provider in {"local_codex", "local_codex_cli"} or "/api/codex/" in api_base or api_base.endswith("/api/codex/v1")
 
     def _call_local_codex(
         self,
@@ -2002,6 +2024,11 @@ class LLMManager:
         input_files: Optional[List[Dict[str, Any]]] = None,
     ) -> tuple:
         """Use local Codex as a stateless LLM provider, independent of chat Profiles."""
+        if model_config.get('kind') == 'subscription':
+            from app.services.subscription_models import call_card
+            return call_card(self, model_config, messages, params,
+                context=_usage_call.get(), reasoning_effort=codex_reasoning_effort,
+                timeout=codex_timeout_seconds, output_schema=codex_output_schema, input_files=input_files)
         from app.services.agent_runtime import get_agent_runtime
 
         extra_body = copy.deepcopy(params.get("extra_body") or {})
@@ -2412,6 +2439,9 @@ class LLMManager:
             "chat_name": str(safe_metadata.get("chat_name") or ""),
             "role_name": str(safe_metadata.get("role_name") or ""),
             "trace_id": str(safe_metadata.get("trace_id") or ""),
+            "pricing": copy.deepcopy(safe_metadata.get("pricing")),
+            "engine": str(safe_metadata.get("engine") or ""),
+            "profile_id": str(safe_metadata.get("profile_id") or ""),
         })
         if plugin_name == "assistant" and call_type == "chat":
             from app.assistant.task_supervisor import current_task
@@ -2551,6 +2581,9 @@ class LLMManager:
             "response_time": entry.get("response_time", 0),
             "tokens": entry.get("tokens", 0),
             "token_usage": entry.get("token_usage") or {},
+            "pricing": entry.get("pricing"),
+            "engine": entry.get("engine") or "",
+            "profile_id": entry.get("profile_id") or "",
             "success": entry.get("success", False),
             "message_count": len(messages),
             "response_size": len(response_text),
@@ -2870,7 +2903,8 @@ class LLMManager:
             if context:
                 self._record_usage(context["plugin"], context["task"], str(config.get("model")), response,
                                    time.monotonic() - started, success=ok,
-                                   metadata={**context["metadata"], "billing_codex": True}, config=config, at=at, error=failure)
+                                   metadata={**context["metadata"], "billing_codex": True,
+                                             **({"billing_scope": "request", "engine": response.get("engine"), "profile_id": response.get("profile_id")} if config.get("kind") == "subscription" and isinstance(response, dict) else {})}, config=config, at=at, error=failure)
 
     def _record_usage(self, plugin_name, call_type, model_id, response, duration, *, success, metadata=None, config=None, at=None, error=""):
         """Best-effort accounting must never turn a successful reply into a failure."""

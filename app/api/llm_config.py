@@ -215,10 +215,19 @@ def normalize_model_payload(payload: Dict[str, Any]) -> tuple[Dict[str, Any], se
     if credential_mode not in (None, "") and credential_mode not in {"environment", "direct", "none"}:
         raise ValueError("凭据方式必须是 environment、direct 或 none")
 
+    if normalized.get('kind') == 'subscription':
+        if normalized.get('reasoning_effort') not in {None, '', 'low', 'medium', 'high', 'xhigh', 'max'}:
+            raise ValueError('推理强度必须是 low、medium、high、xhigh 或 max')
+        from app.services.subscription_models import normalize_card
+        normalized = normalize_card(normalized)
+        cleared.update({'api_key', 'api_base', 'provider', 'codex_profile_id', 'codex_reasoning_effort',
+                        'codex_web_search', 'codex_isolated_workdir', 'codex_sandbox', 'enable_web_search'})
     return normalized, cleared
 
 
 def _infer_model_provider(config: Dict[str, Any]) -> str:
+    if config.get('kind') == 'subscription':
+        return 'local_codex'  # Backward-compatible catalog/editor key, neutral display label.
     explicit = str(config.get("custom_llm_provider") or config.get("provider") or "").strip().lower()
     model = str(config.get("model") or "").strip().lower()
     api_base = str(config.get("api_base") or "").strip().lower()
@@ -481,6 +490,9 @@ def public_proxy_config(proxy_url: str) -> Dict[str, Any]:
 class ModelConfig(BaseModel):
     """模型配置"""
     model: str
+    kind: Optional[Literal["subscription", "api"]] = None
+    engine_policy: Optional[Literal["follow", "codex", "opencode"]] = None
+    reasoning_effort: Optional[str] = None
     api_key: Optional[str] = None
     api_base: Optional[str] = None
     custom_llm_provider: Optional[str] = None
@@ -1022,6 +1034,19 @@ async def test_model_connectivity(model_id: str):
             raise HTTPException(status_code=404, detail=f"模型 {model_id} 不存在")
 
         model_cfg = models[model_id]
+        if model_cfg.get('kind') == 'subscription':
+            from app.services.subscription_models import test_card
+            started = time.perf_counter()
+            try:
+                result = await asyncio.to_thread(test_card, llm_manager, model_id)
+                return {'status': 'success', 'data': {'model_id': model_id,
+                    'configured_model': model_cfg['model'], 'actual_model': result.actual_model,
+                    'engine': result.engine, 'ok': result.status == 'completed',
+                    'latency_ms': int((time.perf_counter() - started) * 1000),
+                    'message': '订阅模型调用成功 · ' + result.engine if result.status == 'completed' else result.error}}
+            except Exception as exc:
+                return {'status': 'success', 'data': {'model_id': model_id, 'ok': False,
+                    'latency_ms': int((time.perf_counter() - started) * 1000), 'message': str(exc)}}
         llm_manager.apply_proxy_env_vars()
 
         params = llm_manager._build_single_model_params(
@@ -1147,7 +1172,7 @@ async def update_mapping(owner_id: str, call_type: str, mapping: TaskModelRoute)
     if owner_id in {"assistant", "builtin_chatbot"} and call_type == "chat":
         raise HTTPException(
             status_code=400,
-            detail="AI 助手最终回复仅由 Codex 驱动，不能创建通用模型路由",
+            detail="AI 助手最终回复由所选引擎 Profile 驱动，不能创建通用模型路由",
         )
     try:
         llm_manager = get_llm_manager()

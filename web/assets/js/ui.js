@@ -8,7 +8,7 @@ const UI = {
     themeStorageKey: 'mabobot.colorTheme',
     routes: {
         dashboard: '/',
-        codex: '/codex',
+        codex: '/ai-center',
         terminal: '/terminal',
         users: '/chats',
         roles: '/assistant',
@@ -20,6 +20,7 @@ const UI = {
         settings: '/system'
     },
     routeAliases: {
+        '/codex': 'codex',
         '/dashboard': 'dashboard',
         '/codex/profiles': 'codex',
         '/codex/runs': 'codex',
@@ -456,7 +457,7 @@ const UI = {
         // Update Title
         const titleMap = {
             'dashboard': '概览',
-            'codex': 'Codex 运行中心',
+            'codex': 'AI 运行中心',
             'terminal': '终端',
             'plugins': '功能插件',
             'users': '聊天管理',
@@ -1929,7 +1930,7 @@ const UI = {
                     <section class="chat-policy-block chat-assistant-identity">
                         <div class="chat-policy-block-head"><h4>回复身份</h4></div>
                         <div class="chat-policy-field-grid two">
-                            <label class="chat-horizontal-field"><span class="chat-field-label"><span>Codex Profile</span><a href="/codex" onclick="event.preventDefault(); UI.switchTab('codex')">管理</a></span><select class="form-select" name="codex_profile_id">${profileOptions}</select></label>
+                            <label class="chat-horizontal-field"><span class="chat-field-label"><span>AI Profile</span><a href="/ai-center" onclick="event.preventDefault(); UI.switchTab('codex')">管理</a></span><select class="form-select" name="codex_profile_id">${profileOptions}</select></label>
                             <label class="chat-horizontal-field"><span class="chat-field-label"><span>角色</span><a href="/assistant/roles" onclick="event.preventDefault(); App.openAssistantRoleManager()">管理</a></span><select class="form-select" name="role_id"><option value="">继承全局默认角色</option>${roleOptions}</select></label>
                             <div class="chat-horizontal-field"><span class="chat-field-label">图片生成</span>${ImageGeneration.policyEditor(policy.image_generation, policy.image_channels, 'name="image_generation"')}</div>
 
@@ -2022,7 +2023,7 @@ const UI = {
         const visibleProfiles = profiles.filter(item => item.available || item.name === selected);
         return [
             `<option value="" ${selected ? '' : 'selected'}>${this.escapeHtml(defaultLabel)}</option>`,
-            ...visibleProfiles.map(item => `<option value="${this.escapeHtml(item.name)}" ${selected === item.name ? 'selected' : ''}>${this.escapeHtml(item.name)} · ${this.escapeHtml(item.model)}${item.available ? '' : ' · 尚不可用'}</option>`)
+            ...visibleProfiles.map(item => `<option value="${this.escapeHtml(item.name)}" ${selected === item.name ? 'selected' : ''}>${this.escapeHtml(item.name)} · ${item.engine === 'opencode' ? 'OpenCode' : 'Codex'} · ${this.escapeHtml(item.model)}${item.available ? '' : ' · 尚不可用'}</option>`)
         ].join('');
     },
 

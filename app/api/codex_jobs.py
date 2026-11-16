@@ -24,6 +24,12 @@ async def _read_chat_id(request: Request) -> str:
 @router.get("")
 async def list_codex_jobs(recent_limit: int = Query(default=50, ge=0, le=200)) -> Dict[str, Any]:
     """Return active and recent Codex jobs with runtime and session state."""
+    from app.services.engine_deployment import enabled_engines
+    if "codex" not in enabled_engines():
+        return {"status": "success", "data": {"disabled": True, "active": codex_job_manager.list_active(),
+            "recent": codex_job_manager.list_recent(limit=recent_limit), "stats": codex_job_manager.stats(),
+            "sessions": [], "session_stats": {}, "runtime": {"enabled": False, "running": False,
+            "last_error": "此部署未启用 Codex"}, "upgrade": {"disabled": True}, "file_tools": {"disabled": True}}}
     from app.services.agent_runtime import get_agent_runtime
 
     active = codex_job_manager.list_active()

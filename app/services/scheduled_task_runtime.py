@@ -81,6 +81,10 @@ class ScheduledTaskRuntime:
             self.stop_event.wait(5)
 
     def tick(self):
+        from app.services.engine_deployment import recovery_pending
+        if recovery_pending():
+            self.is_leader = False
+            return
         self.is_leader = self.service.lease(self.owner)
         if not self.is_leader:
             return
@@ -108,6 +112,19 @@ class ScheduledTaskRuntime:
         return chat
 
     def execute(self, run):
+        from app.services.engine_calls import model_admission_scope, routing_enabled
+        if not routing_enabled():
+            return self._execute_run(run)
+        from app.services.execution_authority import AdmissionSource, admission_source
+        from app.services.engine_reply_gateway import begin_assistant_task
+        definition = run["definition"]
+        source = AdmissionSource(definition["chat_id"], definition["creator"], run["id"], "assistant", "scheduled",
+            definition["delivery_chat_id"], definition.get("engine", "follow"), definition.get("engine_profile_id", ""))
+        with model_admission_scope(), admission_source(source):
+            begin_assistant_task(native_profile_id=definition.get("profile_id", ""), timeout=definition["timeout_seconds"])
+            return self._execute_run(run)
+
+    def _execute_run(self, run):
         definition = run["definition"]
         result_saved = False
         inference_returned = False
@@ -140,7 +157,8 @@ class ScheduledTaskRuntime:
             for raw in definition.get("resources", []):
                 source = scoped_file(raw, access.workdir)
                 files.append({"path": str(source), "name": source.name, "size": source.stat().st_size, "sha256": sha256_file(source)})
-            profile_id = definition.get("profile_id") or CodexProfileService.resolve_assistant_profile_id(chat.get("profile_id"))
+            from app.services.engine_reply_gateway import legacy_reply_profile
+            profile_id = definition.get("profile_id") or legacy_reply_profile(chat.get("profile_id"), chat_id=definition["chat_id"])
             def bind(manager, thread_id, turn_id):
                 with self.service.db(True) as db:
                     db.execute("UPDATE scheduled_runs SET thread_id=?,turn_id=? WHERE id=?", (thread_id, turn_id, run["id"]))

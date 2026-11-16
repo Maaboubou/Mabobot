@@ -351,10 +351,12 @@ class AssistantConsoleService:
                 if field_name == "codex_profile_id":
                     value = str(value or "").strip() or None
                     if value:
-                        from app.services.codex_profile_service import get_codex_profile_service
-
-                        if get_codex_profile_service().get_profile(value) is None:
-                            raise AssistantConsoleError("Codex Profile 不存在")
+                        from app.services.ai_profile_service import prepare_chat_profile
+                        from app.services.execution_contracts import ExecutionError
+                        try:
+                            prepare_chat_profile(value)
+                        except (ValueError, ExecutionError) as exc:
+                            raise AssistantConsoleError(str(exc)) from exc
                 setattr(permission, field_name, value)
             if "ignored_senders" in changes:
                 permission.ignored_senders = (
@@ -397,6 +399,8 @@ class AssistantConsoleService:
             "reload_roles": reload_roles,
             "reload_judges": reload_judges,
         }
+        if "codex_profile_id" in changes:
+            effect["profile_selection"] = {"user_id": user_id, "profile_id": changes["codex_profile_id"] or ""}
         if not commit:
             return effect
 
@@ -414,6 +418,9 @@ class AssistantConsoleService:
     def apply_runtime_side_effects(effect: Mapping[str, Any]) -> None:
         """Refresh non-authoritative runtime caches after a committed update."""
 
+        if "profile_selection" in effect:
+            from app.services.ai_profile_service import sync_chat_selection
+            sync_chat_selection(**effect["profile_selection"])
         reload_roles = bool(effect.get("reload_roles"))
         reload_judges = bool(effect.get("reload_judges"))
         if reload_roles or reload_judges:

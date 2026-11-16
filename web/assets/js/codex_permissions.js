@@ -132,7 +132,7 @@ const CodexPermissions = {
             <div role="status" aria-live="polite" class="mb-3"><strong>有效权限 · ${e(this.statuses[runtime.status] || '正在刷新')}</strong>
                 ${runtime.applied_at ? `<span> · ${e(UI.formatDateTime(runtime.applied_at))}</span>` : ''}
                 ${this.summary(data.effective)}
-                ${runtime.status === 'unsupported' ? '<a href="/codex" onclick="event.preventDefault(); UI.switchTab(\'codex\')">查看 Codex 运行中心</a>' : ''}
+                ${runtime.status === 'unsupported' ? '<a href="/ai-center" onclick="event.preventDefault(); UI.switchTab(\'codex\')">查看 AI 运行中心</a>' : ''}
             </div>
             <div class="chat-policy-field-grid two chat-policy-permission-grid">${fields.map(field => `<fieldset class="chat-policy-permission-field" data-permission-field="${e(field.key)}" ${chat && !custom ? 'disabled' : ''}>
                 <legend>${e(field.label)}${chat ? `<small> · ${data.sources?.[field.key] === 'chat' ? '本聊天' : '默认'}</small>` : ''}</legend>

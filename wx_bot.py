@@ -2486,6 +2486,8 @@ def restart_wechat():
         }), 500
 
 if __name__ == '__main__':
+    from app.services.engine_deployment import require_dispatch
+    require_dispatch()
     # 添加启动日志
     logger.info("🚀 微信机器人进程启动")
     logger.info(f"📁 当前工作目录: {os.getcwd()}")

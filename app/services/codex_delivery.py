@@ -233,7 +233,9 @@ def collect_selected_files(
     """Resolve only current output files or exact successful native event paths."""
     if not paths:
         return []
-    existing = _collect_artifact_attachments(output_dir)
+    # Keep aliases until selection: an exported copy may have the same bytes
+    # as an intermediate file but still be the exact final path the model chose.
+    existing = _collect_artifact_attachments(output_dir, deduplicate=False)
     by_path = {}
     for attachment in existing:
         path = Path(attachment["path"])

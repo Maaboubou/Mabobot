@@ -290,7 +290,7 @@ class ScheduledTaskService:
         return item
 
     def _definition(self, data, actor, old=None):
-        allowed = {"title", "prompt", "schedule", "creator", "chat_id", "delivery_chat_id", "profile_id",
+        allowed = {"title", "prompt", "schedule", "creator", "chat_id", "delivery_chat_id", "profile_id", "engine", "engine_profile_id",
                    "timeout_seconds", "misfire_grace_seconds", "resources", "monitor"}
         if set(data) - allowed:
             raise ScheduleError("存在不支持的任务字段")
@@ -318,6 +318,12 @@ class ScheduledTaskService:
                 raise ScheduleError(f"{key} 必须在 {low} 到 {high} 之间")
         if not isinstance(item["profile_id"], str) or len(item["profile_id"]) > 128:
             raise ScheduleError("无效的 Profile")
+        if item.get("engine", "follow") not in {"follow", "codex", "opencode"}:
+            raise ScheduleError("无效的执行引擎")
+        if not isinstance(item.get("engine_profile_id", ""), str) or len(item.get("engine_profile_id", "")) > 80:
+            raise ScheduleError("无效的引擎 Profile")
+        if not actor.admin and any(k in data for k in ("engine", "engine_profile_id")):
+            raise ScheduleDenied("执行引擎只能由管理员配置")
         if not isinstance(item["resources"], list) or len(item["resources"]) > 20 or any(not isinstance(p, str) or not p or len(p) > 2000 for p in item["resources"]):
             raise ScheduleError("资源引用须为最多 20 个工作区内的文件路径")
         from app.services.schedule_monitor import validate_monitor

@@ -103,5 +103,15 @@
     "WEEKLY_MAX_LOG_CHARS": 360000,
     "WEEKLY_TASK_LOCK_STALE_SECONDS": 7200,
     "WEEKLY_EDITOR_NAME": "微信助手"
+  },
+  "ui": {
+    "llm_tasks": {
+      "plan": {
+        "label": "周报页计划",
+        "description": "整理授权聊天资料并生成逐页计划；图片由独立图片策略生成。",
+        "category": "内容生成",
+        "order": 10
+      }
+    }
   }
 }

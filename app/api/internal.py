@@ -99,6 +99,11 @@ async def receive_wechat_message(
         logger.error("Event bus or WeChat manager not available")
         return {"status": "error", "message": "Core components not available"}
 
+    # 旧版接收端可能把预览中的网址放进 url，并把 mtype 改为 link。
+    if message.type == 'merge' or message.mtype == 'merge':
+        message.mtype = 'merge'
+        message.url = None
+
     # Old deliveries are archived directly, before even the generic quote event.
     # Do not invoke logger plugin handlers: image enrichment can download media.
     message.sent_at = valid_source_time(message.sent_at)
@@ -142,6 +147,8 @@ async def receive_wechat_message(
 
     if message.is_tickle:
         event_type = EventType.TICKLE_MESSAGE_RECEIVED
+    elif message.mtype == 'merge':
+        event_type = EventType.MERGE_MESSAGE_RECEIVED
     elif is_link_message:
         # 对于链接消息，先检查用户是否启用了摘要功能
         if check_summary_permission(message.chat_name):
@@ -216,8 +223,6 @@ async def receive_wechat_message(
         event_type = EventType.FILE_MESSAGE_RECEIVED
     elif message.mtype == 'location':
         event_type = EventType.LOCATION_MESSAGE_RECEIVED
-    elif message.mtype == 'merge':
-        event_type = EventType.MERGE_MESSAGE_RECEIVED
     elif message.mtype == 'personal_card':
         event_type = EventType.PERSONAL_CARD_MESSAGE_RECEIVED
     elif message.mtype == 'note':

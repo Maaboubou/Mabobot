@@ -4,11 +4,14 @@
 """
 
 import asyncio
+from collections import deque
+from contextlib import contextmanager
 import json
 import logging
 from typing import Any, Callable, Dict, List, Optional
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import partial
 from pathlib import Path
 import threading
 import uuid
@@ -115,6 +118,68 @@ class EventListener:
     display_name: str = ""
 
 
+# A quote generates both a generic event and a specialized assistant event.
+# Only the generic event is observed by the chat logger.
+_REPLY_INGRESS_TYPES = {
+    EventType.TEXT_MESSAGE_RECEIVED: "text",
+    EventType.LINK_MESSAGE_RECEIVED: "link",
+    EventType.QUOTE_MESSAGE_RECEIVED: "quote",
+}
+
+
+@dataclass
+class _ReplyIngressPolicy:
+    kinds: set[str]
+    ignored: set[str]
+    mention_names: Optional[List[str]]
+
+    def allows(self, kind, sender, mention_name):
+        return (
+            kind in self.kinds and sender not in self.ignored
+            and (self.mention_names is None or mention_name in self.mention_names)
+        )
+
+
+@dataclass(eq=False)
+class _ReplyIngressWindow:
+    after_sequence: int
+    policy: _ReplyIngressPolicy
+    rows: deque = field(default_factory=lambda: deque(maxlen=24))
+
+    @staticmethod
+    def _excerpt(text, limit):
+        if len(text) <= limit:
+            return text
+        half = (limit - 1) // 2
+        return text[:half] + "…" + text[-half:]
+
+    def observe(self, event: Event):
+        kind = _REPLY_INGRESS_TYPES.get(event.type)
+        if not kind or event.source != "wx_bot_internal" or event.data.get("chat_type") != "group":
+            return
+        sequence = event.data.get("_chat_seq") or 0
+        if sequence <= self.after_sequence:
+            return
+        sender = str(event.data.get("sender") or "").strip()
+        message = str(event.data.get("message") or "").strip()
+        if not sender or len(sender) > 256 or not message:
+            return
+        # Keep the matched name even when an excerpt omits the original @.
+        mention = find_bot_mention(message, self.policy.mention_names) if self.policy.mention_names else None
+        if not self.policy.allows(kind, sender, mention):
+            return
+        message_id = str(event.data.get("message_id") or "")
+        if len(message_id) > 256:
+            message_id = ""
+        if message_id and any(row["message_id"] == message_id for row in self.rows):
+            return
+        quote = str(event.data.get("quote_content") or "").strip() if kind == "quote" else ""
+        self.rows.append({
+            "sequence": sequence, "sender": sender, "kind": kind, "mention": mention,
+            "message": self._excerpt(message, 1200), "quote": self._excerpt(quote, 360), "message_id": message_id,
+        })
+
+
 class EventBus:
     """事件总线核心类"""
 
@@ -144,6 +209,7 @@ class EventBus:
         # sequence to discard stale Judge/model results.
         self._chat_ingress_sequences: Dict[str, int] = {}
         self._chat_latest_ingress: Dict[str, Dict[str, Any]] = {}
+        self._reply_ingress_windows: Dict[str, List[_ReplyIngressWindow]] = {}
 
         # Configuration
         self._max_concurrent_users = 50  # Maximum concurrent user workers
@@ -299,7 +365,13 @@ class EventBus:
                         prepare(event)
                     except Exception:
                         self.logger.exception("Image ingress preparation failed: %s", key)
-            self._user_queues[chat_name].put(event, block=False)
+            with self._lock:
+                self._user_queues[chat_name].put(event, block=False)
+                for window in self._reply_ingress_windows.get(chat_name, ()):
+                    try:
+                        window.observe(event)
+                    except Exception:
+                        self.logger.warning("无法收集回复期间的群消息: chat=%s", chat_name, exc_info=True)
             self.logger.debug(f"Enqueued event {event.type} for user '{chat_name}'")
         except queue.Full:
             self.logger.warning(
@@ -338,6 +410,95 @@ class EventBus:
                 int(self._chat_ingress_sequences.get(chat_name, 0)),
             )
             return latest
+
+    def _reply_ingress_policy(self, chat_name: str):
+        from app.plugins.builtin_chat_logger.main import chat_logger_plugin
+        from app.services.chat_logging_policy import is_logger_grant
+        from app.services.config_service import get_setting
+        from app.services.plugin_config_context import plugin_config_scope
+
+        if chat_logger_plugin is None:
+            return None
+        with self._lock:
+            kinds = {kind for event_type, kind in _REPLY_INGRESS_TYPES.items()
+                     if any(listener.enabled and is_logger_grant(listener.permission_key or listener.plugin_name)
+                            for listener in self._listeners.get(event_type, ()))}
+        if not kinds:
+            return None
+        with self.db_session_factory() as db:
+            user = db.query(WeChatUser).filter(WeChatUser.chat_name == chat_name).first()
+            if user is None or not user.assistant_enabled:
+                return None
+            grant = next((p for p in user.permissions if is_logger_grant(p.plugin_name)), None)
+            if grant is None:
+                return None
+            names = None
+            if grant.require_mention and not self._check_session_permission(chat_name, grant.plugin_name):
+                names = bot_names_for_user(user, get_setting("WECHAT_BOT_NAME", "刘局"))
+            ignored = set(_parse_sender_blacklist(user.sender_blacklist))
+            ignored.update(_parse_sender_blacklist(user.assistant_policy.ignored_senders))
+            chat_id = user.id
+        # As for the logger observer, use the current chat's effective message types.
+        with plugin_config_scope(chat_id=chat_id, session_factory=self.db_session_factory):
+            kinds.intersection_update(chat_logger_plugin.log_message_types)
+        return _ReplyIngressPolicy(kinds, ignored, names) if kinds else None
+
+    @contextmanager
+    def watch_chat_ingress(self, chat_name: str, after_sequence: int):
+        """Yield a turn-bound reader for this group's later arrivals, if authorized."""
+        window = None
+        try:
+            policy = self._reply_ingress_policy(chat_name) if after_sequence > 0 else None
+            if policy is not None:
+                candidate = _ReplyIngressWindow(after_sequence, policy)
+                with self._lock:
+                    user_queue = self._user_queues.get(chat_name)
+                    if user_queue is not None:
+                        with user_queue.mutex:
+                            for pending in user_queue.queue:
+                                candidate.observe(pending)
+                    self._reply_ingress_windows.setdefault(chat_name, []).append(candidate)
+                    window = candidate
+        except Exception:
+            self.logger.warning("无法订阅回复期间的群消息: chat=%s", chat_name, exc_info=True)
+        if window is None:
+            yield None
+            return
+        try:
+            yield partial(self._read_reply_ingress, chat_name, window)
+        finally:
+            with self._lock:
+                windows = self._reply_ingress_windows[chat_name]
+                windows.remove(window)
+                window.rows.clear()
+                if not windows:
+                    del self._reply_ingress_windows[chat_name]
+
+    def _read_reply_ingress(self, chat_name: str, window: _ReplyIngressWindow) -> List[Dict[str, Any]]:
+        """Snapshot the active reply's queued and processed messages in arrival order."""
+        with self._lock:
+            rows = list(window.rows)
+        if not rows:
+            return []
+        # A long-running reply must honor permissions revoked or senders ignored since admission.
+        try:
+            policy = self._reply_ingress_policy(chat_name)
+            if policy is None:
+                return []
+            messages = []
+            for row in sorted(rows, key=lambda row: row["sequence"]):
+                mention = row["mention"]
+                if policy.mention_names and mention not in policy.mention_names:
+                    mention = find_bot_mention(row["message"], policy.mention_names)
+                if policy.allows(row["kind"], row["sender"], mention):
+                    content = row["message"]
+                    if row["quote"]:
+                        content = f'引用：{row["quote"]}\n回复：{content}'
+                    messages.append({"sequence": row["sequence"], "sender": row["sender"], "content": content})
+            return messages
+        except Exception:
+            self.logger.warning("无法读取回复期间的群消息: chat=%s", chat_name, exc_info=True)
+            return []
 
     def _user_worker(self, chat_name: str) -> None:
         """Worker thread for processing a specific user's events"""
@@ -797,8 +958,10 @@ class EventBus:
 
                 try:
                     from app.services.plugin_config_context import plugin_config_scope
+                    from app.services.execution_authority import event_admission_source
+                    from app.services.engine_calls import model_admission_scope
 
-                    with origin_scope(chat_name or "", event.id,
+                    with model_admission_scope(), event_admission_source(event, listener.plugin_name if listener.owner_kind == "plugin" else "assistant", listener.permission_key if listener.owner_kind == "plugin" else "assistant"), origin_scope(chat_name or "", event.id,
                         "plugin:" + listener.plugin_name if listener.owner_kind == "plugin" else "assistant"), usage_context(usage_metadata), plugin_config_scope(
                         chat_id=event.context.get("chat_id"),
                         session_factory=self.db_session_factory,

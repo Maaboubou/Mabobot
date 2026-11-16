@@ -135,6 +135,7 @@ class LauncherApi:
 
     def open_setup_page(self, page: str) -> dict[str, Any]:
         destinations = {
+            "engines": self._application.web_console_url + "codex",
             "codex": self._application.web_console_url + "codex",
             "models": self._application.web_console_url + "ai",
             "chats": self._application.web_console_url + "chats",
@@ -143,7 +144,7 @@ class LauncherApi:
         }
         if page not in destinations:
             return {"ok": False, "error": "未知的配置入口"}
-        if page in {"codex", "models", "chats"}:
+        if page in {"codex", "engines", "models", "chats"}:
             web = next((s for s in self._application.supervisor.snapshot() if s["key"] == "web"), {})
             if web.get("status") != "running":
                 self._application.supervisor.start_service("web")

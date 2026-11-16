@@ -7,6 +7,9 @@ import time
 
 
 def probe_codex_environment():
+    from app.services.engine_deployment import enabled_engines
+    if "codex" not in enabled_engines():
+        return {"disabled": True}
     # Keep runtime/database imports and WSL startup off the UI snapshot path.
     from app.services.file_tools_runtime import get_file_tools_runtime
 
@@ -37,7 +40,9 @@ class CodexEnvironmentMonitor:
                 runtime.get("runtime"), "运行环境"
             )
             ready = bool(runtime.get("codex", {}).get("available"))
-            if runtime.get("stale"):
+            if runtime.get("disabled"):
+                status = {"ready": False, "detail": "此部署未启用 Codex"}
+            elif runtime.get("stale"):
                 status = {"ready": False, "detail": f"{host} · 暂无法确认"}
             elif ready:
                 status = {"ready": True, "detail": f"{host} · 已就绪"}

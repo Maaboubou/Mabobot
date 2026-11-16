@@ -450,6 +450,8 @@ def _artifact_request_dir_is_safe(request_dir: Path) -> bool:
     request_dir = Path(request_dir)
     artifact_root = request_dir.parent
     try:
+        if any(_is_link_like(path) for path in (request_dir, *request_dir.parents)):
+            return False
         chain = (artifact_root, request_dir)
         if any(_is_link_like(path) or not path.is_dir() for path in chain):
             return False
@@ -489,7 +491,7 @@ def _prepare_artifact_output_dir(
         return request_dir, output_dir
 
     try:
-        if _is_link_like(artifact_root.parent) or _is_link_like(artifact_root):
+        if any(_is_link_like(path) for path in (artifact_root, *artifact_root.parents)):
             raise CodexProxyError("Codex artifact root must not be a symbolic link")
         artifact_root.mkdir(parents=True, exist_ok=True)
         if _is_link_like(artifact_root) or not artifact_root.is_dir():
@@ -1047,7 +1049,7 @@ def _default_text_for_attachments(attachments: List[Dict[str, Any]]) -> str:
     return "已生成文件"
 
 
-def _collect_artifact_attachments(output_dir: Path) -> List[Dict[str, Any]]:
+def _collect_artifact_attachments(output_dir: Path, *, deduplicate: bool = True) -> List[Dict[str, Any]]:
     attachments: List[Dict[str, Any]] = []
     seen_hashes = set()
     if not _artifact_output_dir_is_safe(output_dir):
@@ -1055,6 +1057,8 @@ def _collect_artifact_attachments(output_dir: Path) -> List[Dict[str, Any]]:
         return attachments
 
     for path in sorted(output_dir.rglob("*")):
+        if any(_is_link_like(part) for part in (path, *path.parents)):
+            continue
         if not path.is_file():
             continue
         suffix = path.suffix.lower()
@@ -1081,7 +1085,7 @@ def _collect_artifact_attachments(output_dir: Path) -> List[Dict[str, Any]]:
             except (OSError, ValueError):
                 logger.warning("Skipping invalid or non-static SVG artifact: %s", path)
                 continue
-        if sha256 in seen_hashes:
+        if deduplicate and sha256 in seen_hashes:
             continue
         seen_hashes.add(sha256)
 

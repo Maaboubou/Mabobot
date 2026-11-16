@@ -516,13 +516,15 @@ async def lifespan(app: FastAPI):
         try:
             from .services.agent_runtime import get_agent_runtime
 
-            agent_runtime = get_agent_runtime()
-            loop = asyncio.get_running_loop()
-            started = await loop.run_in_executor(None, agent_runtime.start)
-            if started:
-                logger.info("Codex runtime started")
-            else:
-                logger.warning("Codex runtime is using its fallback backend")
+            from .services.engine_deployment import enabled_engines, recovery_pending
+            if "codex" in enabled_engines() and not recovery_pending():
+                agent_runtime = get_agent_runtime()
+                loop = asyncio.get_running_loop()
+                started = await loop.run_in_executor(None, agent_runtime.start)
+                if started:
+                    logger.info("Codex runtime started")
+                else:
+                    logger.warning("Codex runtime is using its fallback backend")
         except Exception as e:
             logger.warning("Codex runtime startup failed: %s", e)
 
@@ -541,8 +543,9 @@ async def lifespan(app: FastAPI):
 
         # 4. 初始化插件管理器（放在注入共享服务之后，保证插件register时可获取）
         plugin_manager = PluginManager(event_bus=event_bus)
-        plugin_manager.start_monitoring()
-        plugin_manager.load_all_plugins()
+        if not recovery_pending():
+            plugin_manager.start_monitoring()
+            plugin_manager.load_all_plugins()
         logger.info("Plugin manager initialized")
 
         # The assistant is a first-class, failure-isolated application
@@ -550,7 +553,7 @@ async def lifespan(app: FastAPI):
         from app.assistant.runtime import get_assistant_runtime
 
         assistant_runtime = get_assistant_runtime()
-        if not assistant_runtime.start(event_bus):
+        if not recovery_pending() and not assistant_runtime.start(event_bus):
             logger.warning(
                 "Core assistant is degraded; independent plugins remain available: %s",
                 assistant_runtime.status().get("error") or "unknown error",
@@ -558,7 +561,10 @@ async def lifespan(app: FastAPI):
 
         # 5. 初始化微信管理器
         wechat_manager = WeChatManager(event_bus=event_bus)
-        if not wechat_manager.start():
+        if recovery_pending():
+            logger.warning("Restore review pending; WeChat ingestion is paused")
+            wechat_manager = None
+        elif not wechat_manager.start():
             logger.warning("Could not connect to wx_bot service. Some features will be unavailable.")
         else:
             logger.info("WeChat manager connected to wx_bot service")
@@ -609,14 +615,16 @@ async def lifespan(app: FastAPI):
         app.state.assistant_runtime = assistant_runtime
         from app.services.scheduled_task_runtime import get_scheduled_runtime
         app.state.scheduled_runtime = get_scheduled_runtime()
-        app.state.scheduled_runtime.start(event_bus, lambda: assistant_runtime.handler if assistant_runtime else None)
+        if not recovery_pending():
+            app.state.scheduled_runtime.start(event_bus, lambda: assistant_runtime.handler if assistant_runtime else None)
 
         # Check only Codex on the daily Beijing schedule, independent of the UI.
         try:
             from app.services.codex_update_monitor import get_codex_update_monitor
 
-            app.state.codex_update_monitor = get_codex_update_monitor()
-            app.state.codex_update_monitor.start()
+            if "codex" in enabled_engines():
+                app.state.codex_update_monitor = get_codex_update_monitor()
+                app.state.codex_update_monitor.start()
         except Exception:
             logger.exception("Codex update monitor could not start")
 
@@ -631,6 +639,9 @@ async def lifespan(app: FastAPI):
     finally:
         # 清理资源
         logger.info("Shutting down application...")
+        from app.services import execution_service
+        if execution_service._service is not None:
+            await asyncio.to_thread(execution_service._service.close)
         if getattr(app.state, "codex_update_monitor", None):
             await asyncio.to_thread(app.state.codex_update_monitor.stop)
         if getattr(app.state, "scheduled_runtime", None):
@@ -734,6 +745,12 @@ from app.api.endpoints import scheduled_tasks
 app.include_router(scheduled_tasks.router, prefix="/api/scheduled-tasks", tags=["scheduled-tasks"])
 app.include_router(chat_policies.router, prefix="/api/chats", tags=["chat-policies"])
 app.include_router(codex_profiles.router, prefix="/api/codex/profiles", tags=["codex-profiles"])
+from .api.endpoints import engines
+app.include_router(engines.router, prefix="/api/engines", tags=["engines"])
+from .api.endpoints import ai_profiles
+app.include_router(ai_profiles.router, prefix="/api/ai/profiles", tags=["ai-profiles"])
+from .api.endpoints import ai_jobs
+app.include_router(ai_jobs.router, prefix="/api/ai/jobs", tags=["ai-jobs"])
 app.include_router(image_generation.router, prefix="/api/image-generation", tags=["image-generation"])
 app.include_router(terminal.router, prefix="/api/terminal", tags=["terminal"])
 app.include_router(codex_permissions.router, prefix="/api/codex/permissions", tags=["codex-permissions"])

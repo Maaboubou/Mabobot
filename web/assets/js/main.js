@@ -1062,7 +1062,7 @@ const App = {
             const [usersData, listenersData, profilesData, assistantOverview] = await Promise.all([
                 API.users.getAll(),
                 API.wechat.getListeners(),
-                API.codexProfiles.list().catch(() => ({ profiles: [], default_profile_id: '' })),
+                API.aiProfiles.list().catch(() => ({ profiles: [], default_profile_id: '' })),
                 API.assistant.getOverview()
             ]);
             this.updateManagedChatProfiles(profilesData);
@@ -1218,7 +1218,7 @@ const App = {
                 API.assistant.getOverview(),
                 this._managedChatProfilesData
                     ? Promise.resolve(this._managedChatProfilesData)
-                    : API.codexProfiles.list().catch(() => ({ profiles: [], default_profile_id: '' }))
+                    : API.aiProfiles.list().catch(() => ({ profiles: [], default_profile_id: '' }))
             ]).then(([capabilitiesData, assistantOverview, profiles]) => {
                 this._managedChatProfilesData = profiles;
                 this._managedChatReferenceData = {

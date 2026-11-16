@@ -28,3 +28,12 @@ Other dependencies installed from `requirements*.txt` remain subject to their ow
 - License: CC BY 4.0, <https://creativecommons.org/licenses/by/4.0/>
 - Changes: selected CN active banned/restricted records, converted to plugin rules, with additional Chinese title aliases maintained by this project.
 - The dataset attribution and source metadata are also retained in the rule file and plugin README.
+
+## OpenCode optional runtime patch
+
+- Location: `scripts/launcher/patches/retain-transient-generate.patch`
+- Upstream: <https://github.com/anomalyco/opencode>
+- Pinned source: `a6b15d33daf6ab7d35569f6d711fdb630b9f04e7` (v2.3.0)
+- Copyright: 2025 opencode
+- License: MIT; see [license text](licenses/opencode-MIT.txt).
+- Changes: identify the local build as `2.3.0+mabobot.p0.1` and retain transient generation lifecycle ownership until the request settles. The optional installer downloads and builds this source; no runtime binary or account data is bundled.

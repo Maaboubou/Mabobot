@@ -283,6 +283,11 @@ def update_settings(db, payload):
                 "allow_request_override": allow_override}
         row = db.query(Setting).filter_by(key=KEY).first()
         serialized = json.dumps(data, ensure_ascii=False)
+        # Keep the old secret-bearing channel configuration in the existing
+        # protected settings store while accepted tasks pin its version.
+        history_key = KEY + "_VERSION_" + str(current["version"])
+        if not db.query(Setting).filter_by(key=history_key).first():
+            db.add(Setting(key=history_key, value=json.dumps(current, ensure_ascii=False), category="image_generation"))
         if row:
             changed = db.query(Setting).filter_by(id=row.id, value=row.value).update({"value": serialized}, synchronize_session=False)
             if not changed:

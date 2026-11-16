@@ -709,6 +709,8 @@ def _generate_images(policy, request, output_dir, *, paths, attempts, on_image, 
                 progress(dict(attempt))
         if len(paths) >= target:
             return ImageResult(paths, attempts)
+        if policy.get("unknown_policy") == "pause" and attempt.get("outcome_unknown"):
+            raise ImageGenerationDeadlineExceeded("生图结果未知，请先核对已有任务", paths=paths, attempts=attempts, outcome_unknown=True)
     errors = "；".join(f"{a['channel']}：{a.get('error', '失败')}" for a in attempts)
     message = f"生图未完成（{len(paths)}/{target}）" + (f"：{errors}" if errors else "：任务超时")
     if time.monotonic() >= deadline:

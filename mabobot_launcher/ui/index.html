@@ -163,7 +163,7 @@
                     <div class="settings-layout">
                         <article class="panel settings-card wide-card setup-entry">
                             <span class="setting-icon"><svg><use href="#i-layers"/></svg></span>
-                            <div><h2>配置向导</h2><p id="setupEntryHint">检查环境、准备 Codex，并按需安装功能组件。</p></div>
+                            <div><h2>配置向导</h2><p id="setupEntryHint">检查已启用引擎，并按需安装功能组件。</p></div>
                             <button class="button button-primary" data-setup-open>打开向导 <span aria-hidden="true">↗</span></button>
                         </article>
                         <article class="panel settings-card wide-card"><details class="launcher-email-settings"><summary>邮箱提醒 · 配置与测试</summary><div id="launcherEmailConsole"></div></details></article>
@@ -258,9 +258,10 @@
                     <div class="setup-illustration" aria-hidden="true"><div class="setup-orbit"></div><div class="setup-mini-window"><div class="setup-mini-dots"><i></i><i></i><i></i></div><img src="mabobot-icon.svg" alt=""><span>准备好，开始探索</span><div class="setup-mini-line"><b>✓</b><i></i></div><div class="setup-mini-line"><b>✓</b><i></i></div><div class="setup-mini-line"><b>＋</b><i></i></div></div><span class="setup-floating"><svg><use href="#i-layers"/></svg></span></div>
                 </section>
                 <section data-setup-panel="codex" hidden>
+                        <p>可部署 Codex、OpenCode 或两者。OpenCode 使用固定验证版本，在 Linux / WSL 服务中独立登录。<button class="inline-link" data-setup-link="engines">打开引擎中心 →</button></p>
                     <article class="setup-runtime-card">
                         <span class="setup-card-icon"><svg><use href="#i-terminal"/></svg></span>
-                        <div class="setup-card-copy"><div class="setup-card-title"><h2>Codex 运行环境</h2><span class="setup-badge" id="setupCodexBadge">等待检测</span></div><p id="setupRuntimeDetail">正在检测当前使用的运行环境…</p><p class="setup-help" id="setupRuntimeHelp">Windows 默认在 WSL 中运行 Codex。</p>
+                        <div class="setup-card-copy"><div class="setup-card-title"><h2>AI 运行环境</h2><span class="setup-badge" id="setupCodexBadge">等待检测</span></div><p id="setupRuntimeDetail">正在检测当前使用的运行环境…</p><p class="setup-help" id="setupRuntimeHelp">Windows 默认在 WSL 中运行 Codex。</p>
                             <div class="setup-card-actions"><button class="button button-primary" id="setupRuntimeAction" data-setup-install="wsl">安装 WSL 与 Ubuntu</button><button class="inline-link" data-setup-link="wsl_help">安装帮助 ↗</button><button class="inline-link" data-setup-link="codex">查看运行环境 ↗</button></div>
                         </div>
                     </article>
@@ -273,6 +274,7 @@
                 </section>
                 <section data-setup-panel="components" hidden>
                     <div class="setup-component-list">
+                        <article class="setup-component"><span class="setup-card-icon"><svg><use href="#i-terminal"/></svg></span><div><h2>OpenCode <span class="setup-badge" data-setup-badge="opencode">可选</span></h2><p>安装固定验证版本并自动接入 WSL；不改变现有 Codex 或聊天路由。</p><small data-setup-detail="opencode">首次安装可能需要数分钟；Windows 或 Linux 可能要求系统授权。</small></div><button class="button button-secondary" data-setup-install="opencode">安装 OpenCode</button></article>
                         <article class="setup-component"><span class="setup-card-icon"><svg><use href="#i-globe"/></svg></span><div><h2>浏览器组件 <span class="setup-badge" data-setup-badge="browser">待检测</span></h2><p>网页阅读、链接摘要与脑图渲染。自动下载 Chromium。</p><small data-setup-detail="browser"></small></div><button class="button button-secondary" data-setup-install="browser">安装</button></article>
                         <article class="setup-component"><span class="setup-card-icon"><svg><use href="#i-play"/></svg></span><div><h2>媒体组件 <span class="setup-badge" data-setup-badge="media">待检测</span></h2><p>视频、音频处理所需的 FFmpeg 与 FFprobe。</p><small data-setup-detail="media"></small></div><button class="button button-secondary" data-setup-install="media">安装</button></article>
                         <article class="setup-component"><span class="setup-card-icon"><svg><use href="#i-folder"/></svg></span><div><h2>文件处理工具 <span class="setup-badge" data-setup-badge="file_tools">待检测</span></h2><p>为 Codex 准备常用 Office、PDF 与 OCR 工具。</p><small data-setup-detail="file_tools">需要已初始化的 Ubuntu / Debian，安装时可能要求 Linux 密码。</small></div><button class="button button-secondary" data-setup-install="file_tools">安装</button></article>
@@ -291,7 +293,7 @@
     </div>
     <div class="toast-stack" id="toastStack" aria-live="polite"></div>
     <script src="notifications/email_notifications.js"></script>
-    <script src="setup_wizard.js"></script>
-    <script src="app.js?v=3.11.0"></script>
+    <script src="setup_wizard.js?v=20261116-opencode-wsl"></script>
+    <script src="app.js?v=3.12.0"></script>
 </body>
 </html>

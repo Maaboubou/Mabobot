@@ -210,6 +210,13 @@ const API = {
         })
     },
 
+    aiProfiles: {
+        list: () => API.get('/api/ai/profiles'),
+        setDefault: profileId => API.put('/api/ai/profiles/default/selection', { profile_id: profileId }),
+        syncCodex: profileId => API.post(`/api/ai/profiles/codex/${encodeURIComponent(profileId)}/sync`, {}),
+        deleteCodex: profileId => API.delete(`/api/ai/profiles/codex/${encodeURIComponent(profileId)}`),
+    },
+
     codexProfiles: {
         list: () => API.get('/api/codex/profiles'),
         create: payload => API.post('/api/codex/profiles', payload),

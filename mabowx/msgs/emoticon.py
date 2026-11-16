@@ -141,8 +141,10 @@ def _xml_root(raw: str | bytes, max_bytes: int) -> ET.Element | None:
         return None
 
 
-def _single_text(node: ET.Element, name: str) -> str | None:
+def _single_text(node: ET.Element, name: str, *, missing: str | None = None) -> str | None:
     matches = node.findall(name)
+    if not matches:
+        return missing
     if len(matches) != 1 or len(matches[0]):
         return None
     return matches[0].text or ""
@@ -183,15 +185,21 @@ def _parse_quote_document(
         raise EmoticonResolutionError("unsupported_reference")
     svrid = _single_text(ref, "svrid") or ""
     fromusr = _single_text(ref, "fromusr") or ""
-    chatusr = _single_text(ref, "chatusr") or ""
+    # WeChat can omit the member ID or leave it empty on a sticker reference.
+    # Duplicate or nested elements are malformed even when the ID is optional.
+    chatusr = _single_text(ref, "chatusr", missing="")
     if (not re.fullmatch(r"[1-9][0-9]{0,19}", svrid)
-            or not fromusr or not chatusr or max(len(fromusr), len(chatusr)) > 256):
+            or not fromusr or chatusr is None or max(len(fromusr), len(chatusr)) > 256):
         raise EmoticonResolutionError("invalid_reference")
+    if chatusr.isspace():
+        chatusr = ""
     original = _single_text(ref, "content")
     if original is None:
         raise EmoticonResolutionError("invalid_reference")
     original = original.strip()
-    nested = _xml_root(original, max_bytes)
+    # WeChat can serialize the sticker as <msg>...</msg>:0. The suffix
+    # belongs to the reference format; the compact parser needs it intact.
+    nested = _xml_root(original.removesuffix(":0"), max_bytes)
     urls: tuple[str, ...] = ()
     if nested is not None:
         emojis = list(nested.iter("emoji"))

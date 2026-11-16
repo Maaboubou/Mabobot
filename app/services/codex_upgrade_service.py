@@ -442,6 +442,11 @@ class CodexUpgradeService:
         raise CodexUpgradeError("版本检查已超时，请重试")
 
     def check_latest(self, *, allow_during_update: bool = False, scheduled: bool = False) -> Optional[Dict[str, Any]]:
+        from app.services.engine_deployment import enabled_engines
+        if "codex" not in enabled_engines():
+            if scheduled:
+                return None
+            raise CodexUpgradeError("此部署未启用 Codex")
         with self._lock:
             # The updater itself is allowed to check; timer/manual checks must
             # not race with an installation or its compatibility validation.
@@ -670,6 +675,9 @@ class CodexUpgradeService:
             self._persist_operation(self._operation)
 
     def _start(self, *, kind: str, target_version: str = "") -> Dict[str, Any]:
+        from app.services.engine_deployment import enabled_engines
+        if "codex" not in enabled_engines():
+            raise CodexUpgradeError("此部署未启用 Codex")
         with self._lock:
             if self._worker and self._worker.is_alive():
                 raise CodexUpgradeError("已有 Codex 更新任务正在运行")
