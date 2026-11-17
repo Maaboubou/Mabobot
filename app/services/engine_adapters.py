@@ -75,9 +75,20 @@ class CodexAdapter:
         context_window = json.loads(request.candidate.profile_config_json).get("context_window")
         if context_window:
             payload["codex_model_context_window"] = context_window
+        reply_options = json.loads(request.envelope.reply_options_json)
+        for key in ("mabobot_allow_image_input", "mabobot_history_enabled",
+                    "mabobot_history_request_id", "mabobot_history_max_calls",
+                    "mabobot_history_max_bytes", "mabobot_incremental_context",
+                    "mabobot_fresh_context", "output_schema"):
+            if key in reply_options:
+                payload[key] = reply_options[key]
         assets = json.loads(request.envelope.assets_json)
         if assets:
             payload["mabobot_input_files"] = assets
+        # Auxiliary vision calls also carry inline images without file assets.
+        # Only the current human request may supply images, not history blocks.
+        from app.services.codex_proxy.client import extract_image_urls
+        if extract_image_urls(messages, allow_image_input=True):
             payload["mabobot_allow_image_input"] = True
         with run_handle_scope(handle):
             if request.context.depth or request.context.component != "assistant":

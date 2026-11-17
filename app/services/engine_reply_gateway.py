@@ -123,7 +123,21 @@ class AssistantReplyGateway(CodexReplyGateway):
             _, route = service.store.contracts(run_id)
             if route.candidates[0].engine == "opencode":
                 raise AssistantReplyError("此 OpenCode Profile 的图片输入尚未验证")
-        result = service.execute(run_id, InputEnvelope(rules, canonical(data), canonical(list(request.input_files))))
+        # Preserve multimodal and history settings across the durable routing
+        # boundary. Inline image parts are not file assets.
+        reply_options = {
+            "mabobot_allow_image_input": request.allow_image_input,
+            "mabobot_history_enabled": request.history_enabled,
+            "mabobot_history_request_id": request.history_request_id,
+            "mabobot_history_max_calls": request.history_max_calls,
+            "mabobot_history_max_bytes": request.history_max_bytes,
+            "mabobot_incremental_context": request.incremental_context,
+            "mabobot_fresh_context": request.fresh_context,
+        }
+        if request.output_schema is not None:
+            reply_options["output_schema"] = request.output_schema
+        result = service.execute(run_id, InputEnvelope(rules, canonical(data), canonical(list(request.input_files)),
+            reply_options_json=canonical(reply_options)))
         if result.status not in {"completed", "skipped"} or service.store.get(run_id)["cancel_requested"]:
             raise AssistantReplyError(result.error or "本轮任务已取消或未完成", error_code=result.error_code)
         assets = json.loads(result.assets_json)

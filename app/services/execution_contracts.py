@@ -139,10 +139,14 @@ class InputEnvelope:
     input_json: str
     assets_json: str = "[]"
     version: int = 1
+    reply_options_json: str = "{}"
 
     @property
     def sha256(self):
-        return digest(asdict(self))
+        value = asdict(self)
+        if self.reply_options_json == "{}":
+            value.pop("reply_options_json")
+        return digest(value)
 
 
 @dataclass(frozen=True)
