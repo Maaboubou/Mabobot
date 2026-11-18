@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 KEY = "IMAGE_GENERATION_CONFIG_SECRET"
 CHAT_KEY = "IMAGE_GENERATION_CHAT_"
+NO_NATIVE_FALLBACK_SUFFIX = "_without_native_fallback"
 _lock = threading.RLock()
 DEFAULT_MODEL = "gpt-image-2.6-flare"
 MODELS = [
@@ -204,13 +205,15 @@ def read_settings(db=None):
     from app.models.setting import Setting
     row = db.query(Setting).filter_by(key=KEY).first()
     if not row:
-        return {"version": 0, "mode": "native", "channels": [], "allow_request_override": False}
+        return {"version": 0, "mode": "native", "channels": [], "allow_request_override": False,
+                "allow_native_fallback": True}
     try:
         data = json.loads(row.value)
         if data["mode"] not in {"native", "api"} or not isinstance(data["channels"], list):
             raise ValueError()
         data.setdefault("allow_request_override", False)
-        if type(data["allow_request_override"]) is not bool:
+        data.setdefault("allow_native_fallback", True)
+        if type(data["allow_request_override"]) is not bool or type(data["allow_native_fallback"]) is not bool:
             raise ValueError()
         return data
     except (ValueError, TypeError, KeyError) as exc:
@@ -245,6 +248,9 @@ def update_settings(db, payload):
         allow_override = payload.get("allow_request_override", current.get("allow_request_override", False))
         if type(allow_override) is not bool:
             raise ImageConfigError("允许本次切换必须为布尔值")
+        allow_native_fallback = payload.get("allow_native_fallback", current["allow_native_fallback"])
+        if type(allow_native_fallback) is not bool:
+            raise ImageConfigError("允许回退到内置生图必须为布尔值")
         raw_channels = payload.get("channels")
         if not isinstance(raw_channels, list) or len(raw_channels) > 50:
             raise ImageConfigError("最多配置 50 个渠道")
@@ -280,7 +286,7 @@ def update_settings(db, payload):
         if len({c["id"] for c in channels}) != len(channels):
             raise ImageConfigError("渠道 ID 重复")
         data = {"version": current["version"] + 1, "mode": payload["mode"], "channels": channels,
-                "allow_request_override": allow_override}
+                "allow_request_override": allow_override, "allow_native_fallback": allow_native_fallback}
         row = db.query(Setting).filter_by(key=KEY).first()
         serialized = json.dumps(data, ensure_ascii=False)
         # Keep the old secret-bearing channel configuration in the existing
@@ -355,9 +361,13 @@ def resolve_policy(*, chat_id=None, chat_name="", plugin_name="", db=None):
     inherited_ids = parent["channel_ids"] if parent["channel_ids"] is not None else list(enabled)
     ids = policy["channel_ids"] if policy["channel_ids"] is not None else inherited_ids
     return {"mode": mode, "channels": [copy.deepcopy(enabled[i]) for i in ids if i in enabled],
-            "version": data["version"], "allow_request_override": allow_override}
+            "version": data["version"], "allow_request_override": allow_override,
+            "allow_native_fallback": data["allow_native_fallback"]}
 
 
 def runtime_image_mode(policy):
     """Tool availability is fixed when a Codex thread starts, unlike task selection."""
-    return policy["mode"] + ("_switchable" if policy.get("allow_request_override") else "")
+    mode = policy["mode"] + ("_switchable" if policy.get("allow_request_override") else "")
+    if mode != "native" and not policy.get("allow_native_fallback", True):
+        mode += NO_NATIVE_FALLBACK_SUFFIX
+    return mode

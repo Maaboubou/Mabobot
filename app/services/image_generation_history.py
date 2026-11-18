@@ -47,10 +47,10 @@ class ImageReceipt:
         self._write()
 
     def _write(self):
-        from app.models.base import SessionLocal
+        from app.services.image_generation_assets import _session
         from app.models.setting import Setting
         try:
-            with _lock, SessionLocal() as db:
+            with _lock, _session() as db:
                 row = db.query(Setting).filter_by(key=KEY).first()
                 history = [v for v in read_history(db) if v.get("id") != self.value["id"]]
                 history = [self.value, *history][:100]

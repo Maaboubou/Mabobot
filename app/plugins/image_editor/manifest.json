@@ -5,9 +5,11 @@
   "backup": {"schema_version": 1, "include_persistent_storage": true, "include_generated_files": true, "supports_restore_migration": true, "sensitive": false},
   "health": {"critical": false, "timeout_seconds": 5},
   "listeners": [
-    {"event": "text_message_received", "handler": "handle_text_message", "title": "开始或补充图片编辑", "trigger": {"kind": "keyword", "summary": "消息以图片编辑触发词开头，或当前聊天存在编辑会话", "config_keys": ["trigger_keyword"], "conditions": ["触发词后可附参考图数量、生成数量和描述"]}, "scope": {"level": "global", "chat_types": ["group", "user"]}, "propagation": "stop_on_consumed"},
-    {"event": "image_message_received", "handler": "handle_image_message", "title": "接收编辑素材", "trigger": {"kind": "session", "summary": "当前聊天存在等待图片的编辑会话", "config_keys": [], "conditions": []}, "scope": {"level": "global", "chat_types": ["group", "user"]}, "propagation": "stop_on_consumed"},
-    {"event": "quote_image_message_received", "handler": "handle_quote_image_message", "title": "引用图片编辑", "trigger": {"kind": "keyword", "summary": "引用图片并命中编辑触发词或已有编辑会话", "config_keys": ["trigger_keyword"], "conditions": ["引用内容必须包含图片"]}, "scope": {"level": "global", "chat_types": ["group", "user"]}, "propagation": "stop_on_consumed"}
+    {"event": "text_message_received", "handler": "handle_text_message", "title": "文本生图", "trigger": {"kind": "keyword", "summary": "以触发词开头的文本发起生图任务", "config_keys": ["trigger_keyword"], "conditions": []}, "scope": {"level": "global", "chat_types": ["group", "user"]}, "propagation": "stop_on_consumed"},
+    {"event": "quote_text_message_received", "handler": "handle_text_message", "title": "引用回复生图", "trigger": {"kind": "keyword", "summary": "用引用回复正文的触发词发起生图任务", "config_keys": ["trigger_keyword"], "conditions": []}, "scope": {"level": "global", "chat_types": ["group", "user"]}, "propagation": "stop_on_consumed"},
+    {"event": "quote_image_message_received", "handler": "handle_quote_image_message", "title": "引用图片生图", "trigger": {"kind": "keyword", "summary": "用引用回复正文的触发词发起生图任务，引用图片作为参考", "config_keys": ["trigger_keyword"], "conditions": []}, "scope": {"level": "global", "chat_types": ["group", "user"]}, "propagation": "stop_on_consumed"},
+    {"event": "quote_video_message_received", "handler": "handle_text_message", "title": "引用视频的回复生图", "trigger": {"kind": "keyword", "summary": "用引用回复正文的触发词发起生图任务", "config_keys": ["trigger_keyword"], "conditions": []}, "scope": {"level": "global", "chat_types": ["group", "user"]}, "propagation": "stop_on_consumed"},
+    {"event": "link_message_received", "handler": "handle_text_message", "title": "含网址的生图指令", "trigger": {"kind": "keyword", "summary": "命中句首触发词的文本或引用回复可以包含网址", "config_keys": ["trigger_keyword"], "conditions": []}, "scope": {"level": "global", "chat_types": ["group", "user"]}, "propagation": "stop_on_consumed"}
   ],
   "jobs": []
 }

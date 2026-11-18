@@ -7625,7 +7625,6 @@ body.automation-pointer-sorting * {
 .prompt-field > span { color: var(--text-main); font-weight: 600; }
 .prompt-field small, .prompt-note { color: var(--text-secondary); font-size: .8125rem; line-height: 1.6; }
 .prompt-editor { min-height: 12rem; max-height: 24rem; resize: vertical; overflow-y: auto; line-height: 1.7; }
-.prompt-sample { min-height: 4rem; max-height: 10rem; resize: vertical; }
 .prompt-fields { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 0 1rem; }
 .prompt-toggle { display: flex; align-items: center; gap: .6rem; margin: .7rem 0; }
 .prompt-toggle input { accent-color: var(--primary); }
@@ -7636,15 +7635,11 @@ body.automation-pointer-sorting * {
 .prompt-block > summary > span:last-child { color: var(--text-secondary); font-size: .75rem; margin-left: .7rem; }
 .prompt-block[open] > summary { border-bottom: 1px solid var(--border-soft); }
 .prompt-block-body { padding: .85rem; min-width: 0; }
-.prompt-preview-scenario > .prompt-block-body { max-height: min(32rem, 60vh); overflow-y: auto; overscroll-behavior: contain; }
 .prompt-scroll { display: block; max-height: min(24rem, 50vh); overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: .8rem; margin: .5rem 0 0; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; background: var(--bg-soft); color: var(--text-body); font: .8125rem/1.7 var(--font-code); border-radius: var(--radius-sm); }
 .prompt-scroll:focus-visible { outline: 2px solid var(--primary); }
 .prompt-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin: .7rem 0; }
 .prompt-toolbar .prompt-note { margin-right: auto; }
 .prompt-status { color: var(--text-secondary); font-size: .8125rem; line-height: 1.6; overflow-wrap: anywhere; }
-.prompt-rule-editor { border-top: 1px solid var(--border-color); margin-top: 1rem; padding-top: 1rem; }
-.prompt-trial-result { border-left: 3px solid var(--primary); padding: .7rem 1rem; background: var(--bg-soft); }
-.prompt-trial-result p { margin: .4rem 0; }
 @media (max-width: 575.98px) {
     .prompt-fields { grid-template-columns: minmax(0,1fr); }
     .prompt-tabs { gap: .6rem; }

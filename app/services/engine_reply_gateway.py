@@ -126,6 +126,10 @@ class AssistantReplyGateway(CodexReplyGateway):
         # Preserve multimodal and history settings across the durable routing
         # boundary. Inline image parts are not file assets.
         reply_options = {
+            # Native base composition identifies the persona by message name.
+            # Keep structured instructions alongside the engine-neutral text.
+            "instruction_messages": [copy.deepcopy(m) for m in request.messages
+                                     if m.get("role") in {"system", "developer"}],
             "mabobot_allow_image_input": request.allow_image_input,
             "mabobot_history_enabled": request.history_enabled,
             "mabobot_history_request_id": request.history_request_id,

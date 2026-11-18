@@ -59,7 +59,8 @@ def probe_worker(manager) -> dict:
     except Exception:
         # A failed capability probe cannot broaden a chat or break offline work.
         pass
-    publish_support(manager.permission_worker_id, manager.managed_profile_id, support)
+    if getattr(manager, "publish_permission_support", True):
+        publish_support(manager.permission_worker_id, manager.managed_profile_id, support)
     return support
 
 

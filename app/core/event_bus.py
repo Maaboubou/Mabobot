@@ -584,11 +584,8 @@ class EventBus:
             self.logger.debug(f"Processing system event {event.type} synchronously")
             self._process_event_sync(event)
 
-    def _process_event_sync(self, event: Event) -> None:
-        """同步处理事件（原publish方法的核心逻辑）"""
-        if not event_is_fresh(event):
-            archive_expired_event(event)
-            return
+    def eligible_listeners(self, event, *, update_ingress=False):
+        """Apply the real listener grants and mention rules without invoking handlers."""
         # 获取对应事件类型的监听器
         with self._lock:
             listeners = self._listeners.get(event.type, [])
@@ -599,6 +596,7 @@ class EventBus:
         usage_metadata = {"chat_name": chat_name, "chat_type": event.data.get("chat_type"),
                           "usage_scope": "system" if not chat_name else None}
         event.context.pop("chat_id", None)
+        event.context.pop("bot_mention_names", None)
         if chat_name:
             db = self.db_session_factory()
             try:
@@ -615,7 +613,7 @@ class EventBus:
                             chat_name,
                             event.type.value,
                         )
-                        return
+                        return [], usage_metadata, "发言人在本聊天黑名单中"
 
                     # 获取机器人名称用于@检测
                     from app.services.config_service import get_setting
@@ -625,6 +623,7 @@ class EventBus:
                     message_content = event.data.get("message", "")
                     chat_type = event.data.get("chat_type", "")
                     bot_names = bot_names_for_user(user, bot_name)
+                    event.context["bot_mention_names"] = tuple(bot_names)
                     mention_name = find_bot_mention(
                         message_content,
                         bot_names,
@@ -641,7 +640,7 @@ class EventBus:
                         event.data["tickle_is_from_self"] = tickle_is_from_self
                         event.data["tickle_is_to_self"] = tickle_is_to_self
                     sequence = int(event.data.get("_chat_seq") or 0)
-                    if sequence:
+                    if sequence and update_ingress:
                         with self._lock:
                             latest = self._chat_latest_ingress.get(chat_name)
                             if latest and int(latest.get("sequence") or 0) == sequence:
@@ -719,6 +718,15 @@ class EventBus:
             # 如果事件不涉及特定用户（如系统事件），则所有监听器都有权限
             final_listeners = active_listeners
 
+        return final_listeners, usage_metadata, ""
+
+    def _process_event_sync(self, event: Event) -> None:
+        """同步处理事件（原publish方法的核心逻辑）"""
+        if not event_is_fresh(event):
+            archive_expired_event(event)
+            return
+        final_listeners, usage_metadata, _ = self.eligible_listeners(event, update_ingress=True)
+        chat_name = event.data.get("chat_name")
         # 同步执行所有有权限的监听器
         # Observers archive incoming data before a business handler consumes it
         # or waits for a model. Keep configured order within each phase.

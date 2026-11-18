@@ -1928,7 +1928,7 @@ const UI = {
                 <div class="chat-policy-pane ${activePane === 'assistant' ? 'active' : ''}" data-chat-policy-pane="assistant">
                     <div class="chat-assistant-columns ${chat.is_group ? '' : 'is-private'}">
                     <section class="chat-policy-block chat-assistant-identity">
-                        <div class="chat-policy-block-head"><h4>回复身份</h4></div>
+                        <div class="chat-policy-block-head"><h4>回复身份</h4><button type="button" class="chat-policy-inline-action" onclick="ChatTestLab.open({chatId:${Number(policy.user_id)}})">测试此聊天</button></div>
                         <div class="chat-policy-field-grid two">
                             <label class="chat-horizontal-field"><span class="chat-field-label"><span>AI Profile</span><a href="/ai-center" onclick="event.preventDefault(); UI.switchTab('codex')">管理</a></span><select class="form-select" name="codex_profile_id">${profileOptions}</select></label>
                             <label class="chat-horizontal-field"><span class="chat-field-label"><span>角色</span><a href="/assistant/roles" onclick="event.preventDefault(); App.openAssistantRoleManager()">管理</a></span><select class="form-select" name="role_id"><option value="">继承全局默认角色</option>${roleOptions}</select></label>

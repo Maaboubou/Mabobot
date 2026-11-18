@@ -1098,6 +1098,57 @@ def image_api_connection(payload: dict[str, Any], *, home: Path) -> dict[str, st
             "api_key": _validate_api_key(paths["secret"].read_text(encoding="utf-8").strip())}
 
 
+def read_base_instructions(payload: dict[str, Any], *, home: Path) -> dict[str, Any]:
+    """Read only the selected managed profile's instruction sources; never auth files."""
+    import tomllib
+    name = str(payload.get("name") or "")
+    if not PROFILE_NAME_RE.fullmatch(name):
+        raise ProfileError("Profile 名称无效")
+    paths = _paths(home.resolve(), name)
+    config_path = paths["config"]
+    if not config_path.is_file():
+        raise ProfileError("Profile 配置文件不存在")
+    config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    selected = config.get("profile")
+    if selected:
+        config = {**config, **config.get("profiles", {}).get(selected, {})}
+    model = str(payload.get("model") or config.get("model") or "")
+    def read(path):
+        if path.stat().st_size > 16 * 1024 * 1024:
+            raise ProfileError("指令来源文件过大")
+        return path.read_text(encoding="utf-8")
+    def resolve(value):
+        path = Path(value).expanduser()
+        return path if path.is_absolute() else config_path.parent / path
+    source = config.get("model_instructions_file")
+    extra = None
+    if source:
+        path = resolve(source)
+        content = read(path)
+        kind = "model_instructions_file"
+    else:
+        catalog = config.get("model_catalog_json")
+        path = resolve(catalog) if catalog else paths["codex_home"] / "models_cache.json"
+        if not path.is_file():
+            raise ProfileError("此 Profile 尚无模型指令缓存，请先在 AI 中心刷新该 Profile 的模型列表")
+        data = json.loads(read(path))
+        model_data = next((m for m in data.get("models", []) if m.get("slug") == model), None)
+        if not model_data:
+            raise ProfileError("模型目录中没有当前模型的指令：" + model)
+        messages = model_data.get("model_messages") or {}
+        content = messages.get("instructions_template") or model_data.get("base_instructions")
+        extra = messages.get("persistent_instructions")
+        kind = "model_catalog" if catalog else "model_cache"
+    if not isinstance(content, str) or not content.strip():
+        raise ProfileError("当前模型未提供可读取的基础指令原文")
+    return {"available": True, "content": content, "profile_id": name, "model": model,
+            "source": str(path), "source_kind": kind,
+            "fingerprint": hashlib.sha256(content.encode()).hexdigest(),
+            "modified_at": datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(),
+            "persistent_instructions": extra if isinstance(extra, str) else None,
+            "notice": "读取配置来源原文；模型缓存可能随 Codex 更新。真实线程可能保留创建时的版本。"}
+
+
 def _request() -> dict[str, Any]:
     try:
         value = json.load(sys.stdin)
@@ -1112,7 +1163,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--action",
-        choices=("list", "create", "update", "delete", "import-local-auth", "clear-auth", "image-api-connection"),
+        choices=("list", "create", "update", "delete", "import-local-auth", "clear-auth", "image-api-connection", "read-base-instructions"),
         required=True,
     )
     parser.add_argument("--home", help=argparse.SUPPRESS)
@@ -1121,6 +1172,8 @@ def main() -> int:
     try:
         if options.action == "list":
             result = list_profiles(home=home)
+        elif options.action == "read-base-instructions":
+            result = read_base_instructions(_request(), home=home)
         elif options.action == "image-api-connection":
             result = image_api_connection(_request(), home=home)
         else:
@@ -1140,7 +1193,7 @@ def main() -> int:
                 result = delete_profile(_request(), home=home)
         print(json.dumps({"status": "success", "data": result}, ensure_ascii=False, separators=(",", ":")))
         return 0
-    except (ProfileError, OSError) as exc:
+    except (ProfileError, OSError, ValueError) as exc:
         print(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False, separators=(",", ":")))
         return 2
 

@@ -1029,6 +1029,11 @@ class CodexAgentRuntime:
         access = codex_access_service.for_chat(chat_id, ensure=True)
         request = access.apply(request)
         fallback = profile.allow_exec_fallback if allow_exec_fallback is None else allow_exec_fallback
+        from app.services.bot_base_instructions import requires_app_server
+        if requires_app_server(request.get("codex_chat_user_id")):
+            fallback = False
+            if not persistent_session or not access.persistent_thread:
+                request["mabobot_fresh_context"] = True
         if scheduled_run:
             fallback = False
 

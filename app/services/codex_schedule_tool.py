@@ -119,7 +119,7 @@ def preserve_resources(resources, browser):
     return saved
 
 
-def execute(tool, arguments, context, browser=None):
+def execute(tool, arguments, context, browser=None, *, service=None):
     if context is None or context.scheduled or browser is None or context.chat != browser.chat_id:
         raise ScheduleDenied("此执行没有聊天计划任务管理权限")
     if tool != "manage":
@@ -127,7 +127,7 @@ def execute(tool, arguments, context, browser=None):
     args = json.loads(arguments) if isinstance(arguments, str) else arguments
     if not isinstance(args, dict) or set(args) - {"action", "task_id", "definition", "expected_version", "restore_version", "history", "until", "at"}:
         raise ScheduleError("无效的计划任务参数")
-    service, actor = get_scheduled_tasks(), context.actor
+    service, actor = service or get_scheduled_tasks(), context.actor
     action = args.get("action")
     with context.lock:
         service.require_enabled()

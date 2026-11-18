@@ -171,6 +171,7 @@ def compose_reply(role_prompt, settings, history, current, *, search="", rules=N
             "角色设定",
             normalize_legacy_prompt(role_prompt),
             source="角色配置",
+            name="mabobot_persona",
             editable="role",
         ),
         rule_block("completion", rules),

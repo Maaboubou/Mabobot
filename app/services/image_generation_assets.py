@@ -5,6 +5,8 @@ chat-scoped snapshots can be resolved by asset ID; a path is never an asset ID.
 """
 from __future__ import annotations
 
+from contextvars import ContextVar
+from contextlib import contextmanager
 import copy
 import hashlib
 import json
@@ -19,6 +21,18 @@ from pathlib import Path
 
 _lock = threading.RLock()
 _session_factory = None
+_storage = ContextVar("image_asset_storage", default=None)
+
+
+@contextmanager
+def asset_storage(directory, session_factory):
+    """Route all asset reads and writes in this host tool call to its own storage."""
+    token = _storage.set((directory, session_factory))
+    try:
+        yield
+    finally:
+        _storage.reset(token)
+
 _MAX_IMAGE_BYTES = 50 * 1024 * 1024
 _STATUSES = {"unknown", "pending", "sending", "sent", "failed", "blocked", "uncertain", "cancelled", "interrupted"}
 _SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".svg"}
@@ -26,7 +40,8 @@ _SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff", 
 
 def _session():
     from app.models.base import SessionLocal
-    return (_session_factory or SessionLocal)()
+    scope = _storage.get()
+    return (scope[1] if scope else _session_factory or SessionLocal)()
 
 
 def _chat_hash(chat):
@@ -57,7 +72,8 @@ def _checked_path(raw, *, missing=False):
 
 
 def _root(chat, *, create=False):
-    root = _checked_path(os.getenv("IMAGE_GENERATION_ASSET_ROOT", "data/image_generation/assets"), missing=True)
+    scope = _storage.get()
+    root = _checked_path(scope[0] if scope else os.getenv("IMAGE_GENERATION_ASSET_ROOT", "data/image_generation/assets"), missing=True)
     folder = root / _chat_hash(chat)
     _checked_path(folder, missing=True)
     if create:

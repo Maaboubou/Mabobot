@@ -30,6 +30,7 @@ def freeze_image_policy(policy, *, native_profile_id=""):
     configured = get_execution_service().config.read()[1]["profiles"].get(native_profile_id, {}) if native_profile_id else {}
     return {"execution_version": 1, "mode": policy["mode"], "version": policy["version"],
         "allow_request_override": policy.get("allow_request_override", False),
+        "allow_native_fallback": policy.get("allow_native_fallback", True),
         "native_profile_id": native_profile_id, "native_binding": binding, "unknown_policy": "pause",
         "native_runtime_generation": str(configured.get("generation") or digest(binding)),
         "native_auth_ref": configured.get("auth_ref", ""), "native_account_key": configured.get("account_key", ""),

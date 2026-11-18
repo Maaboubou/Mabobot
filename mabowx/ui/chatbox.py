@@ -32,6 +32,9 @@ AVATAR_MENU_NATIVE_CLASSES = frozenset(
     {"mmui::XMenu", "Qt51514QWindowToolSaveBits"}
 )
 MENTION_OBJECT_CHARACTER = "\ufffc"
+MERGE_PHOTO_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".jfif", ".bmp"})
+MERGE_PHOTO_MIN_COUNT = 3
+UIA_TOGGLE_STATE_ON = 1
 
 
 def group_sender_head_point(control, direction: str | None) -> tuple[int, int] | None:
@@ -1545,6 +1548,44 @@ class ChatBox(BaseUISubWnd):
     # 文件
     # ------------------------------------------------------------------
 
+    def _enable_photo_merge(self) -> WxResponse:
+        """勾选当前草稿的“发送后合并展示照片”，并确认勾选状态。"""
+        try:
+            toolbar = uia.find_descendant(
+                self.control,
+                **runtime_selector(self.root, "chat.input_toolbar_right"),
+                timeout=0,
+            )
+            if toolbar is None:
+                return WxResponse.success()
+            label = uia.find_descendant(
+                toolbar, control_type="TextControl",
+                name="发送后合并展示照片", timeout=0,
+            )
+            if label is None or label.IsOffscreen:
+                # 旧版微信或不符合微信合并条件的草稿仍走原发送流程。
+                return WxResponse.success()
+
+            # 微信把复选框和标签暴露成两个同级控件，复选框本身没有 Name。
+            checkbox = uia.find_descendant(
+                label.GetParentControl(), control_type="CheckBoxControl",
+                class_name="mmui::XCheckButton", timeout=0,
+            )
+            if checkbox is None or checkbox.IsOffscreen or not checkbox.IsEnabled:
+                return WxResponse.failure("合并展示照片复选框不可用")
+            toggle = checkbox.GetTogglePattern()
+            if toggle is None:
+                return WxResponse.failure("无法读取合并展示照片的勾选状态")
+            if toggle.ToggleState != UIA_TOGGLE_STATE_ON:
+                # 4.1.15.13 实测 Toggle() 只改变焦点，实际点击才会勾选。
+                checkbox.Click(simulateMove=False, waitTime=0.15)
+            if toggle.ToggleState != UIA_TOGGLE_STATE_ON:
+                return WxResponse.failure("合并展示照片未能勾选")
+        except Exception as exc:
+            return WxResponse.error(f"设置合并展示照片失败: {exc}")
+        wxlog.debug("已确认勾选发送后合并展示照片")
+        return WxResponse.success()
+
     @uilock
     def send_files(self, filepaths) -> WxResponse:
         """一次性粘贴多个文件到输入框，只点击一次发送。"""
@@ -1576,6 +1617,11 @@ class ChatBox(BaseUISubWnd):
 
         if not self._wait_send_button_enabled():
             return WxResponse.failure("文件粘贴后发送按钮未启用")
+        if sum(path.suffix.lower() in MERGE_PHOTO_SUFFIXES for path in paths) >= MERGE_PHOTO_MIN_COUNT:
+            response = self._enable_photo_merge()
+            if not response.is_success:
+                wxlog.warning(response["message"])
+                return response
         self._mark_sent_files(paths)
         response = self._click_send()
         if not response.is_success:
@@ -2034,15 +2080,25 @@ class ChatBox(BaseUISubWnd):
         Unknown separators clear the inherited clock rather than using receipt time.
         """
         from datetime import datetime
-        from mabowx.utils.history_time import message_timestamp
+        from mabowx.utils.history_time import history_timestamp, message_timestamp
         cache = self._source_time_cache
         if token not in cache:
-            stamp = message_timestamp(value, datetime.now())
+            observed = datetime.now()
+            stamp = message_timestamp(value, observed)
             # Retry unresolved/future labels on the next read. Freezing an
             # unknown value would suppress the entire following segment.
             if stamp is None:
+                wxlog.warning(
+                    f"微信时间分隔符无法确认，保留未知时间: label={value!r} "
+                    f"host_time={observed.isoformat()}"
+                )
                 return ""
             cache[token] = datetime.fromtimestamp(stamp).strftime("%Y-%m-%d %H:%M:%S")
+            if history_timestamp(value, observed) > cache[token]:
+                wxlog.info(
+                    f"微信时间分隔符时钟偏差已校正: label={value!r} "
+                    f"source_time={cache[token]!r} host_time={observed.isoformat()}"
+                )
             if len(cache) > 256:
                 cache.pop(next(iter(cache)))
         return cache[token]

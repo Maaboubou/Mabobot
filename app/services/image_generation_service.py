@@ -67,8 +67,8 @@ class ImageChannelsExhausted(ImageGenerationError):
 
 
 def native_fallback_count(policy, request, error):
-    """Only queue exhaustion permits fallback, never cancellation or delivery errors."""
-    if not isinstance(error, ImageChannelsExhausted):
+    """Return the missing count when global policy and queue exhaustion allow fallback."""
+    if not policy.get("allow_native_fallback", True) or not isinstance(error, ImageChannelsExhausted):
         return 0
     # A queue rejected entirely before HTTP is a request/configuration error,
     # not authorization to start a different, potentially billed generator.
@@ -206,8 +206,10 @@ def _parameters(channel, request, count):
         # A task changing format should not inherit incompatible defaults from
         # the previous format. Explicit task values still undergo validation.
         irrelevant = {"frame_count", "frame_duration_ms"} if fmt != "gif" else set()
+        if fmt not in {"jpeg", "webp"}:
+            irrelevant.add("output_compression")
         if fmt in {"gif", "svg"}:
-            irrelevant |= {"stream", "partial_images", "output_compression"}
+            irrelevant |= {"stream", "partial_images"}
         for name in irrelevant - request.parameters.keys():
             params.pop(name, None)
         if (fmt == "gif" or channel.get("parameters", {}).get("output_format") == "gif") and "size" not in request.parameters:

@@ -66,7 +66,11 @@ class CodexAdapter:
         from app.services.execution_authority import chat_name
         name = chat_name(request.context) if request.context.source_chat_id else ""
         data = json.loads(request.envelope.input_json)
-        messages = [{"role": "system", "content": request.envelope.instructions}]
+        reply_options = json.loads(request.envelope.reply_options_json)
+        # Older envelopes contain only flattened instructions. New assistant
+        # envelopes retain names and roles used by native persona composition.
+        messages = list(reply_options.get("instruction_messages", [
+            {"role": "system", "content": request.envelope.instructions}]))
         messages.extend(data if isinstance(data, list) else [{"role": "user", "content": data if isinstance(data, str) else canonical(data)}])
         payload = {"model": request.candidate.model, "messages": messages,
             "timeout": max(1, int(request.context.deadline - time.time())),
@@ -75,7 +79,6 @@ class CodexAdapter:
         context_window = json.loads(request.candidate.profile_config_json).get("context_window")
         if context_window:
             payload["codex_model_context_window"] = context_window
-        reply_options = json.loads(request.envelope.reply_options_json)
         for key in ("mabobot_allow_image_input", "mabobot_history_enabled",
                     "mabobot_history_request_id", "mabobot_history_max_calls",
                     "mabobot_history_max_bytes", "mabobot_incremental_context",

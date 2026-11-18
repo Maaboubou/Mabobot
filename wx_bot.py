@@ -1340,7 +1340,8 @@ def message_callback(msg, chat):
         archive_only = not source_is_fresh(sent_at, received_at)
         if archive_only:
             # Stop before file downloads, UI link resolution and plugin dispatch.
-            logger.info("积压消息仅存档: chat=%r source_time=%r sent_at=%r", chat_name, getattr(msg, 'time', ''), sent_at)
+            reason = "发送时间未知，仅存档" if sent_at is None else "积压消息仅存档"
+            logger.info("%s: chat=%r source_time=%r sent_at=%r", reason, chat_name, getattr(msg, 'time', ''), sent_at)
             _wait_for_main_app_ready()
             response = requests.post(
                 f"{MAIN_APP_URL}/api/internal/wechat_message",

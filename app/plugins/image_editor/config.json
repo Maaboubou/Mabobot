@@ -1,54 +1,67 @@
 {
-    "name": "image_editor",
-    "display_name": "图片编辑",
-    "version": "2.0.0",
-    "description": "通过 Codex 内置能力或图片 API 编辑和生成图片，支持多张参考图",
-    "author": "System",
-    "category": "image",
-    "requires": [],
-    "config_schema": {
-        "trigger_keyword": {
-            "type": "string",
-            "group": "trigger",
-            "description": "触发图片编辑的关键词（支持P图、P图2、P图 2等格式）",
-            "default": "P图"
-        },
-        "collect_timeout": {
-            "type": "integer",
-            "description": "图片收集超时时间(秒)",
-            "default": 30
-        },
-        "max_images": {
-            "type": "integer",
-            "description": "最多收集的图片数量",
-            "default": 5
-        },
-        "processing_timeout": {
-            "type": "integer",
-            "description": "内置 Codex 执行超时（秒）",
-            "default": 300
-        },
-        "target_images": {
-            "type": "integer",
-            "description": "默认生成图片数量，可用 +数字 覆盖",
-            "default": 1
-        },
-        "image_generation": {
-            "type": "object",
-            "control": "json",
-            "title": "图片生成",
-            "group": "image_generation",
-            "level": "basic",
-            "description": "",
-            "default": {
-                "mode": "inherit",
-                "channel_ids": null
-            }
-        }
+  "name": "image_editor",
+  "display_name": "生图",
+  "version": "3.0.0",
+  "description": "按提示词批量生成照片，支持引用图片作为参考图，并将本批结果发回微信",
+  "author": "System",
+  "category": "image",
+  "requires": [],
+  "config_schema": {
+    "trigger_keyword": {
+      "type": "string",
+      "title": "触发词",
+      "group": "trigger",
+      "description": "普通消息或引用回复以此词开头，后面的文字作为生图提示词",
+      "default": "生图"
     },
-    "trigger_keyword": "P图",
-    "collect_timeout": 120,
-    "max_images": 5,
-    "processing_timeout": 300,
-    "target_images": 1
+    "target_images": {
+      "type": "integer",
+      "title": "每批生图张数",
+      "description": "每批发起的单图请求数量",
+      "minimum": 1,
+      "default": 1
+    },
+    "max_batches": {
+      "type": "integer",
+      "title": "最多尝试批次",
+      "description": "包括首批。只有整批未生成图片时才尝试下一批",
+      "minimum": 1,
+      "default": 3
+    },
+    "request_interval": {
+      "type": "number",
+      "title": "请求发起间隔（秒）",
+      "description": "同批两次单图请求的发起间隔，0 表示同时发起",
+      "minimum": 0,
+      "default": 10
+    },
+    "processing_timeout": {
+      "type": "integer",
+      "title": "单图请求超时（秒）",
+      "description": "一次单图请求允许的处理时长",
+      "minimum": 1,
+      "default": 300
+    },
+    "image_generation": {
+      "type": "object",
+      "control": "json",
+      "title": "图片生成",
+      "group": "image_generation",
+      "level": "basic",
+      "description": "",
+      "default": {
+        "mode": "inherit",
+        "channel_ids": null
+      }
+    }
+  },
+  "trigger_keyword": "生图",
+  "processing_timeout": 300,
+  "target_images": 1,
+  "image_generation": {
+    "mode": "inherit",
+    "channel_ids": null
+  },
+  "request_interval": 10,
+  "max_batches": 3
 }

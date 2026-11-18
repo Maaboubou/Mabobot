@@ -42,11 +42,13 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
 
     <!-- App CSS -->
-    <link href="/static/assets/css/style.css?v=20261116-shared-profile" rel="stylesheet">
+    <link href="/static/assets/css/style.css?v=20261118-studio" rel="stylesheet">
     <link href="/static/assets/css/dashboard.css?v=20260921-bot-activity" rel="stylesheet">
     <link href="/static/assets/css/image_generation.css?v=20261106-image-diagnostics" rel="stylesheet">
     <link href="/static/assets/css/terminal.css?v=20261106-terminal-compact" rel="stylesheet">
     <link rel="stylesheet" href="/notification-assets/email_notifications.css?v=2">
+    <link rel="stylesheet" href="/static/assets/css/bot_workbench.css?v=20261118-studio">
+    <link rel="stylesheet" href="/static/assets/css/chat_test_lab.css?v=20261118-rehearsal">
 </head>
 
 <body>
@@ -754,7 +756,7 @@
                         <button type="button" class="assistant-section-tab" role="tab" data-assistant-section="judges" onclick="App.setAssistantSection('judges')"><i class="bi bi-shield-check"></i><span>接话判断</span></button>
                     </div>
                     <div class="assistant-command-actions">
-                        <button type="button" class="btn btn-light border" onclick="PromptWorkbench.systemRules()">系统规则</button>
+                        <button type="button" class="btn btn-primary" onclick="BotWorkbench.open()"><i class="bi bi-sliders2 me-1"></i>行为与测试</button>
 
                         <button type="button" class="btn btn-surface" onclick="App.showAssistantGlobalSettings()">
                             <i class="bi bi-sliders me-1"></i>全局设置
@@ -1581,13 +1583,13 @@
     </div>
     <script src="/static/assets/js/api.js?v=20261116-shared-profile"></script>
     <script src="/static/assets/js/codex_permissions.js?v=20261116-shared-profile"></script>
-    <script src="/static/assets/js/ui.js?v=20261116-shared-profile"></script>
+    <script src="/static/assets/js/ui.js?v=20261118-studio"></script>
     <script src="/notification-assets/email_notifications.js?v=1"></script>
     <script src="/static/assets/js/system_storage.js?v=20260925-storage"></script>
     <script src="/static/assets/js/system_operations.js?v=20260925-backup-flow"></script>
     <script src="/static/assets/js/system_tools.js?v=20261116-opencode-wsl"></script>
-    <script src="/static/assets/js/route_prompts.js?v=20261028-content-review"></script>
-    <script src="/static/assets/js/image_generation.js?v=20261106-image-diagnostics"></script>
+    <script src="/static/assets/js/route_prompts.js?v=20261118-studio"></script>
+    <script src="/static/assets/js/image_generation.js?v=20261118-channel-queue-label"></script>
     <script src="/static/assets/js/llm_manager.js?v=20261116-opencode-sessions"></script>
     <script src="/static/assets/js/engine_center.js?v=20261116-context-pricing"></script>
     <script src="/static/assets/js/codex_center.js?v=20261116-load-isolation"></script>
@@ -1596,8 +1598,11 @@
     <script src="/static/assets/js/dashboard.js?v=20260921-bot-activity"></script>
     <link href="/static/assets/css/scheduled_tasks.css?v=20261030-detail-layout" rel="stylesheet">
     <script src="/static/assets/js/scheduled_tasks.js?v=20261030-detail-layout"></script>
-    <script src="/static/assets/js/main.js?v=20261116-shared-profile"></script>
-    <script src="/static/assets/js/assistant_prompts.js?v=20261028-content-review"></script>
+    <script src="/static/assets/js/main.js?v=20261118-studio"></script>
+    <script src="/static/assets/js/assistant_studio.js?v=20261118"></script>
+    <script src="/static/assets/js/chat_test_lab.js?v=20261118-rehearsal"></script>
+    <script src="/static/assets/js/bot_workbench.js?v=20261118-studio"></script>
+    <script src="/static/assets/js/assistant_prompts.js?v=20261118-studio"></script>
     <script src="/static/assets/js/chat_archive.js?v=20260917-context-actions"></script>
 
     <!-- ==================== 接话判断 History Modal ==================== -->

@@ -639,6 +639,8 @@ async def lifespan(app: FastAPI):
     finally:
         # 清理资源
         logger.info("Shutting down application...")
+        from app.services.chat_test_lab import lab
+        await asyncio.to_thread(lab.stop)
         from app.services import execution_service
         if execution_service._service is not None:
             await asyncio.to_thread(execution_service._service.close)
@@ -764,6 +766,8 @@ from .api.endpoints import history
 app.include_router(history.router, prefix="/api/history", tags=["history"])
 from .api.endpoints import assistant_prompts
 app.include_router(assistant_prompts.router, prefix="/api/assistant/prompts", tags=["assistant_prompts"])
+from .api.endpoints import chat_test_lab
+app.include_router(chat_test_lab.router, prefix="/api/assistant/test-lab", tags=["chat_test_lab"])
 app.include_router(assistant_roles.router, prefix="/api/assistant/roles", tags=["assistant_roles"])
 app.include_router(assistant_judges.router, prefix="/api/assistant/judges", tags=["assistant_judges"])
 app.include_router(dashboard.router, prefix="/api/dashboard", tags=["dashboard"])

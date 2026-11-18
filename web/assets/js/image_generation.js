@@ -45,6 +45,12 @@ const ImageGeneration = {
                     <span>允许聊天请求临时切换生图模式</span></label>
                 <p>用户明确指定时，仅本次任务改用 API 或 Codex 内置；未指定时使用默认模式。API 使用下方已启用的渠道。</p>
             </div>
+            <div class="image-request-override">
+                <label class="form-check form-switch"><input type="checkbox" class="form-check-input" id="imageGenerationNativeFallback"
+                    ${this.data.allow_native_fallback !== false ? 'checked' : ''} onchange="ImageGeneration.setNativeFallback(this.checked)">
+                    <span>API 渠道耗尽后尝试 Codex 内置生图</span></label>
+                <p>应用于聊天和使用 API 模式的插件。关闭后，保留 API 已生成的图片并结束本次生图请求。</p>
+            </div>
             <div class="image-channel-list" aria-label="按尝试顺序排列的生图渠道">${channels.length ? channels.map((c, i) => `
                 <article class="image-channel-row ${c.enabled ? '' : 'image-channel-off'}" draggable="true" data-image-channel="${this.esc(c.id)}">
                     <span class="image-channel-grip" title="拖动排序"><i class="bi bi-grip-vertical" aria-hidden="true"></i></span>
@@ -59,7 +65,7 @@ const ImageGeneration = {
                         <button class="btn btn-sm btn-outline-secondary" title="删除" aria-label="删除 ${this.esc(c.name)}" onclick="ImageGeneration.remove('${this.esc(c.id)}')"><i class="bi bi-trash"></i></button>
                     </div>
                 </article>`).join('') : '<div class="image-channel-empty">暂无 API 配置</div>'}</div>
-            <div class="image-generation-footnote">${this.data.mode === 'api' ? '按顺序尝试已勾选配置，全部失败后尝试内置生图' : '内置生图失败后结束任务'}</div>
+            <div class="image-generation-footnote">${this.data.mode === 'api' ? '按顺序尝试已勾选的 API 渠道' : '内置生图失败后结束本次生图请求'}</div>
             <div id="imageGenerationTestResult" aria-live="polite"></div>
             <details class="image-call-history"><summary>最近调用</summary><div id="imageCallHistory" role="region" aria-label="最近调用记录" tabindex="0"></div>
                 <button class="btn btn-sm btn-outline-secondary mt-2" onclick="ImageGeneration.loadHistory()">刷新</button></details>`;
@@ -103,7 +109,8 @@ const ImageGeneration = {
         try {
             this.data = await API.put('/api/image-generation', {
                 version: this.data.version, mode: next.mode, channels: next.channels,
-                allow_request_override: next.allow_request_override === true
+                allow_request_override: next.allow_request_override === true,
+                allow_native_fallback: next.allow_native_fallback !== false
             });
             this.render();
         } catch (error) {
@@ -123,6 +130,7 @@ const ImageGeneration = {
     },
     setMode(mode) { return this.change(data => { data.mode = mode; }); },
     setRequestOverride(enabled) { return this.change(data => { data.allow_request_override = enabled; }); },
+    setNativeFallback(enabled) { return this.change(data => { data.allow_native_fallback = enabled; }); },
     toggle(id, enabled) { return this.change(data => { data.channels.find(c => c.id === id).enabled = enabled; }); },
     move(id, direction) {
         return this.change(data => {
@@ -471,7 +479,7 @@ const ImageGeneration = {
         return `<div class="image-policy-editor" data-image-override-control="${allowOverrideControl}" data-image-inherited-override="${inheritedOverride}" data-image-parent="${this.esc(JSON.stringify(parent))}" data-image-catalog="${this.esc(JSON.stringify(catalog.map(c => ({id: c.id, name: c.name, enabled: c.enabled}))))}">
             <textarea hidden data-image-policy-value ${attrs}>${this.esc(JSON.stringify(value))}</textarea>${mode}
             ${override}
-            <details class="image-policy-queue" ${value.mode === 'native' && !allowOverride ? 'hidden' : ''}><summary>API 渠道 <span data-image-policy-source>${value.channel_ids === null ? '默认' : '自定义'}</span></summary>
+            <details class="image-policy-queue" ${value.mode === 'native' && !allowOverride ? 'hidden' : ''}><summary>API 渠道（仅 API 模式使用） <span data-image-policy-source>${value.channel_ids === null ? '跟随默认队列' : '自定义队列'}</span></summary>
                 <div class="image-policy-items">${order.map(id => {
                     const channel = catalog.find(c => c.id === id) || {id, name: '已删除的配置', enabled: false};
                     return `<div class="image-policy-item" data-policy-channel="${this.esc(id)}"><label><input type="checkbox" data-image-policy-check ${ids.includes(id) ? 'checked' : ''} ${!channel.enabled ? 'disabled' : ''}> <span>${this.esc(channel.name)}${channel.enabled ? '' : ' · 停用'}</span></label>
@@ -493,7 +501,7 @@ const ImageGeneration = {
         const allowOverride = editor.dataset.imageOverrideControl === 'true'
             && (value.allow_request_override ?? editor.dataset.imageInheritedOverride === 'true');
         editor.querySelector('.image-policy-queue').hidden = value.mode === 'native' && !allowOverride;
-        editor.querySelector('[data-image-policy-source]').textContent = value.channel_ids === null ? '默认' : '自定义';
+        editor.querySelector('[data-image-policy-source]').textContent = value.channel_ids === null ? '跟随默认队列' : '自定义队列';
         input.dispatchEvent(new Event('input', {bubbles: true}));
     }
 };

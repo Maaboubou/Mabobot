@@ -21,8 +21,16 @@ from app.services.image_generation_service import (
     ImageInput, ImageRequest, ImageGenerationError, ImageGenerationCancelled, generate_images,
     native_fallback_count, inspect_image,
 )
-from app.services.image_generation_config import ImageAnimationRequiresFrames
+from app.services.image_generation_config import ImageAnimationRequiresFrames, NO_NATIVE_FALLBACK_SUFFIX
 from app.services.image_generation_media import compose_gif_bytes
+
+
+def tools_for_mode(spec, mode):
+    mode = mode.removesuffix(NO_NATIVE_FALLBACK_SUFFIX)
+    local = {"recent", "read", "export", "capabilities"}
+    return {**spec, "tools": [tool for tool in spec["tools"]
+            if (mode != "native" or tool["name"] in local)
+            and (mode.endswith("_switchable") or tool["name"] != "select_mode")]}
 
 
 class ImageToolResult(dict):

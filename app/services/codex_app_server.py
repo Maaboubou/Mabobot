@@ -8,6 +8,8 @@ stateless Codex CLI adapter.
 
 from __future__ import annotations
 
+from app.services.bot_base_instructions import active_base, read_base, base_parameters, resolve_chat_base
+
 import hashlib
 import json
 import logging
@@ -2315,15 +2317,15 @@ class CodexAppServerManager:
         reasoning_summary: str,
         image_mode: str = "native",
     ) -> Dict[str, Any]:
+        from app.services.image_generation_config import NO_NATIVE_FALLBACK_SUFFIX
         config: Dict[str, Any] = {
             "model_reasoning_effort": reasoning_effort,
             "web_search": web_search_mode,
             "approvals_reviewer": CODEX_APPROVALS_REVIEWER,
             "features.memories": False,
             "features.external_agent_memory_import": False,
-            # API tasks need native image_gen available for the host-authorized
-            # one-way fallback after the configured API queue is exhausted.
-            "features.image_generation": True,
+            # Switchable tasks may still use native generation when explicitly selected.
+            "features.image_generation": image_mode != "api" + NO_NATIVE_FALLBACK_SUFFIX,
         }
         if reasoning_summary != "inherit":
             config["model_reasoning_summary"] = reasoning_summary
@@ -2352,6 +2354,7 @@ class CodexAppServerManager:
                 str(workdir.resolve()),
                 permission_profile,
                 approval_policy,
+                (active_base.get() or {}).get("fingerprint", ""),
                 self.dynamic_tool_signature,
                 hashlib.sha256(developer_instructions.encode("utf-8")).hexdigest(),
             )
@@ -2401,7 +2404,7 @@ class CodexAppServerManager:
                 "approvalPolicy": approval_policy,
                 "ephemeral": bool(ephemeral),
                 "config": thread_config,
-                "developerInstructions": developer_instructions,
+                "developerInstructions": developer_instructions, **base_parameters(),
                 **({"dynamicTools": self._permission_tool_specs(online_research, lens_settings, image_mode)} if self.dynamic_tool_specs else {}),
                 **execution_policy,
             },
@@ -2438,11 +2441,8 @@ class CodexAppServerManager:
                 and (settings.enabled or spec.get("name") != "wx_lens")
                 and (mentions_enabled or spec.get("name") != "wechat")]
         specs = [spec for spec in specs if spec.get("name") != "news" or news_enabled]
-        local_image_tools = {"recent", "read", "export", "capabilities"}
-        specs = [{**spec, "tools": [tool for tool in spec["tools"]
-                    if (image_mode != "native" or tool.get("name") in local_image_tools)
-                    and (image_mode.endswith("_switchable") or tool.get("name") != "select_mode")]}
-                 if spec.get("name") == "images" else spec for spec in specs]
+        from app.services.codex_image_tool import tools_for_mode
+        specs = [tools_for_mode(spec, image_mode) if spec.get("name") == "images" else spec for spec in specs]
         return specs
 
     def _verify_thread_permissions(self, result, profile, approval, roots, *, sandbox=None):
@@ -2516,7 +2516,7 @@ class CodexAppServerManager:
                     "cwd": runtime_workdir,
                     "approvalPolicy": approval_policy,
                     "config": thread_config,
-                    "developerInstructions": developer_instructions,
+                    "developerInstructions": developer_instructions, **base_parameters(),
                     **execution_policy,
                 },
                 timeout=min(timeout, 120),
@@ -2582,8 +2582,6 @@ class CodexAppServerManager:
             execution_handle.bind(thread_id, turn_id)
         from app.services.schedule_context import current_schedule_context
         schedule = current_schedule_context()
-        from app.services.scheduled_tasks import get_scheduled_tasks
-        schedules_enabled = get_scheduled_tasks().context_enabled(schedule)
         if schedule and schedule.scheduled and schedule.bind:
             schedule.bind(self, thread_id, turn_id)
         def cancel_turn():
@@ -2682,6 +2680,7 @@ class CodexAppServerManager:
         schedule_run = schedule if schedule and schedule.scheduled else None
         lock_key = schedule_run.run_id if schedule_run else task.id if task else chat_id
         with self._chat_lock(lock_key):
+            base_token = active_base.set(read_base())
             try:
                 response = self._chat_locked(
                     request,
@@ -2703,6 +2702,7 @@ class CodexAppServerManager:
                     status="failed", reason_code="runtime_application_failed", runtime_instance=self.permission_worker_id)
                 raise
             finally:
+                active_base.reset(base_token)
                 if task or schedule_run:
                     with self._chat_locks_lock:
                         self._chat_locks.pop(lock_key, None)
@@ -2821,7 +2821,12 @@ class CodexAppServerManager:
             False,
         )
         timeout = _positive_int(request.get("timeout"), 600)
+        base_state = resolve_chat_base(request, active_base.get() or read_base())
+        if active_base.get() is not None:
+            active_base.set(base_state)
         messages = request.get("messages") or []
+        if base_state.get("configured_mode") == "persona":
+            messages = [m for m in messages if not (m.get("name") == "mabobot_persona" and m.get("role") == "system")]
         if not isinstance(messages, list):
             raise CodexAppServerError("messages must be a list")
 
@@ -2901,7 +2906,8 @@ class CodexAppServerManager:
         image_mode = runtime_image_mode(image_policy)
         effective_tool_signature = (schedule_signature + self.dynamic_tool_signature
                                     + (":lens-on" if lens_settings.enabled else ":lens-off")
-                                    + ":images-fallback-v1-" + image_mode)
+                                    + ":images-fallback-v1-" + image_mode
+                                    + ":base-" + (active_base.get() or {}).get("fingerprint", "default"))
         developer_instructions = "\n\n".join(
             text for message in messages
             if message.get("role") in {"system", "developer"}
@@ -2927,7 +2933,7 @@ class CodexAppServerManager:
                 result = self._request("thread/fork", {
                     "threadId": state["thread_id"], "lastTurnId": state["last_turn_id"],
                     "model": model, "cwd": _as_runtime_path(workdir, self.use_wsl),
-                    "approvalPolicy": approval_policy, "developerInstructions": developer_instructions,
+                    "approvalPolicy": approval_policy, "developerInstructions": developer_instructions, **base_parameters(),
                     "config": self._thread_config(reasoning_effort, web_search_mode, reasoning_summary, image_mode), **policy,
                 }, timeout=min(timeout, 120))
                 self._verify_thread_permissions(result, permission_profile, approval_policy, runtime_workspace_roots, sandbox=sandbox)
@@ -3223,12 +3229,15 @@ class CodexAppServerManager:
         record_snapshot(str(request.get("codex_source_chat_name") or chat_id), "reply", {
             "request_id": request_id, "thread_id": thread_id,
             "resumed": delta.resume, "rotation_reason": delta.rotation_reason,
+            "base_instructions": {k: v for k, v in (active_base.get() or {}).items() if k != "history"},
+            "runtime_profile": runtime_profile,
             "developer_instructions": developer_instructions,
             "instruction_fingerprint": hashlib.sha256(developer_instructions.encode()).hexdigest(),
             "turn_input": turn_input, "output_schema": output_schema,
             "tools": self._permission_tool_specs(bool(request.get("codex_online_research", True)), lens_settings, image_mode),
             "image_policy": {"default_mode": image_policy["mode"],
-                             "allow_request_override": image_policy.get("allow_request_override", False)},
+                             "allow_request_override": image_policy.get("allow_request_override", False),
+                             "allow_native_fallback": image_policy.get("allow_native_fallback", True)},
             "lens_policy": {"version": lens_state["version"], "settings": lens_state["settings"],
                             "rules_version": lens_rules["version"], "scope": "所有 App Server Profiles 继承全局配置"},
             "model": model, "role": role_name,

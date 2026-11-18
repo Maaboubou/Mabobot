@@ -18,6 +18,13 @@ class PluginTemplateConflict(PluginChatConfigError):
     pass
 
 
+def _migrate_stored_values(plugin_name, values):
+    if plugin_name == "image_editor":
+        # The batch command replaced the two-step reference collection flow.
+        return {key: value for key, value in values.items() if key not in {"collect_timeout", "max_images"}}
+    return values
+
+
 def chat_fields(config):
     from app.services.capability_service import LEGACY_SETTINGS_FIELDS
 
@@ -87,7 +94,7 @@ class PluginChatConfigService:
             raise PluginChatConfigError("聊天插件配置损坏") from exc
         if not isinstance(values, dict):
             raise PluginChatConfigError("聊天插件配置必须是对象")
-        return values
+        return _migrate_stored_values(row.plugin_name, values)
 
     def describe(self, user_id, plugin_name, config=None, row=None, *, redact=True):
         if config is None:
@@ -174,18 +181,22 @@ class PluginConfigTemplateService:
         self.configs = PluginChatConfigService(db, plugin_manager)
 
     @staticmethod
-    def public(row):
+    def public(row, config=None):
         if row.schema_version != 1:
             raise PluginChatConfigError("模板版本无法识别")
+        values = _migrate_stored_values(row.plugin_name, json.loads(row.config_json))
+        if config is not None and row.plugin_name == "image_editor":
+            defaults = default_values(config)
+            values = {key: values.get(key, defaults[key]) for key in template_fields(config)}
         return {"id": row.id, "name": row.name, "plugin_name": row.plugin_name,
                 "version": row.version, "schema_version": row.schema_version,
-                "values": json.loads(row.config_json)}
+                "values": values}
 
     def list(self, plugin_name):
         config = self.configs.config_for(plugin_name)
         if not template_fields(config):
             raise PluginChatConfigError("此插件不支持聊天模板")
-        return [self.public(row) for row in self.db.query(PluginConfigTemplate)
+        return [self.public(row, config) for row in self.db.query(PluginConfigTemplate)
                 .filter_by(plugin_name=plugin_name).order_by(PluginConfigTemplate.name).all()]
 
     def save(self, plugin_name, name, values, template_id=None, expected_version=None):

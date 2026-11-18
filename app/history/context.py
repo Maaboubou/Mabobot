@@ -27,10 +27,30 @@ def message_content(message):
     return content
 
 
+def collapse_assistant_log_pairs(messages):
+    """Hide only the proven legacy proxy+assistant logging pair, without editing archives."""
+    result = []
+    for row in messages:
+        previous = result[-1] if result else None
+        if (previous and previous.get("sender") == "AI 助手"
+                and previous.get("is_bot") is True and row.get("is_bot") is True
+                and not (previous.get("metadata") or {}).get("reply_source")
+                and (row.get("metadata") or {}).get("reply_source") == "assistant"
+                and row.get("time") and row.get("time") == previous.get("time")
+                and row.get("content") == previous.get("content")
+                and isinstance(row.get("log_sequence"), int)
+                and isinstance(previous.get("log_sequence"), int)
+                and row["log_sequence"] == previous["log_sequence"] + 1):
+            result[-1] = row
+        else:
+            result.append(row)
+    return result
+
+
 def render_recent(messages, estimator, budget=6000, limit=50):
     lines = []
     used = 0
-    selected = list(messages)
+    selected = collapse_assistant_log_pairs(messages)
     if limit is not None:
         selected = selected[-limit:]
     for message in reversed(selected):

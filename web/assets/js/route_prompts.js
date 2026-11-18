@@ -34,6 +34,7 @@ const RoutePrompts = {
         return {items: items.map(item => ({...item, draft: item.content})), ruleVersion: rules?.version};
     },
     async open(ownerId, ownerName) {
+        if(ownerId==='assistant'){await BotWorkbench.open();return;}
         // Finish Bootstrap's close transition before reusing its backdrop/body state.
         if (this.closing) await this.closing;
         const modal = document.getElementById('routePromptsModal');

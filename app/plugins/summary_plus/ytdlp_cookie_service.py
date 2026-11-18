@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Sequence
@@ -14,12 +15,44 @@ import websocket
 
 from app.services.shared_chrome import get_shared_chrome_operation_lock
 from app.services.shared_chrome_runtime import get_shared_chrome_runtime
+from .background_page import BackgroundPage
 
 
 _PLATFORM_COOKIE_DOMAINS = {
     "douyin": ("douyin.com", "iesdouyin.com"),
     "xiaohongshu": ("xiaohongshu.com", "xhslink.com", "xhslink.cn"),
 }
+
+_douyin_refresh_attempts: Dict[int, float] = {}
+
+
+def refresh_douyin_browser_cookies(debug_port: int, logger: logging.Logger) -> bool:
+    """Visit Douyin in the managed profile, with a cooldown shared by workers."""
+    with get_shared_chrome_operation_lock():
+        now = time.monotonic()
+        if now - _douyin_refresh_attempts.get(debug_port, float('-inf')) < 60:
+            logger.info("🍪 抖音 Cookie 刚尝试刷新过，跳过重复打开")
+            return False
+        _douyin_refresh_attempts[debug_port] = now
+        page = None
+        try:
+            logger.info("🍪 抖音需要新鲜 Cookie，自动用项目 Chrome 访问抖音后重试")
+            page = BackgroundPage(debug_port, "https://www.douyin.com/")
+            deadline = time.monotonic() + 12
+            while time.monotonic() < deadline:
+                if page.execute_script("return document.readyState") in {"interactive", "complete"}:
+                    # Cookie initialization also runs asynchronously after load.
+                    time.sleep(3)
+                    return True
+                time.sleep(0.5)
+            logger.warning("⚠️ 抖音页面未完全加载，仍重新导出 Cookie 尝试一次")
+            return True
+        except Exception as exc:
+            logger.warning("⚠️ 自动刷新抖音 Cookie 失败: %s", exc)
+            return False
+        finally:
+            if page is not None:
+                page.close()
 
 
 def _read_debug_browser_cookies(

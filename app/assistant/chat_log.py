@@ -421,11 +421,11 @@ class ChatLogManager:
         wait_for_attachments(chat_name)
         archived = self.archive.recent(chat_name, limit)
         if archived:
-            from app.history.context import message_content
+            from app.history.context import message_content, collapse_assistant_log_pairs
 
             for row in archived:
                 row["content"] = message_content(row)
-            return [row for row in archived if not self._is_internal_action_message(row)]
+            return collapse_assistant_log_pairs([row for row in archived if not self._is_internal_action_message(row)])
         log_path = self.log_dir / f"{chat_name}.jsonl"
 
         if not log_path.exists():
@@ -467,7 +467,8 @@ class ChatLogManager:
                     continue
 
             logger.debug(f"📝 获取聊天上下文成功: {chat_name}, 消息数: {len(messages)}")
-            return messages
+            from app.history.context import collapse_assistant_log_pairs
+            return collapse_assistant_log_pairs(messages)
 
         except Exception as e:
             logger.error(f"❌ 读取聊天记录失败: {e}")

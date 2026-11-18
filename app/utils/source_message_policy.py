@@ -29,7 +29,7 @@ class ActionSource:
 
 @contextmanager
 def admitted_task_scope(task, event):
-    """Only the supervisor, after its queue freshness check, grants this scope."""
+    """Bind delivery to the original source of a task admitted while fresh."""
     task.source = ActionSource.from_event(event) if has_source_policy(event) else None
     token = _admitted_task.set(task)
     try:

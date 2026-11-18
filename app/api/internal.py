@@ -135,7 +135,8 @@ async def receive_wechat_message(
         if not row_id:
             from fastapi import HTTPException
             raise HTTPException(status_code=500, detail='积压消息存档失败')
-        logger.info("积压消息仅存档，跳过自动处理: chat=%r sent_at=%r", message.chat_name, message.sent_at)
+        reason = "发送时间未知，仅存档" if message.sent_at is None else "积压消息仅存档"
+        logger.info("%s，跳过自动处理: chat=%r sent_at=%r", reason, message.chat_name, message.sent_at)
         return {"status": "success", "archive_only": True}
 
     # 根据消息类型确定事件类型

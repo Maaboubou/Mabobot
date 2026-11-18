@@ -86,6 +86,10 @@ class PreviewRequest(BaseModel):
     # Drafts are validated using the same CRUD models below.
     draft: dict[str, Any] = Field(default_factory=dict)
     rule_draft: dict[str, str] = Field(default_factory=dict)
+    chat_base_mode: Literal["inherit", "default", "persona", "custom"] | None = None
+    chat_base_content: str = Field(default="", max_length=100000)
+    global_base_mode: Literal["default", "custom"] | None = None
+    global_base_content: str = Field(default="", max_length=100000)
     lens_draft: LensSettings | None = None
     history: str = Field(default="", max_length=60000)
     content: str = Field(default="你好，聊聊最近的游戏？", max_length=20000)
@@ -147,7 +151,7 @@ def save_rules(request: RuleUpdate, db: Annotated[Session, Depends(get_db)]):
         ) from exc
 
 
-def build_preview(request, db):
+def build_preview(request, db, *, frozen_rows=None, include_chat_base=True):
     from app.api.endpoints.assistant_judges import JudgeUpdateRequest
     from app.api.endpoints.assistant_roles import RoleUpdateRequest
 
@@ -176,7 +180,9 @@ def build_preview(request, db):
         "运行时线程、附件实际路径及后续工具结果以真实请求快照为准。",
     ]
     user = chat(db, request.chat_id) if request.chat_id else None
-    if request.use_chat_history:
+    if frozen_rows is not None:
+        rows = frozen_rows
+    elif request.use_chat_history:
         if history.strip():
             raise HTTPException(422, "真实聊天与模拟聊天只能选择一种")
         if not user:
@@ -338,6 +344,20 @@ def build_preview(request, db):
             persona=role.get("prompt", ""),
             rules=texts,
         )
+    if include_chat_base and request.scene == "reply" and user:
+        from app.services.bot_base_instructions import read_chat_base
+        config = read_chat_base(db, user.id)
+        if request.chat_base_mode is not None:
+            config = {**config, "mode": request.chat_base_mode, "content": request.chat_base_content}
+        if config["mode"] != "inherit":
+            try:
+                composed = composed_chat_base(db, user.id, config, role.get("prompt") or chat_persona(db, user.id))
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+            if config["mode"] == "persona":
+                blocks = [b for b in blocks if b["id"] != "role"]
+            blocks.insert(0, block("base", "本聊天最终基础指令", composed["content"] or "跟随 Codex 原生默认", role="baseInstructions"))
+            notes.append("基础指令使用与运行时相同的合成器；原生身份与表达由聊天适配说明限定。")
     timing = request.message_count >= int(
         judge.get("trigger_msg_threshold", 5) or 0
     ) and request.elapsed_minutes >= int(judge.get("trigger_interval_minutes", 1) or 0)
@@ -433,3 +453,114 @@ def snapshot(chat_id: int, snapshot_id: str, db: Annotated[Session, Depends(get_
     if payload is None:
         raise HTTPException(404, "快照不存在或已过期")
     return payload
+
+
+class BaseUpdate(BaseModel):
+    version: int = Field(ge=0)
+    content: str | None = Field(default=None, max_length=100000)
+
+
+@router.get("/base")
+def base_config(db: Annotated[Session, Depends(get_db)]):
+    from app.services.bot_base_instructions import read_base
+    return read_base(db)
+
+
+@router.put("/base")
+def save_base(request: BaseUpdate, db: Annotated[Session, Depends(get_db)]):
+    from app.services.bot_base_instructions import update_base
+    try:
+        return {**update_base(db, request.content, request.version),
+                "message": "已保存。后续 Codex 请求将建立新线程采用此配置；进行中的请求保持原版本，聊天档案保留。"}
+    except ValueError as exc:
+        raise HTTPException(409 if "更新" in str(exc) else 422, str(exc)) from exc
+
+
+@router.get("/base/source")
+def base_source(db: Annotated[Session, Depends(get_db)], chat_id: int | None = None):
+    from app.services.codex_profile_service import get_codex_profile_service, CodexProfileError
+    service = get_codex_profile_service()
+    configured = ""
+    if chat_id is not None:
+        from app.models.assistant_policy import AssistantChatPolicy
+        chat(db, chat_id)
+        policy = db.query(AssistantChatPolicy).filter(AssistantChatPolicy.user_id == chat_id).first()
+        configured = policy.codex_profile_id if policy else ""
+    try:
+        profile_id = service.resolve_assistant_profile_id(configured)
+        return service._run("read-base-instructions", {"name": profile_id})
+    except CodexProfileError as exc:
+        return {"available": False, "notice": str(exc)}
+
+
+def chat_persona(db, user_id):
+    from app.models.chatbot_role import UserChatBotRole
+    from app.utils.plugin_config import get_plugin_setting
+    binding = db.query(UserChatBotRole).filter(UserChatBotRole.user_id == user_id).first()
+    role = db.get(ChatBotRole, binding.role_id) if binding else db.query(ChatBotRole).filter(
+        ChatBotRole.name == str(get_plugin_setting('assistant', 'default_role', 'default'))).first()
+    from app.assistant.prompt_composer import normalize_legacy_prompt
+    return normalize_legacy_prompt(role.prompt) if role else ''
+
+
+def composed_chat_base(db, user_id, config, persona=None):
+    from app.services.bot_base_instructions import read_base, compose_chat_base
+    source = base_source(db, user_id) if config['mode'] == 'persona' else None
+    return compose_chat_base(config, read_base(db), source, chat_persona(db, user_id) if persona is None else persona)
+
+
+class ChatBaseUpdate(BaseModel):
+    version: int = Field(ge=0)
+    mode: Literal['inherit', 'default', 'persona', 'custom']
+    content: str = Field(default='', max_length=100000)
+
+
+@router.get('/chats/{chat_id}/base')
+def chat_base_config(chat_id: int, db: Annotated[Session, Depends(get_db)]):
+    from app.services.bot_base_instructions import read_chat_base
+    import difflib
+    user = chat(db, chat_id)
+    config = read_chat_base(db, chat_id)
+    try:
+        composition = composed_chat_base(db, chat_id, config)
+    except ValueError as exc:
+        return {**config, 'composition': None, 'notice': str(exc)}
+    previous = None
+    for item in list_snapshots(user.chat_name):
+        if item['scene'] == 'reply':
+            previous = (get_snapshot(user.chat_name, item['id']) or {}).get('base_instructions')
+            break
+    old_source = (previous or {}).get('source', {}).get('content')
+    new_source = composition.get('source', {}).get('content')
+    source_diff = ''.join(difflib.unified_diff(old_source.splitlines(True), new_source.splitlines(True),
+                          fromfile='上次请求原生指令', tofile='当前原生指令')) if old_source and new_source and old_source != new_source else ''
+    return {**config, 'composition': composition, 'source_diff': source_diff,
+            'previous_fingerprint': (previous or {}).get('fingerprint'),
+            'matches_last_request': previous.get('fingerprint') == composition['fingerprint'] if previous else None}
+
+
+@router.put('/chats/{chat_id}/base')
+def save_chat_base(chat_id: int, request: ChatBaseUpdate, db: Annotated[Session, Depends(get_db)]):
+    from app.services.bot_base_instructions import update_chat_base
+    chat(db, chat_id)
+    try:
+        if request.mode == 'persona':
+            composed_chat_base(db, chat_id, request.model_dump())
+        saved = update_chat_base(db, chat_id, request.mode, request.content, request.version)
+        return {**saved, 'message': '仅此聊天已保存；下一次请求采用新合成版本，其他聊天不受影响。'}
+    except ValueError as exc:
+        raise HTTPException(409 if '更新' in str(exc) else 422, str(exc)) from exc
+
+
+@router.post('/compare-replies')
+def compare_replies(request: PreviewRequest, db: Annotated[Session, Depends(get_db)]):
+    from app.services.bot_reply_comparison import prepare_comparison, run_comparison, comparison_lock
+    if request.scene != 'reply' or not request.chat_id or not request.content.strip():
+        raise HTTPException(422, '请选择聊天并输入要发送给 Bot 的测试消息；实际回复对比仅用于主回复')
+    if not comparison_lock.acquire(blocking=False):
+        raise HTTPException(409, '已有回复对比正在运行，请等待完成后再试')
+    try:
+        prepared = prepare_comparison(request, db)
+        return run_comparison(prepared)
+    finally:
+        comparison_lock.release()

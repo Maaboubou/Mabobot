@@ -21,7 +21,7 @@ const PromptWorkbench = {
         return `<form id="${decision ? 'judgeForm' : 'roleForm'}" class="prompt-workbench" data-kind="${kind}">
             <input type="hidden" name="id" value="${this.escape(item.id || '')}"><input type="hidden" name="revision" value="${this.escape(item.revision || '')}">
             <nav class="prompt-tabs" aria-label="编辑分区" role="tablist">
-                ${[['identity',title],['behavior',decision?'触发时机':'回复方式'],['preview',decision?'预览与试判':'提示词预览']].map(([key,label],i)=>`<button type="button" role="tab" id="prompt-tab-${key}" aria-controls="prompt-panel-${key}" aria-selected="${i===0}" data-prompt-tab="${key}" class="${i===0?'active':''}">${label}</button>`).join('')}
+                ${[['identity',title],['behavior',decision?'触发时机':'回复方式']].map(([key,label],i)=>`<button type="button" role="tab" id="prompt-tab-${key}" aria-controls="prompt-panel-${key}" aria-selected="${i===0}" data-prompt-tab="${key}" class="${i===0?'active':''}">${label}</button>`).join('')}
             </nav>
             <section id="prompt-panel-identity" role="tabpanel" aria-labelledby="prompt-tab-identity" data-prompt-panel="identity">
                 ${this.field('display_name','显示名称',item.display_name || '', '', 'required maxlength="160"')}
@@ -32,20 +32,7 @@ const PromptWorkbench = {
             <section id="prompt-panel-behavior" role="tabpanel" aria-labelledby="prompt-tab-behavior" data-prompt-panel="behavior" hidden>
                 ${decision?'<p class="prompt-note">收到新消息时，消息数和最短间隔必须同时满足才检查。冷却期同样要求两项同时满足；到点不会自动发言。</p><div class="prompt-fields">':''}${fields}${decision?'</div><p class="prompt-note" data-timing-summary></p><p class="prompt-note">这些条件仅适用于主动接话，不影响引用回复和连续追问。</p>':''}
             </section>
-            <section id="prompt-panel-preview" role="tabpanel" aria-labelledby="prompt-tab-preview" data-prompt-panel="preview" hidden>
-                <p class="prompt-note">预览当前编辑内容，无需保存，也不会调用模型。</p>
-                <details class="prompt-block prompt-preview-scenario"><summary>预览场景<span data-preview-summary>模拟聊天</span></summary><div class="prompt-block-body">
-                    <label class="prompt-field"><span>聊天记录来源</span><select class="form-select" data-history-source><option value="simulated">模拟聊天</option><option value="recent">真实聊天</option></select></label>
-                    <label class="prompt-field"><span data-preview-chat-label>参考聊天（可选）</span><select class="form-select" data-preview-chat><option value="">未指定聊天</option>${(App._assistantChats||[]).map(c=>`<option value="${Number(c.id)}">${this.escape(c.chat_name)}</option>`).join('')}</select></label>
-                    <p class="prompt-note" data-recent-history-note hidden>使用所选聊天的近期消息，需要助手正在运行。</p>
-                    ${decision?`<label class="prompt-field"><span>参考角色</span><select class="form-select" data-preview-role><option value="">不指定</option>${(App._roles||[]).map(r=>`<option value="${Number(r.id)}">${this.escape(r.display_name)}</option>`).join('')}</select></label>`:''}
-                    <label class="prompt-field" data-simulated-history><span>模拟近期聊天</span><textarea class="form-control prompt-sample" data-preview-history placeholder="群友：最近有什么值得玩的游戏？"></textarea></label>
-                    <label class="prompt-field"><span>测试消息</span><textarea class="form-control prompt-sample" data-preview-content>你好，聊聊最近的游戏？</textarea></label>
-                    ${decision?'<div class="prompt-fields">'+this.field('trial_messages','模拟积累消息数',5,'','type="number" min="0" max="100000"')+this.field('trial_minutes','模拟距上次回复（分钟）',10,'','type="number" min="0" max="100000"')+'</div><label class="prompt-toggle"><input type="checkbox" data-trial-ignore>忽略时机，只测试语义判断</label><label class="prompt-toggle"><input type="checkbox" data-trial-cooldown>模拟处于冷却期</label><div class="prompt-fields">'+this.field('trial_cooldown_messages','冷却后新增消息',5,'','type="number" min="0" max="100000"')+this.field('trial_cooldown_minutes','冷却已过（分钟）',10,'','type="number" min="0" max="100000"')+'</div>':''}
-                </div></details>
-                <div class="prompt-toolbar"><button type="button" class="btn btn-sm btn-outline-primary" data-preview-run>刷新预览</button>${decision?'<button type="button" class="btn btn-sm btn-outline-primary" data-trial-run>试判（调用模型）</button>':''}<button type="button" class="btn btn-sm btn-outline-secondary" data-snapshots>真实请求快照</button><button type="button" class="btn btn-sm btn-outline-secondary" data-collapse>全部折叠</button></div>
-                <p class="prompt-status" role="status" aria-live="polite" data-preview-status>尚未生成预览</p><div data-trial-result></div><div class="prompt-preview" data-preview-blocks></div>
-            </section>
+            <details class="prompt-test-link"><summary>${decision?'试判接话':'验证回复'}</summary><label>背景聊天<select data-check-chat class="form-select form-select-sm"></select></label><div data-form-check></div></details>
         </form>`;
     },
     mount() {
@@ -63,34 +50,29 @@ const PromptWorkbench = {
             const target=event.key==='Home'?0:event.key==='End'?tabs.length-1:(index+(event.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;
             tabs[target].focus();tabs[target].click();
         });
-        form.querySelector('[data-preview-chat]').addEventListener('change',()=>{
-            const selected=(App._assistantChats||[]).find(c=>Number(c.id)===Number(form.querySelector('[data-preview-chat]').value));
-            const role=form.querySelector('[data-preview-role]');
-            if(role&&selected?.role?.id)role.value=String(selected.role.id);
-            this.updatePreviewSource(form);
+        const check=form.querySelector('.prompt-test-link');
+        check.addEventListener('toggle',()=>{
+            if(!check.open || state.refreshCheck)return;
+            const chats=App._assistantChats||[], select=check.querySelector('[data-check-chat]');
+            const id=Number(form.elements.id.value),kind=form.dataset.kind;
+            select.innerHTML=chats.map(c=>`<option value="${Number(c.id)}">${this.escape(c.chat_name)}</option>`).join('') || '<option>无可用聊天</option>';
+            const bound=chats.find(c=>c[kind]?.id===id);
+            if(bound)select.value=String(bound.id);
+            state.refreshCheck=BehaviorCheck.mount(check.querySelector('[data-form-check]'),()=>{
+                const chat=chats.find(c=>c.id===Number(select.value));
+                return {mode:kind==='role'?'compare':'decision',item:kind+':'+id,
+                    label:chat?'已保存基准 · '+(chat[kind]?.display_name||'默认设置'):'',
+                    block:!chat?'请先配置聊天':id && chat[kind]?.id!==id?'请选择绑定此配置的聊天':'',
+                    revision:form.elements.revision.value,
+                    request:{chat_id:chat?.id,role_id:chat?.role?.id,judge_id:chat?.judge?.id,
+                        scene:kind==='role'?'reply':'decision',use_chat_history:true,history:'',draft:this.draft(form)}};
+            });
+            select.onchange=state.refreshCheck;
         });
-        form.querySelector('[data-history-source]').addEventListener('change',()=>this.updatePreviewSource(form));
-        form.querySelector('[data-preview-run]').onclick=()=>this.preview(state);
-        form.querySelector('[data-trial-run]')?.addEventListener('click',()=>this.preview(state,true));
-        form.querySelector('[data-snapshots]').onclick=()=>this.snapshots(state);
-        form.querySelector('[data-collapse]').onclick=()=>form.querySelectorAll('[data-preview-blocks] details').forEach(d=>d.open=false);
-        form.addEventListener('input',()=>{state.dirty=true;this.status(state,'草稿已更改，刷新预览后查看最新内容');this.updateBehavior(form);});
+        form.addEventListener('input',e=>{if(check.contains(e.target))return;state.dirty=true;this.updateBehavior(form);state.refreshCheck?.();});
         this.updateBehavior(form);
-        this.updatePreviewSource(form);
         const modal = document.getElementById('configModal');
         modal.addEventListener('hide.bs.modal',()=>{if(this.active===state)this.active=null;}, {once:true});
-    },
-    updatePreviewSource(form) {
-        const recent=form.querySelector('[data-history-source]').value==='recent';
-        const chat=form.querySelector('[data-preview-chat]');
-        form.querySelector('[data-simulated-history]').hidden=recent;
-        form.querySelector('[data-preview-history]').disabled=recent;
-        form.querySelector('[data-recent-history-note]').hidden=!recent;
-        form.querySelector('[data-preview-chat-label]').textContent=recent?'聊天':'参考聊天（可选）';
-        chat.options[0].textContent=recent?'请选择聊天':'未指定聊天';
-        form.querySelector('[data-preview-summary]').textContent=recent
-            ? (chat.value?`近期消息 · ${chat.selectedOptions[0].textContent}`:'真实聊天 · 待选择')
-            : '模拟聊天';
     },
     updateBehavior(form) {
         if (form.dataset.kind==='role') {
@@ -104,9 +86,9 @@ const PromptWorkbench = {
     tab(state,key,load=true) {
         state.form.querySelectorAll('[data-prompt-tab]').forEach(b=>{b.classList.toggle('active',b.dataset.promptTab===key);b.setAttribute('aria-selected',String(b.dataset.promptTab===key));});
         state.form.querySelectorAll('[data-prompt-panel]').forEach(p=>p.hidden=p.dataset.promptPanel!==key);
-        if(key==='preview'&&!state.previewed&&load)this.preview(state);
+
     },
-    status(state,text) { state.form.querySelector('[data-preview-status]').textContent=text; },
+
     draft(form) {
         const f=form.elements;
         const data={display_name:f.display_name.value,description:f.description.value,prompt:f.prompt.value};
@@ -115,12 +97,6 @@ const PromptWorkbench = {
         else ['trigger_msg_threshold','trigger_interval_minutes','cooldown_msg_threshold','cooldown_minutes'].forEach(k=>data[k]=Number(f[k].value));
         return data;
     },
-    request(state) {
-        const f=state.form, decision=f.dataset.kind==='judge';
-        const recent=f.querySelector('[data-history-source]').value==='recent';
-        return {scene:decision?'decision':'reply',draft:this.draft(f),role_id:decision?Number(f.querySelector('[data-preview-role]').value)||null:Number(f.elements.id.value)||null,judge_id:decision?Number(f.elements.id.value)||null:null,chat_id:Number(f.querySelector('[data-preview-chat]').value)||null,use_chat_history:recent,history:recent?'':f.querySelector('[data-preview-history]').value,content:f.querySelector('[data-preview-content]').value,...(decision?{message_count:Number(f.elements.trial_messages.value),elapsed_minutes:Number(f.elements.trial_minutes.value),ignore_timing:f.querySelector('[data-trial-ignore]').checked,in_cooldown:f.querySelector('[data-trial-cooldown]').checked,cooldown_message_count:Number(f.elements.trial_cooldown_messages.value),cooldown_elapsed_minutes:Number(f.elements.trial_cooldown_minutes.value)}:{})};
-    },
-    valid(state, token) { return this.active===state && state.form.isConnected && state.request===token; },
     revealInvalid(form) {
         const field=form.querySelector(':invalid');
         const panel=field?.closest('[data-prompt-panel]');
@@ -128,41 +104,10 @@ const PromptWorkbench = {
         field?.closest('details')?.setAttribute('open','');
         form.reportValidity();
     },
-    async preview(state, trial=false) {
-        const f=state.form;
-        if(f.querySelector('[data-history-source]').value==='recent'&&!f.querySelector('[data-preview-chat]').value){
-            this.status(state,'请选择要使用近期消息的聊天');
-            f.querySelector('.prompt-preview-scenario').open=true;
-            f.querySelector('[data-preview-chat]').focus();
-            return;
-        }
-        if(!f.checkValidity()){this.revealInvalid(f);this.status(state,'请先填写有效的名称、规则和参数');return;}
-        const token=++state.request;
-        const controls=f.querySelectorAll('[data-preview-run],[data-trial-run],[data-snapshots]');
-        controls.forEach(b=>b.disabled=true); this.status(state,trial?'正在试判，不会发送微信…':'正在组装当前草稿…');
-        try {
-            const body=this.request(state), signature=JSON.stringify(body);
-            const result=await API.post(`/api/assistant/prompts/${trial?'trial':'preview'}`,body);
-            if(!this.valid(state,token))return;
-            this.renderBlocks(f.querySelector('[data-preview-blocks]'),result.blocks,state);
-            state.previewed=true;
-            state.dirty=JSON.stringify(this.request(state))!==signature;
-            this.status(state,state.dirty?'请求期间草稿发生变化，请刷新预览':`草稿预览 · 系统规则 v${result.version} · ${result.notes.join(' ')}`);
-            const output=f.querySelector('[data-trial-result]');output.replaceChildren();
-            if(result.result){const r=result.result;output.innerHTML=`<div class="prompt-trial-result" role="status"><strong>${r.state==='skipped'?'未到判断时机':r.should_reply?'建议接话':'建议不接话'}</strong><p>${this.escape(r.reason)}</p>${r.atmosphere?`<small>当前气氛：${this.escape(r.atmosphere)}</small>`:''}</div>`;}
-        } catch(e) { if(this.valid(state,token))this.status(state,`${trial?'试判':'预览'}失败：${e.message}。草稿已保留，可重试。`); }
-        finally {if(this.valid(state,token))controls.forEach(b=>b.disabled=false);}
-    },
     renderBlocks(container,blocks,state) {
-        container.innerHTML=blocks.map((b,i)=>`<details class="prompt-block"><summary><span>${this.escape(b.title)}</span><span class="prompt-block-meta">${this.escape(b.source||'系统内置')} · ${this.escape(b.scope||'本次请求')} · ${b.content.length.toLocaleString()} 字</span></summary><div class="prompt-block-body"><div class="prompt-toolbar"><span class="prompt-note">${this.escape(({system:'系统指令',developer:'系统指令',user:'输入资料',schema:'固定结构',reference:'运行时参考'})[b.role]||'规则')}</span><button type="button" class="btn btn-sm btn-outline-secondary" data-copy="${i}">复制</button>${b.editable?`<button type="button" class="btn btn-sm btn-outline-primary" data-edit="${i}">${b.editable==='system'?'编辑系统规则':b.editable==='permissions'?'编辑来源（新页）':'编辑来源'}</button>`:''}</div><pre class="prompt-scroll" tabindex="0" aria-label="${this.escape(b.title)}完整内容">${this.escape(b.content)}</pre><div data-block-editor></div></div></details>`).join('');
+        container.innerHTML=blocks.map((b,i)=>`<details class="prompt-block"><summary><span>${this.escape(b.title)}</span><span class="prompt-block-meta">${this.escape(b.source||'系统内置')} · ${this.escape(b.scope||'本次请求')} · ${b.content.length.toLocaleString()} 字</span></summary><div class="prompt-block-body"><div class="prompt-toolbar"><span class="prompt-note">${this.escape(({system:'系统指令',developer:'系统指令',user:'输入资料',schema:'固定结构',reference:'运行时参考'})[b.role]||'规则')}</span><button type="button" class="btn btn-sm btn-outline-secondary" data-copy="${i}">复制</button></div><pre class="prompt-scroll" tabindex="0" aria-label="${this.escape(b.title)}完整内容">${this.escape(b.content)}</pre><div data-block-editor></div></div></details>`).join('');
         container.querySelectorAll('[data-copy]').forEach(button=>button.onclick=()=>this.copy(blocks[Number(button.dataset.copy)].content,button));
-        container.querySelectorAll('[data-edit]').forEach(button=>button.onclick=async()=>{
-            const b=blocks[Number(button.dataset.edit)];
-            if(b.editable==='system'){await this.editRule(button.closest('details').querySelector('[data-block-editor]'),b.id,state);return;}
-            if(b.editable==='permissions'){const id=Number(state?.form.querySelector('[data-preview-chat]').value);if(id)window.open(`/chats?chat_id=${id}`,'_blank','noopener');return;}
-            this.tab(state,b.editable==='output'?'behavior':'identity');
-            state.form.elements[b.editable==='output'?'output_split_enabled':'prompt']?.focus();
-        });
+
     },
     async copy(text,button) {
         try {
@@ -182,51 +127,13 @@ const PromptWorkbench = {
         } catch {button.textContent='复制失败，请选中文本复制';}
         setTimeout(()=>{if(button.isConnected)button.textContent='复制';},2000);
     },
-    async editRule(container,key,state) {
-        container.textContent='正在读取系统规则…';
-        try {
-            const data=await API.get('/api/assistant/prompts/rules');
-            if(!container.isConnected)return;
-            const rule=data.blocks.find(b=>b.id===key);
-            container.innerHTML=`<div class="prompt-rule-editor"><p class="prompt-note">影响范围：${this.escape(rule.scope)}的所有请求。这里保存的是系统规则，不会保存角色草稿。</p><textarea class="form-control prompt-editor" maxlength="30000">${this.escape(rule.content)}</textarea><details class="prompt-block"><summary>与系统默认值比较</summary><div class="prompt-block-body"><pre class="prompt-scroll" tabindex="0">${this.escape(rule.text)}</pre></div></details><div class="prompt-toolbar"><button type="button" class="btn btn-sm btn-primary" data-rule-save>保存规则</button><button type="button" class="btn btn-sm btn-outline-secondary" data-rule-reset>填入默认值</button><button type="button" class="btn btn-sm btn-outline-secondary" data-rule-preview>预览此草稿</button><button type="button" class="btn btn-sm btn-outline-secondary" data-rule-cancel>取消</button></div><p role="status" data-rule-status></p><details class="prompt-block"><summary>恢复历史版本<span>先填入，保存后生效</span></summary><div class="prompt-block-body"><select class="form-select" data-rule-history><option value="">选择历史版本</option>${data.history.slice().reverse().map((h,i)=>`<option value="${i}">v${h.version} · ${this.escape(h.at)}</option>`).join('')}</select></div></details><div data-rule-preview-result></div></div>`;
-            const area=container.querySelector('textarea');area.focus();
-            container.querySelector('[data-rule-reset]').onclick=()=>{area.value=rule.text;container.querySelector('[data-rule-status]').textContent='已填入默认值，保存后生效';};
-            container.querySelector('[data-rule-history]').onchange=event=>{
-                if(event.target.value==='')return;
-                const past=data.history.slice().reverse()[Number(event.target.value)];
-                area.value=past.overrides[key] ?? rule.text;
-                container.querySelector('[data-rule-status]').textContent=`已填入 v${past.version}，保存后生效`;
-            };
-            container.querySelector('[data-rule-preview]').onclick=async(event)=>{
-                const button=event.currentTarget;button.disabled=true;
-                const target=container.querySelector('[data-rule-preview-result]');
-                try {
-                    const body=state?.form?this.request(state):{scene:key==='decision'?'decision':'reply',draft:{prompt:'通用助手'}};
-                    body.rule_draft={[key]:area.value};
-                    const result=await API.post('/api/assistant/prompts/preview',body);
-                    if(!target.isConnected)return;
-                    if(['quoted','followup','content_review'].includes(key))this.renderBlocks(target,[{id:key,title:rule.title,content:area.value,source:'未保存系统规则草稿'}],null);
-                    else this.renderBlocks(target,result.blocks.map(b=>({...b,editable:null})),null);
-                    container.querySelector('[data-rule-status]').textContent='未保存规则预览，不调用模型；展开下方模块查看';
-                }catch(e){container.querySelector('[data-rule-status]').textContent=`预览失败：${e.message}`;}
-                finally{button.disabled=false;}
-            };
-            container.querySelector('[data-rule-cancel]').onclick=()=>container.replaceChildren();
-            container.querySelector('[data-rule-save]').onclick=async(event)=>{
-                const button=event.currentTarget;button.disabled=true;
-                try {const result=await API.put('/api/assistant/prompts/rules',{version:data.version,changes:{[key]:area.value}});data.version=result.version;container.querySelector('[data-rule-status]').textContent=result.message;if(state?.form)this.status(state,'系统规则已保存；刷新预览以查看新版本');}
-                catch(e){container.querySelector('[data-rule-status]').textContent=`保存失败：${e.message}；编辑内容已保留`;}
-                finally{button.disabled=false;}
-            };
-        }catch(e){container.textContent=`读取失败：${e.message}`;}
-    },
-    async lensPanel(target) {
+    async lensPanel(target,chats=App._assistantChats||[]) {
         target.textContent='正在读取检索配置…';
         try {
             const data=await API.get('/api/assistant/prompts/lens');
             if(!target.isConnected)return;
             const fields=[['image_timeout_seconds','单张超时（秒）',10,180],['max_images','每轮图片上限',1,4],['max_images_per_call','单次图片上限',1,2],['max_concurrency','全局并发上限',1,2],['cache_ttl_seconds','缓存有效期（秒，0 为禁用）',0,86400]];
-            target.innerHTML=`<p class="prompt-note">所有 App Server Profiles 继承此全局配置。保存后新请求生效，进行中的请求保留原配置。图片仅限本轮输入；上传、权限隔离、进程清理和禁止人脸身份识别由程序固定校验。</p><form data-lens-form><label class="form-check"><input class="form-check-input" type="checkbox" name="enabled">启用 Lens 图片检索</label>${fields.map(([key,label,min,max])=>`<label class="prompt-field"><span>${label}</span><input class="form-control" type="number" name="${key}" min="${min}" max="${max}" step="1" required></label>`).join('')}<div class="prompt-toolbar"><button class="btn btn-sm btn-primary" type="submit">保存运行参数</button><button class="btn btn-sm btn-outline-secondary" type="button" data-lens-default>填入默认值</button><button class="btn btn-sm btn-outline-secondary" type="button" data-lens-preview>预览参数草稿</button></div><label class="prompt-field"><span>恢复历史参数（填入后保存生效）</span><select class="form-select" data-lens-history></select></label></form><p role="status" data-lens-message></p><details class="prompt-block"><summary>环境状态与最近错误</summary><div class="prompt-block-body"><button class="btn btn-sm btn-outline-secondary" data-lens-refresh>刷新状态</button><pre class="prompt-scroll" data-lens-status></pre></div></details><label class="prompt-field"><span>检查聊天生效范围与真实快照</span><select class="form-select" data-lens-chat><option value="">请选择聊天</option>${(App._assistantChats||[]).map(c=>`<option value="${Number(c.id)}">${this.escape(c.chat_name)}</option>`).join('')}</select></label><p class="prompt-note" data-lens-scope></p><button class="btn btn-sm btn-outline-secondary" data-lens-snapshots>查看真实请求快照</button><div data-lens-output></div>`;
+            target.innerHTML=`<p class="prompt-note">所有 App Server Profiles 继承此全局配置。保存后新请求生效，进行中的请求保留原配置。图片仅限本轮输入；上传、权限隔离、进程清理和禁止人脸身份识别由程序固定校验。</p><form data-lens-form><label class="form-check"><input class="form-check-input" type="checkbox" name="enabled">启用 Lens 图片检索</label>${fields.map(([key,label,min,max])=>`<label class="prompt-field"><span>${label}</span><input class="form-control" type="number" name="${key}" min="${min}" max="${max}" step="1" required></label>`).join('')}<div class="prompt-toolbar"><button class="btn btn-sm btn-primary" type="submit">保存运行参数</button><button class="btn btn-sm btn-outline-secondary" type="button" data-lens-default>填入默认值</button><button class="btn btn-sm btn-outline-secondary" type="button" data-lens-preview>预览参数草稿</button></div><label class="prompt-field"><span>恢复历史参数（填入后保存生效）</span><select class="form-select" data-lens-history></select></label></form><p role="status" data-lens-message></p><details class="prompt-block"><summary>环境状态与最近错误</summary><div class="prompt-block-body"><button class="btn btn-sm btn-outline-secondary" data-lens-refresh>刷新状态</button><pre class="prompt-scroll" data-lens-status></pre></div></details><label class="prompt-field"><span>检查聊天生效范围与真实快照</span><select class="form-select" data-lens-chat><option value="">请选择聊天</option>${chats.map(c=>`<option value="${Number(c.id)}">${this.escape(c.chat_name)}</option>`).join('')}</select></label><p class="prompt-note" data-lens-scope></p><button class="btn btn-sm btn-outline-secondary" data-lens-snapshots>查看真实请求快照</button><div data-lens-output></div>`;
             const form=target.querySelector('form'), message=target.querySelector('[data-lens-message]'), output=target.querySelector('[data-lens-output]');
             const fill=values=>{form.elements.enabled.checked=values.enabled;fields.forEach(([key])=>form.elements[key].value=values[key]);};
             const draft=()=>({enabled:form.elements.enabled.checked,...Object.fromEntries(fields.map(([key])=>[key,Number(form.elements[key].value)]))});
@@ -242,49 +149,7 @@ const PromptWorkbench = {
             target.querySelector('[data-lens-snapshots]').onclick=async()=>{const id=Number(target.querySelector('[data-lens-chat]').value);if(!id){message.textContent='请先选择聊天';return;}try{const result=await API.get(`/api/assistant/prompts/chats/${id}/snapshots`);if(!target.isConnected||id!==Number(target.querySelector('[data-lens-chat]').value))return;output.innerHTML=result.items.map((item,i)=>`<details class="prompt-block"><summary>${this.escape(new Date(item.created*1000).toLocaleString())} · ${this.escape(item.scene)}</summary><div class="prompt-block-body" data-lens-snapshot="${i}">展开后读取</div></details>`).join('')||'<p>暂无真实请求快照</p>';output.querySelectorAll('details').forEach(details=>details.addEventListener('toggle',async()=>{const content=details.querySelector('[data-lens-snapshot]');if(!details.open||content.dataset.loaded)return;content.dataset.loaded='loading';try{const payload=await API.get(`/api/assistant/prompts/chats/${id}/snapshots/${result.items[Number(content.dataset.lensSnapshot)].id}`);if(!content.isConnected)return;this.renderBlocks(content,Object.entries(payload).map(([key,value])=>({id:key,title:({lens_policy:'本轮检索配置',developer_instructions:'实际系统指令',tools:'实际工具定义',turn_input:'实际输入'})[key]||key,content:typeof value==='string'?value:JSON.stringify(value,null,2),source:'真实请求'})),null);content.dataset.loaded='yes';}catch(err){delete content.dataset.loaded;content.textContent=`读取失败：${err.message}；折叠后展开重试`;}}));message.textContent='真实请求快照：每聊天最近20次，最长7天；与未保存草稿独立';}catch(err){message.textContent=`读取失败：${err.message}`;}};
         } catch(e) {target.textContent=`读取失败：${e.message}`;}
     },
-    async systemRules() {
-        const modal=document.getElementById('configModal');
-        document.getElementById('configModalTitle').textContent='系统规则';
-        document.getElementById('configModalSaveBtn').classList.add('d-none');
-        const body=document.getElementById('configModalBody');
-        body.innerHTML='<div class="prompt-workbench"><p class="prompt-note">系统规则影响所有相关请求。展开模块查看内容并编辑；固定协议和聊天权限在请求预览中查看。</p><div data-system-rules>正在读取…</div></div>';
-        bootstrap.Modal.getOrCreateInstance(modal).show();
-        const target=body.querySelector('[data-system-rules]');
-        try {
-            const data=await API.get('/api/assistant/prompts/rules');
-            if(!target.isConnected)return;
-            this.renderBlocks(target,data.blocks.filter(b=>!['image_search','video_search'].includes(b.id)).map(b=>({...b,editable:'system',source:b.overridden?'自定义系统规则':'系统默认',role:'system'})),null);
-            const lensGroup=document.createElement('details');lensGroup.className='prompt-block';
-            lensGroup.innerHTML='<summary>图片与视频检索<span>全局规则、运行参数与状态</span></summary><div class="prompt-block-body"><div data-lens-rules></div><div data-lens-management></div></div>';
-            target.prepend(lensGroup);
-            this.renderBlocks(lensGroup.querySelector('[data-lens-rules]'),data.blocks.filter(b=>['image_search','video_search'].includes(b.id)).map(b=>({...b,editable:'system',source:b.overridden?'自定义系统规则':'系统默认',role:'system'})),null);
-            this.lensPanel(lensGroup.querySelector('[data-lens-management]'));
-            const versions=document.createElement('details');versions.className='prompt-block';
-            versions.innerHTML=`<summary>修改记录<span>当前 v${data.version} · 保留最近 20 次</span></summary><div class="prompt-block-body"><div class="prompt-scroll" tabindex="0">${data.history.slice().reverse().map(h=>`<details class="prompt-block"><summary>v${h.version} · ${this.escape(h.at)}</summary><div class="prompt-block-body"><pre class="prompt-scroll" tabindex="0">${this.escape(JSON.stringify(h.overrides,null,2))}</pre></div></details>`).join('')||'尚无修改记录'}</div></div>`;
-            target.append(versions);
-        }catch(e){target.textContent=`读取失败：${e.message}，请关闭后重试。`;}
-    },
-    async snapshots(state) {
-        const f=state.form, chatId=Number(f.querySelector('[data-preview-chat]').value),target=f.querySelector('[data-preview-blocks]');
-        if(!chatId){this.status(state,'请在“预览场景”中选择要查看的聊天');f.querySelector('.prompt-preview-scenario').open=true;f.querySelector('[data-preview-chat]').focus();return;}
-        const token=++state.request;
-        this.status(state,'正在读取所选聊天快照…');
-        try {
-            const data=await API.get(`/api/assistant/prompts/chats/${chatId}/snapshots`);
-            if(!this.valid(state,token))return;
-            f.querySelector('[data-trial-result]').replaceChildren();
-            this.status(state,'真实请求快照 · 每聊天最近 20 次，最长 7 天 · 与当前未保存草稿独立');
-            target.innerHTML=data.items.map((item,i)=>`<details class="prompt-block"><summary>${this.escape(new Date(item.created*1000).toLocaleString())}<span>${this.escape(({reply:'主回复',judge:'主动接话',followup_judge:'引用/连续追问'})[item.scene]||item.scene)}</span></summary><div class="prompt-block-body" data-snapshot="${i}">展开后读取</div></details>`).join('')||'<p class="prompt-note">暂无快照。启用此版本后实际发生的请求才会记录。</p>';
-            target.querySelectorAll('details').forEach(details=>details.addEventListener('toggle',async()=>{
-                const content=details.querySelector('[data-snapshot]');
-                if(!details.open||content.dataset.loaded)return;
-                content.dataset.loaded='loading';content.textContent='正在读取…';
-                try {const payload=await API.get(`/api/assistant/prompts/chats/${chatId}/snapshots/${data.items[Number(content.dataset.snapshot)].id}`);if(!content.isConnected)return;
-                    this.renderBlocks(content,Object.entries(payload).map(([key,value])=>({id:key,title:({developer_instructions:'线程指令',turn_input:'本轮输入',output_schema:'输出结构',tools:'工具定义',messages:'判断请求',notice:'范围说明',request_id:'请求标识',thread_id:'会话标识',resumed:'复用会话',rotation_reason:'会话更新原因',model:'模型',role:'角色'})[key]||key,content:typeof value==='string'?value:JSON.stringify(value,null,2),source:'真实请求'})),null);
-                    content.dataset.loaded='yes';
-                }catch(e){content.textContent=`读取失败：${e.message}；折叠后展开可重试`;delete content.dataset.loaded;}
-            }));
-        }catch(e){if(this.valid(state,token))this.status(state,`快照读取失败：${e.message}`);}
-    }
+    async systemRules() { return BotWorkbench.open(); },
+
 };
 window.PromptWorkbench=PromptWorkbench;

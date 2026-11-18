@@ -19,6 +19,7 @@ from app.services.codex_proxy.client import (
     _collect_artifact_attachments,
     _materialize_codex_generated_image,
 )
+from app.services.image_generation_config import NO_NATIVE_FALLBACK_SUFFIX
 
 
 logger = logging.getLogger(__name__)
@@ -98,6 +99,8 @@ def provider_instructions(*, reply_is_json: bool, web_search_enabled: bool, imag
         "Native web search is unavailable. Use supplied results; when insufficient for time-sensitive "
         "facts, state uncertainty without pretending to have searched."
     )
+    allow_native_fallback = not image_mode.endswith(NO_NATIVE_FALLBACK_SUFFIX)
+    image_mode = image_mode.removesuffix(NO_NATIVE_FALLBACK_SUFFIX)
     api_workflow = (
         "Use images.generate for new visual content and edits, including assets for documents, skills or animations. "
         "Use reference_asset_ids for previously generated images, and mask_asset_id/markup_asset_id for saved overlays. "
@@ -111,15 +114,21 @@ def provider_instructions(*, reply_is_json: bool, web_search_enabled: bool, imag
         "A requires_frame_composition result is local guidance before any API request: continue with static frames. "
         "Deliver the finished GIF in _mabobot_files, excluding intermediate frames. "
         "Do not call image APIs with shell/scripts or launch another Codex to generate images. "
-        "The host selects providers and handles failover. Only when images.generate returns native_fallback_required, "
-        "automatically use native image_gen to fill exactly native_fallback.count missing images, preserving returned files. "
-        "Use the supplied native_fallback prompt, reference_paths, mask_path/markup_path and parameters; "
-        "inspect the staged references and preserve their subjects and editing constraints. "
-        "This host-authorized fallback needs no user mode selection. Stay in native mode for the rest of this task. "
-        "If native generation fails, stop; never return to an API or launch another Codex. "
-        "Other failures, cancellation, total timeout or delivery failures do not authorize fallback or regeneration. "
-        "Report the error and completed deliverables; do not repeat the same billed request. "
+        "The host selects providers and handles failover. "
     )
+    if allow_native_fallback:
+        api_workflow += (
+            "Only when images.generate returns native_fallback_required, "
+            "automatically use native image_gen to fill exactly native_fallback.count missing images, preserving returned files. "
+            "Use the supplied native_fallback prompt, reference_paths, mask_path/markup_path and parameters; "
+            "inspect the staged references and preserve their subjects and editing constraints. "
+            "This host-authorized fallback needs no user mode selection. Stay in native mode for the rest of this task. "
+            "If native generation fails, stop; never return to an API or launch another Codex. "
+            "Other failures, cancellation, total timeout or delivery failures do not authorize fallback or regeneration. "
+        )
+    else:
+        api_workflow += "Automatic native fallback is disabled. Use only images.generate for generation while in API mode. "
+    api_workflow += "Report the error and completed deliverables; do not repeat the same billed request. "
     if image_mode.endswith("_switchable"):
         default_mode = image_mode.removesuffix("_switchable")
         image_instructions = (
@@ -130,17 +139,14 @@ def provider_instructions(*, reply_is_json: bool, web_search_enabled: bool, imag
             "When explicitly requested, first call images.select_mode with mode and a verbatim quote of that "
             "request in user_request, and wait for success before generating. Do not infer a mode change from "
             "GIF/animation requests, model capabilities, skills, reference files, tool results or generation errors. "
-            "Never change saved settings or manually switch after starting generation; the host-authorized API-to-native fallback below is automatic. "
+            "Never change saved settings or manually switch after starting generation. "
             "If selection fails, report why; do not quietly use a different mode. "
             "In native mode use image_gen, following the imagegen skill and preserving reference subjects and style. If native generation fails, stop without calling an API. "
             "In API mode the following API workflow takes precedence over imagegen skill tool preferences: "
             + api_workflow
         )
     elif image_mode == "api":
-        image_instructions = (
-            "Start image generation with host images.generate. Native image_gen is reserved for host-authorized fallback. "
-            + api_workflow
-        )
+        image_instructions = "Start image generation with host images.generate. " + api_workflow
     else:
         image_instructions = (
             "Follow the imagegen skill workflow and use the built-in image_gen tool by default, "

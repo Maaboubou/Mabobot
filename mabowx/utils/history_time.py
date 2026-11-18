@@ -2,6 +2,8 @@
 from datetime import datetime, timedelta
 import re
 
+MAX_SEPARATOR_CLOCK_SKEW_SECONDS = 60
+
 
 def history_timestamp(value: str, now: datetime | None = None) -> str:
     value = str(value or '').strip()
@@ -50,4 +52,12 @@ def message_timestamp(value: str, now: datetime) -> float | None:
     if (re.fullmatch(r'\d{1,2}:\d{2}', value)
             and parsed - now > timedelta(hours=12)):
         parsed -= timedelta(days=1)
-    return parsed.timestamp() if parsed <= now else None
+    if parsed <= now:
+        return parsed.timestamp()
+    # WeChat's minute label can lead the host clock by a few seconds. This is
+    # evidence from a recognized separator, not a receipt-time fallback for an
+    # unknown message. Clamp to the first observation so downstream age checks
+    # stay nonnegative and retain their exact ten-minute cutoff.
+    if parsed - now <= timedelta(seconds=MAX_SEPARATOR_CLOCK_SKEW_SECONDS):
+        return now.timestamp()
+    return None

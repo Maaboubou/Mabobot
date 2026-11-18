@@ -25,11 +25,13 @@ from app.utils.plugin_config import get_config
 from app.utils.subprocess_utils import hidden_process_kwargs
 
 from .runtime_support import ArtifactLimitError
-from .ytdlp_cookie_service import ytdlp_browser_cookie_args
+from .ytdlp_cookie_service import refresh_douyin_browser_cookies, ytdlp_browser_cookie_args
 
 
 TIKHUB_ENDPOINT_FETCH_ONE = "https://api.tikhub.io/api/v1/douyin/app/v3/fetch_one_video_by_share_url"
 TIKHUB_ENDPOINT_FETCH_ONE_WEB = "https://api.tikhub.io/api/v1/douyin/web/fetch_one_video_by_share_url"
+TIKHUB_ENDPOINT_FETCH_ONE_V3 = "https://api.tikhub.io/api/v1/douyin/app/v3/fetch_one_video_v3"
+TIKHUB_ENDPOINT_SHARE_CODE = "https://api.tikhub.io/api/v1/douyin/app/v3/fetch_share_info_by_share_code"
 TIKHUB_ENDPOINT_TIKTOK_FETCH_ONE = "https://api.tikhub.io/api/v1/tiktok/app/v3/fetch_one_video_by_share_url"
 
 
@@ -221,8 +223,7 @@ class MediaPipelineMixin:
     def _extract_first_play_url_from_aweme_detail(self, aweme_detail: Any) -> Optional[List[str]]:
         """
         从 TikHub 的 aweme_detail 中提取视频直链列表。
-        规则：
-        1) 强制优先：aweme_detail.video.download_addr.url_list (返回整个列表)
+        优先 download_addr，再尝试播放地址和图文内嵌视频。
         """
 
         def _pick_url_list(obj: Any, path: List[str]) -> Optional[List[str]]:
@@ -242,12 +243,16 @@ class MediaPipelineMixin:
                         valid_urls.append(s)
             return valid_urls if valid_urls else None
 
-        try:
-            url_list = _pick_url_list(aweme_detail, ["video", "download_addr", "url_list"])
-            if url_list:
-                return url_list
-        except Exception:
-            return None
+        for address in ("download_addr", "play_addr", "play_addr_h264", "play_addr_265"):
+            urls = _pick_url_list(aweme_detail, ["video", address, "url_list"])
+            if urls:
+                return urls
+        images = aweme_detail.get("images") if isinstance(aweme_detail, dict) else None
+        for image in images if isinstance(images, list) else []:
+            urls = _pick_url_list(image, ["video", "play_addr", "url_list"])
+            if urls:
+                return urls
+        return None
 
     def _extract_play_url_from_tiktok_aweme(self, aweme_detail: Any) -> Optional[List[str]]:
         """
@@ -273,79 +278,100 @@ class MediaPipelineMixin:
         except Exception:
             return None
 
-    def parse_douyin_video(self, text: str) -> Optional[List[str]]:
-        """使用 TikHub 解析抖音分享链接，返回直链列表（url_list）"""
-        share_url = self._extract_douyin_share_url(text)
-        if not share_url:
-            return None
+    def _douyin_payload_details(self, payload: Optional[dict], label: str) -> List[dict]:
+        data = self._json_loads_if_needed(payload.get("data")) if payload else None
+        details = []
+        if isinstance(data, dict):
+            detail = self._json_loads_if_needed(data.get("aweme_detail"))
+            if isinstance(detail, dict):
+                details.append(detail)
+            for key in ("aweme_details", "aweme_list"):
+                items = self._json_loads_if_needed(data.get(key))
+                if isinstance(items, list):
+                    details.extend(item for item in items if isinstance(item, dict))
+            if isinstance(data.get("video"), dict):
+                details.append(data)
+        if not any(self._extract_first_play_url_from_aweme_detail(d) for d in details):
+            # Log schema/status, never cookies, tokens, or signed media URLs.
+            filters = data.get("filter_list") if isinstance(data, dict) else None
+            reasons = [f.get("reason") for f in filters if isinstance(f, dict)] if isinstance(filters, list) else []
+            self.logger.warning(
+                "⚠️ TikHub %s 无视频直链: code=%s data_type=%s data_keys=%s filter_reasons=%s filter_reason=%s",
+                label, payload.get("code") if payload else None, type(data).__name__,
+                list(data)[:20] if isinstance(data, dict) else [], reasons,
+                (data.get("filter_detail") or {}).get("filter_reason")
+                if isinstance(data, dict) and isinstance(data.get("filter_detail"), dict) else None,
+            )
+        return details
 
+    def _douyin_aweme_id(self, value: Any) -> Optional[str]:
+        if isinstance(value, str):
+            match = re.search(r"(?:/(?:video|note)/|aweme_id=|modal_id=)([0-9]+)", value)
+            if match:
+                return match.group(1)
+        if isinstance(value, dict):
+            for key in ("aweme_id", "item_id"):
+                identifier = str(value.get(key) or "")
+                if identifier.isdigit():
+                    return identifier
+            for key in ("aweme_detail", "aweme_details", "aweme_list", "filter_list", "filter_detail", "share_info", "data"):
+                identifier = self._douyin_aweme_id(self._json_loads_if_needed(value.get(key)))
+                if identifier:
+                    return identifier
+        if isinstance(value, list):
+            for item in value:
+                identifier = self._douyin_aweme_id(item)
+                if identifier:
+                    return identifier
+        return None
+
+    def parse_douyin_video(self, text: str) -> Optional[List[str]]:
+        """Resolve sharing URLs, or explicit Douyin share codes, via TikHub."""
+        share_url = self._extract_douyin_share_url(text)
+        is_share_code = not share_url and "抖音" in text and "︽︽" in text
+        if not share_url and not is_share_code:
+            return None
         token = self._get_tikhub_token()
         if not token:
             self.logger.warning("⚠️ 缺少 TikHub Token：请在 .env 设置 TIKHUB_API_TOKEN")
             return None
-
         headers = {"Authorization": f"Bearer {token}"}
-        params = {"share_url": share_url}
-        payload, app_permanent_failure = self._get_tikhub_json(
-            TIKHUB_ENDPOINT_FETCH_ONE,
-            headers=headers,
-            params=params,
-            label="抖音 App V3",
-        )
-        data = self._json_loads_if_needed(payload.get("data")) if payload else None
-        if isinstance(data, dict):
-            aweme_detail = self._json_loads_if_needed(data.get("aweme_detail"))
-            if isinstance(aweme_detail, dict):
-                url_list = self._extract_first_play_url_from_aweme_detail(aweme_detail)
-                if url_list:
-                    return url_list
-
-        if app_permanent_failure:
-            self.logger.error("❌ TikHub 抖音 App V3 请求不可重试，停止解析")
-            return None
-
-        # App V3 成功但无视频直链时，官方建议尝试 Web 接口。
-        self.logger.info("🔄 抖音 App V3 未返回视频直链，尝试 Web 接口")
-        payload_web, _ = self._get_tikhub_json(
-            TIKHUB_ENDPOINT_FETCH_ONE_WEB,
-            headers=headers,
-            params=params,
-            label="抖音 Web",
-        )
-        data_web = self._json_loads_if_needed(payload_web.get("data")) if payload_web else None
-        if not isinstance(data_web, dict):
-            self.logger.error("❌ TikHub 抖音解析失败")
-            return None
-
-        aweme_detail_web = self._json_loads_if_needed(data_web.get("aweme_detail"))
-        if not isinstance(aweme_detail_web, dict):
-            self.logger.error("❌ TikHub 抖音 Web 接口未返回作品数据")
-            return None
-
-        url_list = self._extract_first_play_url_from_aweme_detail(aweme_detail_web)
-        if url_list:
-            return url_list
-
-        # 图文视频使用 images[0].video.play_addr.url_list。
-        images = aweme_detail_web.get("images")
-        if isinstance(images, list) and images and isinstance(images[0], dict):
-            video = images[0].get("video")
-            play_addr = video.get("play_addr") if isinstance(video, dict) else None
-            raw_urls = play_addr.get("url_list") if isinstance(play_addr, dict) else None
-            if isinstance(raw_urls, list):
-                valid_urls = [
-                    url
-                    for url in raw_urls
-                    if isinstance(url, str)
-                    and url.strip().startswith(("http://", "https://"))
-                ]
-                if valid_urls:
-                    self.logger.info(
-                        "✅ 从抖音 Web images 路径提取到 %s 个视频直链",
-                        len(valid_urls),
-                    )
-                    return valid_urls
-        self.logger.error("❌ TikHub 抖音 Web 接口未返回视频直链")
+        aweme_id = self._douyin_aweme_id(share_url)
+        if not aweme_id:
+            aweme_id = getattr(self, "_douyin_resolved_ids", {}).get(share_url)
+        if is_share_code:
+            payload, permanent = self._get_tikhub_json(
+                TIKHUB_ENDPOINT_SHARE_CODE, headers=headers,
+                params={"share_code": text}, label="抖音分享口令",
+            )
+            if permanent:
+                return None
+            aweme_id = self._douyin_aweme_id(payload)
+        else:
+            for endpoint, label in (
+                (TIKHUB_ENDPOINT_FETCH_ONE, "抖音 App V3 分享链接"),
+                (TIKHUB_ENDPOINT_FETCH_ONE_WEB, "抖音 Web 分享链接"),
+            ):
+                payload, permanent = self._get_tikhub_json(
+                    endpoint, headers=headers, params={"share_url": share_url}, label=label,
+                )
+                for detail in self._douyin_payload_details(payload, label):
+                    urls = self._extract_first_play_url_from_aweme_detail(detail)
+                    if urls:
+                        return urls
+                aweme_id = aweme_id or self._douyin_aweme_id(payload)
+                if permanent:
+                    return None
+        if aweme_id:
+            payload, _ = self._get_tikhub_json(
+                TIKHUB_ENDPOINT_FETCH_ONE_V3, headers=headers,
+                params={"aweme_id": aweme_id}, label="抖音作品详情 V3",
+            )
+            for detail in self._douyin_payload_details(payload, "抖音作品详情 V3"):
+                urls = self._extract_first_play_url_from_aweme_detail(detail)
+                if urls:
+                    return urls
+        self.logger.error("❌ TikHub 抖音解析未取得视频直链，作品ID=%s", aweme_id or "未知")
         return None
 
     def parse_tiktok_video(self, text: str) -> Optional[List[str]]:
@@ -1315,17 +1341,35 @@ class MediaPipelineMixin:
     ) -> subprocess.CompletedProcess:
         """Run yt-dlp with cookies from the project's dedicated Chrome profile."""
         if cookie_args is None:
-            with ytdlp_browser_cookie_args(
-                platform=platform,
-                debug_port=self.chrome_debug_port,
-                user_data_dir=self.chrome_user_data_dir,
-                profile_dir=self.chrome_profile_dir,
-                logger=self.logger,
-            ) as exported_cookie_args:
-                return self._run_platform_ytdlp(
-                    platform, arguments, timeout_sec=timeout_sec,
-                    cookie_args=exported_cookie_args,
-                )
+            for attempt in range(2):
+                with ytdlp_browser_cookie_args(
+                    platform=platform,
+                    debug_port=self.chrome_debug_port,
+                    user_data_dir=self.chrome_user_data_dir,
+                    profile_dir=self.chrome_profile_dir,
+                    logger=self.logger,
+                ) as exported_cookie_args:
+                    result = self._run_platform_ytdlp(
+                        platform, arguments, timeout_sec=timeout_sec,
+                        cookie_args=exported_cookie_args,
+                    )
+                output = (result.stderr or "") + "\n" + (result.stdout or "")
+                if platform == "douyin":
+                    # Keep IDs from failed extraction for the paid detail fallback.
+                    match = re.search(r"\[Douyin\] (\d+):|/(?:video|note)/(\d+)", output)
+                    if match:
+                        identifiers = getattr(self, "_douyin_resolved_ids", {})
+                        if len(identifiers) >= 128:
+                            identifiers = {}
+                        for argument in arguments:
+                            if self._extract_douyin_share_url(argument):
+                                identifiers[argument] = match.group(1) or match.group(2)
+                        self._douyin_resolved_ids = identifiers
+                if (attempt == 0 and platform == "douyin" and result.returncode != 0
+                        and "fresh cookies" in output.casefold()
+                        and refresh_douyin_browser_cookies(self.chrome_debug_port, self.logger)):
+                    continue
+                return result
         checked_at = time.time()
         result = subprocess.run(
             [

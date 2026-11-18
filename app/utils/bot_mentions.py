@@ -103,7 +103,7 @@ def find_bot_mention(content: Any, names: Iterable[str]) -> Optional[str]:
     return None
 
 
-def strip_bot_mentions(content: Any, names: Iterable[str]) -> str:
+def strip_bot_mentions(content: Any, names: Iterable[str], *, preserve_if_empty: bool = True) -> str:
     """移除所有已知机器人 @ 别名及微信插入的分隔空白。"""
     original = str(content or "")
     cleaned = original
@@ -114,4 +114,4 @@ def strip_bot_mentions(content: Any, names: Iterable[str]) -> str:
             "",
             cleaned,
         )
-    return cleaned.strip() or original.strip()
+    return cleaned.strip() or (original.strip() if preserve_if_empty else "")

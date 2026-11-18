@@ -57,6 +57,8 @@ def normalized_time(value: Any) -> str:
 
 
 class ArchiveStore(MemberDirectory):
+    write_search_receipts = True
+
     def __init__(self, root: Path | str = DEFAULT_ROOT):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
@@ -417,6 +419,8 @@ class ArchiveStore(MemberDirectory):
             if cached:
                 result = json.loads(cached[0])
                 result["cache_hit"] = True
+                if not self.write_search_receipts:
+                    return result
                 db.commit()
                 db.execute("UPDATE receipts SET uses=uses+1,used_at=? WHERE chat=? AND query_key=?", (datetime.now(timezone.utc).isoformat(), chat, key))
                 db.commit()
@@ -486,6 +490,8 @@ class ArchiveStore(MemberDirectory):
                       "next_offset": offset + limit if len(rows) > limit or previous_more else None,
                       "coverage": "matching_results_only", "cache_hit": False, "incremental": incremental}
             db.commit()
+            if not self.write_search_receipts:
+                return result
             # Cache stores pointers only. Any change invalidates its snapshot,
             # including backfills, edits, deletion and manual corrections.
             db.execute("INSERT OR REPLACE INTO receipts VALUES(?,?,?,?,coalesce((SELECT uses+1 FROM receipts WHERE chat=? AND query_key=?),1),?)",

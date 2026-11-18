@@ -1656,6 +1656,7 @@ const App = {
             <div class="roles-entry-actions">
                 <button type="button" class="btn btn-sm btn-surface" onclick="App.show${method}Editor(${id})"
                         aria-label="编辑${label}：${name}">编辑</button>
+                <button type="button" class="btn btn-sm btn-surface" onclick="BotWorkbench.open({kind:'${kind}',id:${id}})" aria-label="编辑并验证${label}：${name}">验证</button>
                 <span class="roles-entry-delete-wrap" title="${reason || `删除${label}`}"
                       ${reason ? `tabindex="0" role="group" aria-label="无法删除${label}：${name}。${reason}"` : ''}>
                     <button type="button" class="btn btn-sm roles-entry-delete" onclick="App.delete${method}(${id})"

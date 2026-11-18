@@ -1,9 +1,9 @@
 """Strict Codex generation, checked at the native HTTP boundary.
 
 This module is stdlib-only so the same implementation can run inside WSL.
-The relay never reads credential files, changes a model request, or retries it.
-Codex owns authentication; only a request matching this task can reach its
-original provider. Native tools/instructions that cannot be disabled fail closed.
+The relay never reads credential files or retries a request. Codex owns
+authentication. The host builds the inference envelope from the admitted task,
+so native agent scaffolding cannot become model input or tool declarations.
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from app.services.execution_contracts import ExecutionError, canonical
 
-ADAPTER_VERSION = "codex-direct-1"
+ADAPTER_VERSION = "codex-direct-2"
 MAX_BODY = 2 * 1024 * 1024
 
 
@@ -90,7 +90,9 @@ def verify_outbound(body, spec):
             violations.append("non_text_input")
             continue
         messages.append((item.get("role"), "".join(p["text"] for p in content)))
-    expected = [("user", spec["input"])]
+    expected = [(m["role"], m["content"]) for m in spec.get("input_messages", [{"role": "user", "content": spec["input"]}])]
+    if spec.get("developer_instructions"):
+        expected.insert(0, ("developer", spec["developer_instructions"]))
     if body.get("instructions") == spec["instructions"]:
         pass
     elif body.get("instructions") in (None, ""):
@@ -125,6 +127,38 @@ def verify_outbound(body, spec):
             "message_count": len(messages), "transport": "http_sse"}
 
 
+def task_outbound(body, spec):
+    """Keep native authentication, but use only the host's immutable task data."""
+    if not isinstance(body, dict) or body.get("model") != spec["model"]:
+        raise ValueError("model_mismatch")
+    reasoning = body.get("reasoning") or {}
+    if not isinstance(reasoning, dict) or (
+        spec.get("effort") is not None and reasoning.get("effort") != spec["effort"]
+    ):
+        raise ValueError("reasoning_mismatch")
+    payload = {
+        "model": spec["model"], "instructions": spec["instructions"],
+        "input": [{"type": "message", "role": "user", "content": [
+            {"type": "input_text", "text": spec["input"]}]}],
+        "tools": [], "tool_choice": "none", "parallel_tool_calls": False,
+        "store": False, "stream": True,
+    }
+    if "input_messages" in spec:
+        payload["input"] = [{"type": "message", "role": m["role"], "content": [
+            {"type": "input_text", "text": m["content"]}]} for m in spec["input_messages"]]
+    if spec.get("developer_instructions"):
+        payload["input"].insert(0, {"type": "message", "role": "developer", "content": [
+            {"type": "input_text", "text": spec["developer_instructions"]}]})
+    if spec.get("effort") is not None:
+        payload["reasoning"] = {"effort": spec["effort"]}
+    if spec.get("schema") is not None:
+        payload["text"] = {"format": {"type": "json_schema", "name": "result",
+            "strict": True, "schema": spec["schema"]}}
+    if spec.get("service_tier") == "fast":
+        payload["service_tier"] = "priority"
+    return payload
+
+
 class _NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
         return None
@@ -132,11 +166,12 @@ class _NoRedirect(HTTPRedirectHandler):
 
 class OutboundGate:
     """One task, one private endpoint, at most one forwarded generation."""
-    def __init__(self, spec, upstream, cancelled, *, auth_headers=()):
+    def __init__(self, spec, upstream, cancelled, *, auth_headers=(), task_envelope=False):
         parsed = urlsplit(upstream)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.fragment or parsed.query:
             raise ExecutionError("capability_unavailable", "Unsupported native provider endpoint")
         self.spec, self.upstream, self.cancelled = spec, upstream, cancelled
+        self.task_envelope = task_envelope
         self.auth_headers = {name.lower() for name in auth_headers} - {"host", "connection", "content-length", "transfer-encoding"}
         self.lock = threading.Lock()
         self.shape = {"verified": False, "violations": [], "request_count": 0, "forwarded_count": 0}
@@ -183,9 +218,16 @@ class OutboundGate:
                 raise ValueError("unsupported framing")
             handler.connection.settimeout(max(0.1, min(10, self.spec["deadline"] - time.time())))
             raw = handler.rfile.read(length)
+            native = json.loads(raw)
+            native_shape = verify_outbound(native, self.spec)
+            if self.task_envelope:
+                raw = canonical(task_outbound(native, self.spec)).encode("utf-8")
             shape = verify_outbound(json.loads(raw), self.spec)
-        except (ValueError, OSError):
-            shape = {"verified": False, "violations": ["invalid_http_body"]}
+            shape["envelope_source"] = "host_task" if self.task_envelope else "native"
+            shape["native_violations"] = native_shape["violations"]
+        except (ValueError, OSError) as exc:
+            reason = str(exc) if str(exc) in {"model_mismatch", "reasoning_mismatch"} else "invalid_http_body"
+            shape = {"verified": False, "violations": [reason]}
         with self.lock:
             count = self.shape["request_count"] + 1
             forwarded = self.shape["forwarded_count"]
@@ -227,6 +269,7 @@ class OutboundGate:
                 if closing:
                     return
                 if response.status != 200:
+                    self.shape["upstream_status"] = response.status
                     self.error_code = {401: "authentication_failed", 403: "authentication_failed", 429: "rate_limited"}.get(response.status, "provider_error")
                     try:
                         self.retry_after = min(3600, max(0, float(response.headers.get("Retry-After", "30"))))
@@ -326,6 +369,12 @@ class NativeRPC:
             args += ["-c", key + "=" + _toml(value)]
         env = {k: v for k, v in os.environ.items() if k not in {
             "CODEX_REMOTE_PAYLOAD", "CODEX_SESSION_ID", "CODEX_THREAD_ID", "CODEX_TOOL_CALL_ID"}}
+        # wsl.exe --exec does not load login-shell PATH. Managed npm Codex
+        # launchers use /usr/bin/env node, so include the provisioned runtimes.
+        native_paths = [Path.home() / ".local/bin", Path.home() / ".hermes/node/bin"]
+        native_paths.extend(sorted((Path.home() / ".nvm/versions/node").glob("*/bin"), reverse=True))
+        env["PATH"] = os.pathsep.join([str(path) for path in native_paths if path.is_dir()]
+            + [env.get("PATH", os.defpath)])
         self.process = subprocess.Popen(args, cwd=cwd, env=env, stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8", bufsize=1,
             start_new_session=True)
@@ -430,6 +479,7 @@ def generate(launcher, spec, cancelled, bind=lambda *_: None):
     try:
         with tempfile.TemporaryDirectory(prefix="mabobot-codex-direct-") as cwd:
             try:
+                evidence["stage"] = "initialize"
                 if cancelled.is_set() or time.time() >= spec["deadline"]:
                     raise ExecutionError("cancelled", "Direct generation cancelled before dispatch")
                 rpc = NativeRPC(launcher, cwd)
@@ -437,14 +487,17 @@ def generate(launcher, spec, cancelled, bind=lambda *_: None):
                 initialized = rpc.rpc("initialize", {"clientInfo": {"name": "mabobot_direct", "version": ADAPTER_VERSION}})
                 evidence["engine_version"] = initialized.get("userAgent", "unknown")
                 rpc.send({"method": "initialized", "params": {}})
+                evidence["stage"] = "provider"
                 provider, upstream = _provider(rpc, spec)
                 gate = OutboundGate(spec, upstream, cancelled,
-                    auth_headers=(*provider.get("http_headers", {}), *provider.get("env_http_headers", {})))
+                    auth_headers=(*provider.get("http_headers", {}), *provider.get("env_http_headers", {})),
+                    task_envelope=True)
                 provider.update(name="Mabobot verified direct", base_url=gate.base_url,
                     supports_websockets=False, request_max_retries=0, stream_max_retries=0)
                 # Keep native authentication, replacing only its inference URL.
+                evidence["stage"] = "thread_start"
                 started = rpc.rpc("thread/start", {"model": spec["model"], "modelProvider": "mabobot_direct",
-                    "cwd": cwd, "ephemeral": True, "baseInstructions": spec["instructions"], "developerInstructions": "",
+                    "cwd": cwd, "ephemeral": True, "baseInstructions": spec["instructions"], "developerInstructions": spec.get("developer_instructions", ""),
                     "approvalPolicy": "never", "sandbox": "read-only", "serviceTier": spec.get("service_tier", "default"),
                     "config": {**DIRECT_CONFIG, "model_providers.mabobot_direct": provider,
                         **({"model_context_window": spec["context_window"]} if spec.get("context_window") else {})}})
@@ -460,7 +513,9 @@ def generate(launcher, spec, cancelled, bind=lambda *_: None):
                 if spec.get("schema") is not None:
                     params["outputSchema"] = spec["schema"]
                 dispatched = True
+                evidence["stage"] = "turn_start"
                 turn = rpc.rpc("turn/start", params)["turn"]["id"]
+                evidence["stage"] = "generation"
                 bind(session, turn)
                 interrupted_at = None
                 while True:
@@ -518,6 +573,11 @@ def generate(launcher, spec, cancelled, bind=lambda *_: None):
             code = gate.error_code
         if code == "cancelled" and gate and gate.shape["forwarded_count"]:
             code = "interrupted_unknown"
+        evidence["failure_type"] = type(exc).__name__
+        shape = evidence.get("outbound_shape", {})
+        detail = ",".join(shape.get("violations", []))
+        if shape.get("upstream_status"):
+            detail = "HTTP " + str(shape["upstream_status"])
         result.update(status="cancelled" if code == "cancelled" else "interrupted_unknown" if code == "interrupted_unknown" else "failed",
-                      error_code=code, error="Codex direct generation did not satisfy the execution contract", text="")
+                      error_code=code, error=f"Codex direct generation failed: {code} stage={evidence.get('stage', 'startup')} {detail}".strip(), text="")
     return result

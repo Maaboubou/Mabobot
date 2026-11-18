@@ -81,7 +81,7 @@ def deliver_receipts(chat, wx, log=None, *, text=None, at_users=()):
                 from app.services.scheduled_tasks import ScheduleDenied
                 raise ScheduleDenied("微信未连接，确认待发送")
             mention_kwargs = {"at_users": list(at_users)} if at_users else {}
-            sent = wx.send_message(chat, row["payload"], **mention_kwargs)
+            sent = wx.send_message(chat, row["payload"], **({"silent": True} if log else {}), **mention_kwargs)
             if sent and log:
                 log(chat, row["payload"])
             return sent
